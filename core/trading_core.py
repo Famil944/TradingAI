@@ -1,26 +1,30 @@
 from exchange.binance_client import BinanceMarketClient
 from indicators.market_analyzer import MarketAnalyzer
+from intelligence.fear_greed import FearGreedService
 
 
 class TradingCore:
     def __init__(self):
         self.market = BinanceMarketClient()
         self.analyzer = MarketAnalyzer()
+        self.fear_greed = FearGreedService()
 
     def analyze_symbol(self, symbol: str = "BTCUSDT", interval: str = "1h") -> dict:
         klines = self.market.get_klines(symbol, interval, 250)
         analysis = self.analyzer.analyze(klines)
 
-        decision = self._make_decision(analysis)
+        fear_greed_data = self.fear_greed.get_index()
+        decision = self._make_decision(analysis, fear_greed_data)
 
         return {
             "symbol": symbol,
             "interval": interval,
             **analysis,
+            "fear_greed": fear_greed_data,
             **decision
         }
 
-    def _make_decision(self, analysis: dict) -> dict:
+    def _make_decision(self, analysis: dict, fear_greed_data: dict) -> dict:
         score = 0
         reasons = []
 
@@ -51,7 +55,7 @@ class TradingCore:
 
         if 45 <= rsi <= 60:
             score += 10
-            reasons.append("RSI в здоровой зоне для продолжения роста")
+            reasons.append("RSI в здоровой зоне")
         elif 30 <= rsi < 45:
             score += 5
             reasons.append("RSI ниже середины, возможен отскок")
@@ -86,6 +90,16 @@ class TradingCore:
             score -= 10
             reasons.append("Цена возле верхней Bollinger Band")
 
+        fg_impact = fear_greed_data.get("score_impact", 0)
+        score += fg_impact
+
+        if fg_impact > 0:
+            reasons.append("Fear & Greed добавляет плюс к сигналу")
+        elif fg_impact < 0:
+            reasons.append("Fear & Greed предупреждает о перегреве рынка")
+
+        score = max(min(score, 100), -100)
+
         if score >= 45:
             signal = "🟢 LONG"
             risk = "Средний"
@@ -95,8 +109,6 @@ class TradingCore:
         else:
             signal = "🟡 WAIT"
             risk = "Низкий"
-
-        score = max(min(score, 100), -100)
 
         return {
             "signal": signal,

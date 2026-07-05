@@ -44,31 +44,24 @@ def coins_menu():
     for i in range(0, len(POPULAR_COINS), 2):
         row = []
         for name, symbol in POPULAR_COINS[i:i + 2]:
-            row.append(
-                InlineKeyboardButton(
-                    name,
-                    callback_data=f"analyze_{symbol}"
-                )
-            )
+            row.append(InlineKeyboardButton(name, callback_data=f"analyze_{symbol}"))
         keyboard.append(row)
 
     keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_main")])
-
     return InlineKeyboardMarkup(keyboard)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Trading AI Bot работает.\n\n"
-        "Выбери действие:",
-        reply_markup=main_menu()
+        "🤖 Trading AI Bot работает.\n\nВыбери действие:",
+        reply_markup=main_menu(),
     )
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ Бот работает.\n"
-        "Режим: Trading AI Core v4\n"
+        "Режим: Trading AI Core v5\n"
         "Автосделки: выключены\n"
         "Режим риска: безопасный"
     )
@@ -95,7 +88,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
             await update.message.reply_text(
                 "📊 Выбери монету для анализа:",
-                reply_markup=coins_menu()
+                reply_markup=coins_menu(),
             )
             return
 
@@ -128,38 +121,38 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if data == "back_main":
             await query.edit_message_text(
                 "🤖 Главное меню:",
-                reply_markup=main_menu()
+                reply_markup=main_menu(),
             )
 
         elif data == "menu_analyze":
             await query.edit_message_text(
                 "📊 Выбери монету для анализа:",
-                reply_markup=coins_menu()
+                reply_markup=coins_menu(),
             )
+
         elif data == "market_scan":
             await query.edit_message_text("⏳ Сканирую рынок...")
             results = scanner.scan_market("1h", 10)
             text = format_scan_results(results)
-
             await query.edit_message_text(
                 text,
-                reply_markup=main_menu()
+                reply_markup=main_menu(),
             )
 
         elif data == "price_btc":
             result = core.analyze_symbol("BTCUSDT", "1h")
             await query.edit_message_text(
                 f"📊 BTC/USDT: {result['price']:,.2f} USDT",
-                reply_markup=main_menu()
+                reply_markup=main_menu(),
             )
 
         elif data == "status":
             await query.edit_message_text(
                 "✅ Бот работает.\n"
-                "Режим: Trading AI Core v4\n"
+                "Режим: Trading AI Core v5\n"
                 "Автосделки: выключены\n"
                 "Режим риска: безопасный",
-                reply_markup=main_menu()
+                reply_markup=main_menu(),
             )
 
         elif data.startswith("analyze_"):
@@ -171,7 +164,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await query.edit_message_text(
                 text,
-                reply_markup=coins_menu()
+                reply_markup=coins_menu(),
             )
 
     except Exception as e:
@@ -184,6 +177,11 @@ async def send_analysis_message(update: Update, data: dict):
 
 def format_analysis(data: dict) -> str:
     reasons_text = "\n".join([f"• {reason}" for reason in data["reasons"]])
+
+    fear_greed = data.get("fear_greed", {})
+    fg_value = fear_greed.get("value", "Нет данных")
+    fg_status = fear_greed.get("status", "Нет данных")
+    fg_comment = fear_greed.get("comment", "")
 
     return (
         f"📊 {data['symbol']}\n\n"
@@ -200,6 +198,9 @@ def format_analysis(data: dict) -> str:
         f"ATR: {data['atr']}\n"
         f"Bollinger High: {data['bb_high']}\n"
         f"Bollinger Low: {data['bb_low']}\n\n"
+        f"😨 Fear & Greed: {fg_value}\n"
+        f"Состояние: {fg_status}\n"
+        f"Комментарий: {fg_comment}\n\n"
         f"Сигнал: {data['signal']}\n"
         f"Оценка: {data['score']} / 100\n"
         f"Риск: {data['risk']}\n\n"
@@ -214,12 +215,17 @@ def format_scan_results(results: list) -> str:
     text = "🔥 Лучшие сигналы рынка\n\n"
 
     for index, item in enumerate(results, start=1):
+        fear_greed = item.get("fear_greed", {})
+        fg_value = fear_greed.get("value", "Нет данных")
+        fg_status = fear_greed.get("status", "Нет данных")
+
         text += (
             f"{index}. {item['symbol']}\n"
             f"{item['signal']}\n"
             f"Оценка: {item['score']} / 100\n"
             f"Цена: {item['price']:.2f} USDT\n"
-            f"Тренд: {item['trend']}\n\n"
+            f"Тренд: {item['trend']}\n"
+            f"Fear & Greed: {fg_value} | {fg_status}\n\n"
         )
 
     return text
