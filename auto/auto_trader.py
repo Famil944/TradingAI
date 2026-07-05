@@ -3,6 +3,7 @@ from core.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from auto.multi_tf_filter import MultiTimeframeFilter
 from auto.strategy_filter import StrategyFilter
 from strategy.strategy_report import StrategyReport
+from auto.candidate_selector import CandidateSelector
 
 
 class AutoTrader:
@@ -15,6 +16,7 @@ class AutoTrader:
         self.multi_filter = MultiTimeframeFilter(self.multi_tf)
         self.strategy_filter = StrategyFilter()
         self.report = StrategyReport()
+        self.selector = CandidateSelector()
 
     def run_once(self):
         self.logger.log("🤖 Начало автоматического сканирования")
@@ -33,7 +35,12 @@ class AutoTrader:
             self.logger.log(text)
             return text
 
-        best = results[0]
+        best = self.selector.select_best(results)
+
+        if best is None:
+            text = "🟡 Подходящих LONG/SHORT сигналов нет."
+            self.logger.log(text)
+            return text
         symbol = best["symbol"]
 
         self.logger.log(
