@@ -6,6 +6,13 @@ from auto.candidate_selector import CandidateSelector
 from auto.candidate_report import CandidateReport
 from strategy.strategy_report import StrategyReport
 
+from strategy.market_structure import MarketStructure
+from strategy.trend_strength import TrendStrength
+from strategy.volume_analyzer import VolumeAnalyzer
+from strategy.momentum import Momentum
+from strategy.false_breakout import FalseBreakout
+from strategy.quality_score import QualityScore
+
 
 class AutoTrader:
 
@@ -13,12 +20,21 @@ class AutoTrader:
         self.scanner = scanner
         self.paper = paper
         self.logger = LoggerService()
+
         self.multi_tf = MultiTimeframeAnalyzer(core)
         self.multi_filter = MultiTimeframeFilter(self.multi_tf)
+
         self.strategy_filter = StrategyFilter()
         self.selector = CandidateSelector()
         self.candidate_report = CandidateReport()
         self.report = StrategyReport()
+
+        self.market_structure = MarketStructure()
+        self.trend_strength = TrendStrength()
+        self.volume_analyzer = VolumeAnalyzer()
+        self.momentum = Momentum()
+        self.false_breakout = FalseBreakout()
+        self.quality_score = QualityScore()
 
     def run_once(self):
         self.logger.log("🤖 Начало автоматического сканирования")
@@ -64,11 +80,27 @@ class AutoTrader:
             direction=strategy_check.get("direction")
         )
 
+        structure = self.market_structure.analyze(best)
+        trend = self.trend_strength.calculate(structure, best)
+        volume = self.volume_analyzer.analyze(best)
+        momentum = self.momentum.analyze(best)
+        breakout = self.false_breakout.analyze(best)
+
+        quality = self.quality_score.calculate(
+            structure=structure,
+            trend=trend,
+            volume=volume,
+            momentum=momentum,
+            breakout=breakout,
+            multi_tf=multi_check
+        )
+
         report_text = self.report.build_report(
             symbol=symbol,
             analysis=best,
             strategy_check=strategy_check,
-            multi_check=multi_check
+            multi_check=multi_check,
+            quality=quality
         )
 
         if not strategy_check["approved"]:
