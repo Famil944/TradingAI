@@ -4,6 +4,7 @@ from paper.trade_history import TradeHistory
 from paper.statistics import Statistics
 from paper.risk_rules import RiskRules
 from paper.position_sizer import PositionSizer
+from services.trade_service import TradeService
 
 
 class PaperEngine:
@@ -15,6 +16,7 @@ class PaperEngine:
         self.statistics = Statistics()
         self.risk = RiskRules()
         self.sizer = PositionSizer()
+        self.trade_service = TradeService()
         self.enabled = False
 
     def turn_on(self):
@@ -94,6 +96,7 @@ class PaperEngine:
 
         result["close_reason"] = reason
         self.history.add(result)
+        self.trade_service.save_trade(result)
         self.statistics.add_trade(result["profit"])
 
         return result
