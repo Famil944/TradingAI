@@ -1,4 +1,3 @@
-from bot.paper_commands import paper_on, paper_off, paper_status
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -9,6 +8,9 @@ from telegram.ext import (
 
 from core.trading_core import TradingCore
 from scanner.market_scanner import MarketScanner
+from bot.paper_commands import paper_on, paper_off, paper_status, paper
+from bot.monitor_commands import paper_check
+
 
 
 core = TradingCore()
@@ -163,9 +165,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result = core.analyze_symbol(symbol, "1h")
             text = format_analysis(result)
 
+            paper_text = paper.try_trade_text(result)
+
+            if paper_text:
+               text += "\n\n" + paper_text
+
             await query.edit_message_text(
-                text,
-                reply_markup=coins_menu(),
+               text,
+               reply_markup=coins_menu(),
             )
 
     except Exception as e:
@@ -174,6 +181,11 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_analysis_message(update: Update, data: dict):
     await update.message.reply_text(format_analysis(data))
+
+    paper_text = paper.try_trade_text(data)
+
+    if paper_text:
+        await update.message.reply_text(paper_text)
 
 
 def format_analysis(data: dict) -> str:
@@ -266,7 +278,7 @@ def run_telegram_bot(token: str):
     app.add_handler(CommandHandler("paper_on", paper_on))
     app.add_handler(CommandHandler("paper_off", paper_off))
     app.add_handler(CommandHandler("paper_status", paper_status))
-
+    app.add_handler(CommandHandler("paper_check", paper_check))
     app.add_handler(CallbackQueryHandler(handle_button))
 
     print("✅ Telegram bot started")

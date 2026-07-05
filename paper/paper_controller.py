@@ -19,8 +19,37 @@ class PaperController:
             f"📄 Paper Trading\n\n"
             f"Статус: {status['mode']}\n"
             f"Баланс: {status['balance']} USDT\n"
-            f"Открытая позиция: {'да' if status['has_position'] else 'нет'}"
+            f"Открытая позиция: {'да' if status['has_position'] else 'нет'}\n"
+            f"Сделок: {status['trades']}\n"
+            f"Winrate: {status['winrate']}%"
         )
 
-    def try_trade(self, signal_data):
-        return self.engine.try_open_trade(signal_data)
+    def try_trade_text(self, signal_data):
+        trade = self.engine.try_open_trade(signal_data)
+
+        if trade is None:
+            return None
+
+        return (
+            f"📄 Paper Trade открыт\n\n"
+            f"Монета: {trade['symbol']}\n"
+            f"Сторона: {trade['side']}\n"
+            f"Вход: {trade['entry_price']}\n"
+            f"Take Profit: {trade['take_profit']}\n"
+            f"Stop Loss: {trade['stop_loss']}\n"
+            f"Баланс: {trade['balance']} USDT"
+        )
+
+    def check_position_text(self, current_price):
+        result = self.engine.check_position(current_price)
+
+        if result is None:
+            return None
+
+        return (
+            f"✅ Paper Trade закрыт\n\n"
+            f"Монета: {result['symbol']}\n"
+            f"Причина: {result['close_reason']}\n"
+            f"Прибыль: {result['profit']} USDT\n"
+            f"Баланс: {result['balance']} USDT"
+        )
