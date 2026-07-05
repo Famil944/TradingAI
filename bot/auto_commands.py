@@ -11,6 +11,7 @@ from core.trading_core import TradingCore
 from scanner.market_scanner import MarketScanner
 from services.telegram_notifier import TelegramNotifier
 from auto.position_watch_loop import PositionWatchLoop
+from paper.event_setup import setup_trade_events
 
 
 core = TradingCore()
@@ -19,6 +20,7 @@ auto_state = AutoState()
 notifier = TelegramNotifier()
 auto_trader = AutoTrader(scanner, paper, core)
 auto_loop = AutoLoop(auto_state, auto_trader, notifier)
+setup_trade_events(paper, notifier)
 position_watch_loop = PositionWatchLoop(core, paper, notifier)
 
 

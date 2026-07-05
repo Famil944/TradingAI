@@ -5,7 +5,11 @@ from paper.statistics import Statistics
 from paper.risk_rules import RiskRules
 from paper.position_sizer import PositionSizer
 from services.trade_service import TradeService
-
+from paper.trailing_stop import TrailingStop
+from paper.partial_take_profit import PartialTakeProfit
+from paper.break_even import BreakEven
+from paper.event_dispatcher import EventDispatcher
+from paper.trade_events import TradeEvent
 
 class PaperEngine:
 
@@ -18,6 +22,10 @@ class PaperEngine:
         self.sizer = PositionSizer()
         self.trade_service = TradeService()
         self.enabled = False
+        self.trailing_stop = TrailingStop()
+        self.partial_tp = PartialTakeProfit()
+        self.break_even = BreakEven()
+        self.dispatcher = EventDispatcher()
 
     def turn_on(self):
         self.enabled = True
@@ -67,10 +75,22 @@ class PaperEngine:
             return None
 
         if side == "LONG":
-            success = self.trader.open_long(symbol, price, amount)
+           success = self.trader.open_long(
+           symbol=symbol,
+           price=price,
+           amount=amount,
+           take_profit=levels["take_profit"],
+           stop_loss=levels["stop_loss"]
+           )
         else:
-            success = self.trader.open_short(symbol, price, amount)
-
+           success = self.trader.open_short(
+           symbol=symbol,
+           price=price,
+           amount=amount,
+           take_profit=levels["take_profit"],
+           stop_loss=levels["stop_loss"]
+           )
+        
         if not success:
             return None
 
@@ -92,6 +112,47 @@ class PaperEngine:
 
         if not position:
             return None
+        
+        self.trailing_stop.update(position, current_price)
+        
+        if self.partial_tp.should_take_profit(position, current_price):
+           close_amount = self.partial_tp.calculate_close_amount(position)
+
+           profit = position.close_partial(
+           close_amount=close_amount,
+           exit_price=current_price
+           )
+
+        self.account.deposit(
+           current_price * close_amount + profit
+           )
+        self.dispatcher.dispatch(
+           TradeEvent(
+             TradeEvent.PARTIAL_TAKE_PROFIT,
+             {
+               "symbol": position.symbol,
+               "profit": profit,
+               "close_amount": close_amount,
+               "price": current_price
+             }
+           )
+        )
+        
+        if self.break_even.move_to_break_even(position):
+          self.dispatcher.dispatch(
+            TradeEvent(
+              TradeEvent.BREAK_EVEN,
+              {
+                "symbol": position.symbol,
+                "stop_loss": position.stop_loss
+              }
+            )
+        )
+
+        print(
+           f"📈 Частичная фиксация прибыли: "
+           f"{close_amount} | Прибыль: {round(profit, 2)}"
+           )
 
         reason = self.risk.should_close(position, current_price)
 

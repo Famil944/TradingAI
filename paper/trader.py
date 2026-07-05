@@ -7,7 +7,13 @@ class PaperTrader:
         self.account = account
         self.position = None
 
-    def open_long(self, symbol, price, amount):
+    def open_long(self, symbol, price, amount, take_profit=None, stop_loss=None):
+        return self._open_position(symbol, "LONG", price, amount, take_profit, stop_loss)
+
+    def open_short(self, symbol, price, amount, take_profit=None, stop_loss=None):
+        return self._open_position(symbol, "SHORT", price, amount, take_profit, stop_loss)
+
+    def _open_position(self, symbol, side, price, amount, take_profit, stop_loss):
         if self.position:
             return False
 
@@ -18,27 +24,11 @@ class PaperTrader:
 
         self.position = PaperPosition(
             symbol=symbol,
-            side="LONG",
+            side=side,
             entry_price=price,
-            amount=amount
-        )
-
-        return True
-
-    def open_short(self, symbol, price, amount):
-        if self.position:
-            return False
-
-        cost = price * amount
-
-        if not self.account.withdraw(cost):
-            return False
-
-        self.position = PaperPosition(
-            symbol=symbol,
-            side="SHORT",
-            entry_price=price,
-            amount=amount
+            amount=amount,
+            take_profit=take_profit,
+            stop_loss=stop_loss
         )
 
         return True
