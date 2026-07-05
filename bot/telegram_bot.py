@@ -1,3 +1,4 @@
+from bot.paper_commands import paper_on, paper_off, paper_status
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -262,6 +263,9 @@ def run_telegram_bot(token: str):
     app.add_handler(CommandHandler("signal", signal))
     app.add_handler(CommandHandler("analyze", analyze))
     app.add_handler(CommandHandler("scan", scan))
+    app.add_handler(CommandHandler("paper_on", paper_on))
+    app.add_handler(CommandHandler("paper_off", paper_off))
+    app.add_handler(CommandHandler("paper_status", paper_status))
 
     app.add_handler(CallbackQueryHandler(handle_button))
 
