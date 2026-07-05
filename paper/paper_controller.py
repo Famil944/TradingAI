@@ -25,7 +25,13 @@ class PaperController:
         )
 
     def try_trade_text(self, signal_data):
-        trade = self.engine.try_open_trade(signal_data)
+        print(">>> try_trade_text вызван")
+        try:
+            trade = self.engine.try_open_trade(signal_data)
+            print(">>> trade =", trade)
+        except Exception as e:
+            print(">>> ERROR:", e)
+            raise
 
         if trade is None:
             return None
