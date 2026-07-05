@@ -16,6 +16,8 @@ from bot.auto_commands import (
     auto_status,
 )
 from bot.multi_tf_commands import multi_tf_analyze
+from bot.paper_history_commands import paper_history
+from bot.paper_stats_commands import paper_stats
 
 
 
@@ -291,6 +293,8 @@ def run_telegram_bot(token: str):
     app.add_handler(CommandHandler("paper_check", paper_check))
     app.add_handler(CommandHandler("auto_once", auto_once))
     app.add_handler(CommandHandler("multi", multi_tf_analyze))
+    app.add_handler(CommandHandler("paper_history", paper_history))
+    app.add_handler(CommandHandler("paper_stats", paper_stats))
     app.add_handler(CallbackQueryHandler(handle_button))
 
     print("✅ Telegram bot started")

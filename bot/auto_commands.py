@@ -14,7 +14,7 @@ from scanner.market_scanner import MarketScanner
 core = TradingCore()
 scanner = MarketScanner(core)
 auto_state = AutoState()
-auto_trader = AutoTrader(scanner, paper)
+auto_trader = AutoTrader(scanner, paper, core)
 auto_loop = AutoLoop(auto_state, auto_trader)
 
 
