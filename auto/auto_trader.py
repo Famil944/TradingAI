@@ -2,8 +2,9 @@ from services.logger_service import LoggerService
 from core.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from auto.multi_tf_filter import MultiTimeframeFilter
 from auto.strategy_filter import StrategyFilter
-from strategy.strategy_report import StrategyReport
 from auto.candidate_selector import CandidateSelector
+from auto.candidate_report import CandidateReport
+from strategy.strategy_report import StrategyReport
 
 
 class AutoTrader:
@@ -15,8 +16,9 @@ class AutoTrader:
         self.multi_tf = MultiTimeframeAnalyzer(core)
         self.multi_filter = MultiTimeframeFilter(self.multi_tf)
         self.strategy_filter = StrategyFilter()
-        self.report = StrategyReport()
         self.selector = CandidateSelector()
+        self.candidate_report = CandidateReport()
+        self.report = StrategyReport()
 
     def run_once(self):
         self.logger.log("🤖 Начало автоматического сканирования")
@@ -29,6 +31,8 @@ class AutoTrader:
             return text
 
         results = self.scanner.scan_market("1h", 5)
+        candidates_report = self.candidate_report.build(results)
+        self.logger.log(candidates_report)
 
         if not results:
             text = "❌ Сигналы не найдены."
@@ -38,9 +42,13 @@ class AutoTrader:
         best = self.selector.select_best(results)
 
         if best is None:
-            text = "🟡 Подходящих LONG/SHORT сигналов нет."
+            text = (
+                "🟡 Подходящих LONG/SHORT сигналов нет.\n\n"
+                f"{candidates_report}"
+            )
             self.logger.log(text)
             return text
+
         symbol = best["symbol"]
 
         self.logger.log(
@@ -51,27 +59,22 @@ class AutoTrader:
 
         strategy_check = self.strategy_filter.approve(best)
 
-        if not strategy_check["approved"]:
-            text = (
-                f"🚫 Strategy Filter отклонил сделку\n\n"
-                f"Монета: {symbol}\n"
-                f"Сигнал: {best['signal']}\n"
-                f"Причина: {strategy_check['reason']}"
-            )
-            self.logger.log(strategy_check["reason"])
-            return text
-
         multi_check = self.multi_filter.check(
-          symbol=symbol,
-          direction=strategy_check["direction"]
-          )
+            symbol=symbol,
+            direction=strategy_check.get("direction")
+        )
 
         report_text = self.report.build_report(
-          symbol=symbol,
-          analysis=best,
-          strategy_check=strategy_check,
-          multi_check=multi_check
-          )
+            symbol=symbol,
+            analysis=best,
+            strategy_check=strategy_check,
+            multi_check=multi_check
+        )
+
+        if not strategy_check["approved"]:
+            self.logger.log(strategy_check["reason"])
+            return report_text
+
         if not multi_check["approved"]:
             self.logger.log("Multi-TF фильтр отклонил сделку.")
             return report_text
