@@ -17,9 +17,15 @@ class SupportResistance:
         }
 
     def is_near_resistance(self, price, resistance, percent=0.5):
+        if price is None or price <= 0:
+            return False
+
         distance = ((resistance - price) / price) * 100
         return 0 <= distance <= percent
 
     def is_near_support(self, price, support, percent=0.5):
+        if price is None or price <= 0:
+            return False
+
         distance = ((price - support) / price) * 100
         return 0 <= distance <= percent

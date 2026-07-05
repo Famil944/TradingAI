@@ -1,8 +1,11 @@
+from config.risk_config import RiskConfig
+
+
 class PositionSizer:
 
     def __init__(self):
-        self.risk_percent = 1.0
-        self.max_position_percent = 10.0
+        self.risk_percent = RiskConfig.RISK_PERCENT
+        self.max_position_percent = RiskConfig.MAX_POSITION_PERCENT
 
     def calculate_amount(
         self,

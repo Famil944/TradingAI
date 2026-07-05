@@ -8,7 +8,7 @@ from telegram.ext import (
 from core.trading_core import TradingCore
 from scanner.market_scanner import MarketScanner
 from bot.paper_commands import paper_on, paper_off, paper_status, paper
-from bot.monitor_commands import paper_check
+# from bot.monitor_commands import paper_check 
 from bot.auto_commands import (
     auto_once,
     auto_on,
@@ -290,7 +290,7 @@ def run_telegram_bot(token: str):
     app.add_handler(CommandHandler("auto_on", auto_on))
     app.add_handler(CommandHandler("auto_off", auto_off))
     app.add_handler(CommandHandler("auto_status", auto_status))
-    app.add_handler(CommandHandler("paper_check", paper_check))
+   # app.add_handler(CommandHandler("paper_check", paper_check))
     app.add_handler(CommandHandler("auto_once", auto_once))
     app.add_handler(CommandHandler("multi", multi_tf_analyze))
     app.add_handler(CommandHandler("paper_history", paper_history))

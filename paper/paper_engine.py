@@ -43,12 +43,18 @@ class PaperEngine:
         if not self.enabled or self.trader.position:
             return None
 
-        if signal_data["signal"] != "🟢 LONG":
+        signal = signal_data["signal"]
+
+        if signal == "🟢 LONG":
+            side = "LONG"
+        elif signal == "🔴 SHORT":
+            side = "SHORT"
+        else:
             return None
 
         price = signal_data["price"]
         symbol = signal_data["symbol"]
-        levels = self.risk.get_levels(price, "LONG")
+        levels = self.risk.get_levels(price, side)
 
         balance = self.account.get_balance()
         amount = self.sizer.calculate_amount(
@@ -60,14 +66,17 @@ class PaperEngine:
         if amount <= 0:
             return None
 
-        success = self.trader.open_long(symbol, price, amount)
+        if side == "LONG":
+            success = self.trader.open_long(symbol, price, amount)
+        else:
+            success = self.trader.open_short(symbol, price, amount)
 
         if not success:
             return None
 
         trade = {
             "symbol": symbol,
-            "side": "LONG",
+            "side": side,
             "entry_price": price,
             "amount": amount,
             "take_profit": levels["take_profit"],
@@ -96,7 +105,7 @@ class PaperEngine:
 
         result["close_reason"] = reason
         self.history.add(result)
-        self.trade_service.save_trade(result)
         self.statistics.add_trade(result["profit"])
+        self.trade_service.save_trade(result)
 
         return result

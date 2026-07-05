@@ -25,6 +25,24 @@ class PaperTrader:
 
         return True
 
+    def open_short(self, symbol, price, amount):
+        if self.position:
+            return False
+
+        cost = price * amount
+
+        if not self.account.withdraw(cost):
+            return False
+
+        self.position = PaperPosition(
+            symbol=symbol,
+            side="SHORT",
+            entry_price=price,
+            amount=amount
+        )
+
+        return True
+
     def close_position(self, price):
         if not self.position:
             return None
@@ -37,6 +55,9 @@ class PaperTrader:
 
         result = {
             "symbol": self.position.symbol,
+            "side": self.position.side,
+            "entry_price": self.position.entry_price,
+            "exit_price": price,
             "profit": round(profit, 2),
             "balance": self.account.get_balance()
         }

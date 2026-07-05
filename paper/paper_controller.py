@@ -25,24 +25,21 @@ class PaperController:
         )
 
     def try_trade_text(self, signal_data):
-        print(">>> try_trade_text вызван")
-        try:
-            trade = self.engine.try_open_trade(signal_data)
-            print(">>> trade =", trade)
-        except Exception as e:
-            print(">>> ERROR:", e)
-            raise
+        trade = self.engine.try_open_trade(signal_data)
 
         if trade is None:
             return None
 
+        icon = "🟢" if trade["side"] == "LONG" else "🔴"
+
         return (
             f"📄 Paper Trade открыт\n\n"
             f"Монета: {trade['symbol']}\n"
-            f"Сторона: {trade['side']}\n"
+            f"Сторона: {icon} {trade['side']}\n"
             f"Вход: {trade['entry_price']}\n"
             f"Take Profit: {trade['take_profit']}\n"
             f"Stop Loss: {trade['stop_loss']}\n"
+            f"Размер: {trade['amount']}\n"
             f"Баланс: {trade['balance']} USDT"
         )
 
@@ -55,6 +52,9 @@ class PaperController:
         return (
             f"✅ Paper Trade закрыт\n\n"
             f"Монета: {result['symbol']}\n"
+            f"Сторона: {result['side']}\n"
+            f"Вход: {result['entry_price']}\n"
+            f"Выход: {result['exit_price']}\n"
             f"Причина: {result['close_reason']}\n"
             f"Прибыль: {result['profit']} USDT\n"
             f"Баланс: {result['balance']} USDT"

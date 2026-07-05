@@ -7,7 +7,7 @@ from core.trading_core import TradingCore
 
 
 core = TradingCore()
-monitor = PositionMonitor(core, paper)
+monitor = PositionMonitor(paper.engine)
 
 
 async def paper_check(update: Update, context: ContextTypes.DEFAULT_TYPE):

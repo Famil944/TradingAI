@@ -1,21 +1,22 @@
+import time
+
+
 class PositionMonitor:
 
-    def __init__(self, core, paper):
-        self.core = core
-        self.paper = paper
+    def __init__(self, paper_engine):
+        self.paper_engine = paper_engine
+        self.running = False
 
-    def check_current_position(self):
-        position = self.paper.engine.trader.position
+    def start(self):
+        self.running = True
 
-        if not position:
-            return None
+        while self.running:
+            try:
+                self.paper_engine.update_position()
+            except Exception as e:
+                print(f"PositionMonitor: {e}")
 
-        symbol = position.symbol
-        price = self.core.market.get_price(symbol)
+            time.sleep(5)
 
-        close_text = self.paper.check_position_text(price)
-
-        if not close_text:
-            return None
-
-        return close_text
+    def stop(self):
+        self.running = False

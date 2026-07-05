@@ -1,8 +1,11 @@
+from config.risk_config import RiskConfig
+
+
 class RiskRules:
 
     def __init__(self):
-        self.take_profit_percent = 1.0
-        self.stop_loss_percent = 0.5
+        self.take_profit_percent = RiskConfig.TAKE_PROFIT_PERCENT
+        self.stop_loss_percent = RiskConfig.STOP_LOSS_PERCENT
 
     def get_levels(self, entry_price: float, side: str):
         if side == "LONG":

@@ -2,6 +2,7 @@ from services.logger_service import LoggerService
 from core.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from auto.multi_tf_filter import MultiTimeframeFilter
 from auto.strategy_filter import StrategyFilter
+from strategy.strategy_report import StrategyReport
 
 
 class AutoTrader:
@@ -13,6 +14,7 @@ class AutoTrader:
         self.multi_tf = MultiTimeframeAnalyzer(core)
         self.multi_filter = MultiTimeframeFilter(self.multi_tf)
         self.strategy_filter = StrategyFilter()
+        self.report = StrategyReport()
 
     def run_once(self):
         self.logger.log("🤖 Начало автоматического сканирования")
@@ -40,28 +42,32 @@ class AutoTrader:
             f"Score: {best['score']}"
         )
 
-        strategy_check = self.strategy_filter.approve_long(best)
+        strategy_check = self.strategy_filter.approve(best)
 
         if not strategy_check["approved"]:
             text = (
                 f"🚫 Strategy Filter отклонил сделку\n\n"
                 f"Монета: {symbol}\n"
+                f"Сигнал: {best['signal']}\n"
                 f"Причина: {strategy_check['reason']}"
             )
             self.logger.log(strategy_check["reason"])
             return text
 
-        multi_check = self.multi_filter.is_strong_long(symbol)
+        multi_check = self.multi_filter.check(
+          symbol=symbol,
+          direction=strategy_check["direction"]
+          )
 
+        report_text = self.report.build_report(
+          symbol=symbol,
+          analysis=best,
+          strategy_check=strategy_check,
+          multi_check=multi_check
+          )
         if not multi_check["approved"]:
-            text = (
-                f"🟡 Multi-TF не подтвердил вход\n\n"
-                f"Монета: {symbol}\n"
-                f"Итог: {multi_check['final_signal']}\n"
-                f"Средняя оценка: {multi_check['avg_score']}"
-            )
             self.logger.log("Multi-TF фильтр отклонил сделку.")
-            return text
+            return report_text
 
         trade_text = self.paper.try_trade_text(best)
 
