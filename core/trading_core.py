@@ -4,6 +4,7 @@ from intelligence.fear_greed import FearGreedService
 from intelligence.funding_rate import FundingRateService
 from intelligence.open_interest import OpenInterestService
 from core.scoring_engine import ScoringEngine
+from services.signal_service import SignalService
 
 
 class TradingCore:
@@ -14,6 +15,7 @@ class TradingCore:
         self.funding_rate = FundingRateService()
         self.open_interest = OpenInterestService()
         self.scoring = ScoringEngine()
+        self.signal_service = SignalService()
 
     def analyze_symbol(
         self,
@@ -37,7 +39,7 @@ class TradingCore:
             open_interest_data=open_interest_data
         )
 
-        return {
+        result = {
             "symbol": symbol,
             "interval": interval,
             **analysis,
@@ -46,3 +48,7 @@ class TradingCore:
             "open_interest": open_interest_data,
             **decision
         }
+
+        self.signal_service.save_signal(result)
+
+        return result
