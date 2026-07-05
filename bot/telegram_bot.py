@@ -183,6 +183,15 @@ def format_analysis(data: dict) -> str:
     fg_status = fear_greed.get("status", "Нет данных")
     fg_comment = fear_greed.get("comment", "")
 
+    funding = data.get("funding_rate", {})
+    funding_value = funding.get("funding_rate", "Нет данных")
+    funding_status = funding.get("status", "Нет данных")
+    funding_comment = funding.get("comment", "")
+
+    open_interest = data.get("open_interest", {})
+    oi_value = open_interest.get("open_interest", "Нет данных")
+    oi_status = open_interest.get("status", "Нет данных")
+
     return (
         f"📊 {data['symbol']}\n\n"
         f"Таймфрейм: {data['interval']}\n"
@@ -201,6 +210,11 @@ def format_analysis(data: dict) -> str:
         f"😨 Fear & Greed: {fg_value}\n"
         f"Состояние: {fg_status}\n"
         f"Комментарий: {fg_comment}\n\n"
+        f"💰 Funding Rate: {funding_value}%\n"
+        f"Состояние: {funding_status}\n"
+        f"Комментарий: {funding_comment}\n\n"
+        f"📊 Open Interest: {oi_value}\n"
+        f"Состояние: {oi_status}\n\n"
         f"Сигнал: {data['signal']}\n"
         f"Оценка: {data['score']} / 100\n"
         f"Риск: {data['risk']}\n\n"
