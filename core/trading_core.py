@@ -3,7 +3,7 @@ from indicators.market_analyzer import MarketAnalyzer
 
 
 class TradingCore:
-    def init(self):
+    def __init__(self):
         self.market = BinanceMarketClient()
         self.analyzer = MarketAnalyzer()
 
