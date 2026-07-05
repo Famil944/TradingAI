@@ -7,9 +7,11 @@ from telegram.ext import (
 )
 
 from core.trading_core import TradingCore
+from scanner.market_scanner import MarketScanner
 
 
 core = TradingCore()
+scanner = MarketScanner(core)
 
 
 POPULAR_COINS = [
@@ -29,6 +31,7 @@ POPULAR_COINS = [
 def main_menu():
     keyboard = [
         [InlineKeyboardButton("📊 Анализ рынка", callback_data="menu_analyze")],
+        [InlineKeyboardButton("🔥 Лучшие сигналы", callback_data="market_scan")],
         [InlineKeyboardButton("💰 Цена BTC", callback_data="price_btc")],
         [InlineKeyboardButton("⚙️ Статус", callback_data="status")],
     ]
@@ -65,7 +68,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ Бот работает.\n"
-        "Режим: Trading AI Core v3\n"
+        "Режим: Trading AI Core v4\n"
         "Автосделки: выключены\n"
         "Режим риска: безопасный"
     )
@@ -104,6 +107,17 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка анализа: {e}")
 
 
+async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.reply_text("⏳ Сканирую рынок...")
+        results = scanner.scan_market("1h", 10)
+        text = format_scan_results(results)
+        await update.message.reply_text(text)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка сканера: {e}")
+
+
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -122,6 +136,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📊 Выбери монету для анализа:",
                 reply_markup=coins_menu()
             )
+        elif data == "market_scan":
+            await query.edit_message_text("⏳ Сканирую рынок...")
+            results = scanner.scan_market("1h", 10)
+            text = format_scan_results(results)
+
+            await query.edit_message_text(
+                text,
+                reply_markup=main_menu()
+            )
 
         elif data == "price_btc":
             result = core.analyze_symbol("BTCUSDT", "1h")
@@ -133,7 +156,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "status":
             await query.edit_message_text(
                 "✅ Бот работает.\n"
-                "Режим: Trading AI Core v3\n"
+                "Режим: Trading AI Core v4\n"
                 "Автосделки: выключены\n"
                 "Режим риска: безопасный",
                 reply_markup=main_menu()
@@ -184,6 +207,24 @@ def format_analysis(data: dict) -> str:
     )
 
 
+def format_scan_results(results: list) -> str:
+    if not results:
+        return "❌ Сканер не нашёл данные."
+
+    text = "🔥 Лучшие сигналы рынка\n\n"
+
+    for index, item in enumerate(results, start=1):
+        text += (
+            f"{index}. {item['symbol']}\n"
+            f"{item['signal']}\n"
+            f"Оценка: {item['score']} / 100\n"
+            f"Цена: {item['price']:.2f} USDT\n"
+            f"Тренд: {item['trend']}\n\n"
+        )
+
+    return text
+
+
 def run_telegram_bot(token: str):
     app = (
         Application.builder()
@@ -200,6 +241,7 @@ def run_telegram_bot(token: str):
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("signal", signal))
     app.add_handler(CommandHandler("analyze", analyze))
+    app.add_handler(CommandHandler("scan", scan))
 
     app.add_handler(CallbackQueryHandler(handle_button))
 
