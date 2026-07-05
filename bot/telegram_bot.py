@@ -5,7 +5,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
-
+from bot.auto_commands import auto_once
 from core.trading_core import TradingCore
 from scanner.market_scanner import MarketScanner
 from bot.paper_commands import paper_on, paper_off, paper_status, paper
@@ -279,6 +279,7 @@ def run_telegram_bot(token: str):
     app.add_handler(CommandHandler("paper_off", paper_off))
     app.add_handler(CommandHandler("paper_status", paper_status))
     app.add_handler(CommandHandler("paper_check", paper_check))
+    app.add_handler(CommandHandler("auto_once", auto_once))
     app.add_handler(CallbackQueryHandler(handle_button))
 
     print("✅ Telegram bot started")
