@@ -1,6 +1,7 @@
 from services.logger_service import LoggerService
 from core.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from auto.multi_tf_filter import MultiTimeframeFilter
+from auto.strategy_filter import StrategyFilter
 
 
 class AutoTrader:
@@ -11,6 +12,7 @@ class AutoTrader:
         self.logger = LoggerService()
         self.multi_tf = MultiTimeframeAnalyzer(core)
         self.multi_filter = MultiTimeframeFilter(self.multi_tf)
+        self.strategy_filter = StrategyFilter()
 
     def run_once(self):
         self.logger.log("🤖 Начало автоматического сканирования")
@@ -38,14 +40,25 @@ class AutoTrader:
             f"Score: {best['score']}"
         )
 
-        check = self.multi_filter.is_strong_long(symbol)
+        strategy_check = self.strategy_filter.approve_long(best)
 
-        if not check["approved"]:
+        if not strategy_check["approved"]:
+            text = (
+                f"🚫 Strategy Filter отклонил сделку\n\n"
+                f"Монета: {symbol}\n"
+                f"Причина: {strategy_check['reason']}"
+            )
+            self.logger.log(strategy_check["reason"])
+            return text
+
+        multi_check = self.multi_filter.is_strong_long(symbol)
+
+        if not multi_check["approved"]:
             text = (
                 f"🟡 Multi-TF не подтвердил вход\n\n"
                 f"Монета: {symbol}\n"
-                f"Итог: {check['final_signal']}\n"
-                f"Средняя оценка: {check['avg_score']}"
+                f"Итог: {multi_check['final_signal']}\n"
+                f"Средняя оценка: {multi_check['avg_score']}"
             )
             self.logger.log("Multi-TF фильтр отклонил сделку.")
             return text
