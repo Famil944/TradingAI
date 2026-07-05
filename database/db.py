@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 class Database:
-    def init(self):
+    def __init__(self):
         self.db_path = Path("database/trading_ai.db")
         self.db_path.parent.mkdir(exist_ok=True)
 

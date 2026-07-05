@@ -2,7 +2,7 @@ from database.db import Database
 
 
 class HistoryRepository:
-    def init(self):
+    def __init__(self):
         self.db = Database()
         self.db.init_db()
 
