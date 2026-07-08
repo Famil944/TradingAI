@@ -78,6 +78,7 @@ from bot.handlers.settings_handlers import (
     show_quality,
     show_timeframe,
 )
+from bot.handlers.analytics_handlers import show_trade_analytics
 
 core = TradingCore()
 scanner = MarketScanner(core)
@@ -211,7 +212,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == "stats_profit_btn":
-            await show_profit(query, paper)
+            await show_trade_analytics(query)
 
         elif data == "stats_winrate_btn":
             await show_winrate(query, paper)
