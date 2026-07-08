@@ -1,3 +1,4 @@
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -8,20 +9,76 @@ from telegram.ext import (
 from core.trading_core import TradingCore
 from scanner.market_scanner import MarketScanner
 from bot.paper_commands import paper_on, paper_off, paper_status, paper
-# from bot.monitor_commands import paper_check 
+
+# from bot.monitor_commands import paper_check
 from bot.auto_commands import (
     auto_once,
     auto_on,
     auto_off,
     auto_status,
+    auto_trader,
+    auto_state,
+    auto_loop,
+    position_watch_loop,
+    notifier,
 )
 from bot.multi_tf_commands import multi_tf_analyze
 from bot.paper_history_commands import paper_history
 from bot.paper_stats_commands import paper_stats
 from bot.position_commands import position_status
+from bot.persistent_keyboard import persistent_keyboard
+from telegram.ext import MessageHandler, filters
+from bot.menu_command import open_menu
+from bot.inline_menus import (
+    app_main_menu,
+    auto_menu,
+    paper_menu,
+    market_menu,
+    stats_menu,
+    settings_menu,
+)
+from bot.handlers.menu_handlers import (
+    show_main_menu,
+    show_market_menu,
+    show_auto_menu,
+    show_paper_menu,
+    show_help,
+)
+from bot.dashboard import build_dashboard
+from bot.handlers.paper_handlers import (
+    show_paper_status,
+    show_paper_balance,
+    show_paper_stats,
+    show_paper_history,
+    show_last_trade,
+)
+from bot.handlers.auto_handlers import (
+    run_auto_once,
+    turn_auto_on,
+    turn_auto_off,
+    show_position,
+)
 
+from bot.handlers.market_handlers import (
+    show_market_scan,
+    show_btc_price,
+)
+from bot.handlers.stats_handlers import (
+    show_stats,
+    show_profit,
+    show_winrate,
+    show_today,
+    show_week,
+    show_month,
+)
 
-
+from bot.handlers.settings_handlers import (
+    show_settings,
+    show_risk,
+    show_trade_size,
+    show_quality,
+    show_timeframe,
+)
 core = TradingCore()
 scanner = MarketScanner(core)
 
@@ -55,7 +112,7 @@ def coins_menu():
 
     for i in range(0, len(POPULAR_COINS), 2):
         row = []
-        for name, symbol in POPULAR_COINS[i:i + 2]:
+        for name, symbol in POPULAR_COINS[i : i + 2]:
             row.append(InlineKeyboardButton(name, callback_data=f"analyze_{symbol}"))
         keyboard.append(row)
 
@@ -63,10 +120,11 @@ def coins_menu():
     return InlineKeyboardMarkup(keyboard)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update, context):
     await update.message.reply_text(
-        "🤖 Trading AI Bot работает.\n\nВыбери действие:",
-        reply_markup=main_menu(),
+        "🤖 Добро пожаловать в Trading AI Bot!\n\n"
+        "Нажмите кнопку 🏠 Меню, чтобы открыть главное меню.",
+        reply_markup=persistent_keyboard(),
     )
 
 
@@ -130,11 +188,69 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     try:
-        if data == "back_main":
+        if data in ["back_main", "back_app_main"]:
+           await show_main_menu(query)
+           
+        elif data == "refresh_dashboard":
+           await query.edit_message_text(
+           build_dashboard(paper, auto_state),
+           reply_markup=app_main_menu(),
+        )
+
+        elif data == "menu_market":
+           await show_market_menu(query)
+
+        elif data == "menu_auto":
+           await show_auto_menu(query)
+
+        elif data == "menu_paper":
+           await show_paper_menu(query)
+
+        elif data == "menu_stats":
             await query.edit_message_text(
-                "🤖 Главное меню:",
-                reply_markup=main_menu(),
-            )
+            "📊 Статистика",
+            reply_markup=stats_menu(),
+        )
+            
+        elif data == "menu_settings":
+            await show_settings(query)
+        
+        elif data == "menu_notifications":
+            await query.edit_message_text(
+            "🔔 Уведомления\n\n"
+            "Здесь позже появятся настройки уведомлений.",
+            reply_markup=settings_menu(),
+        )
+            
+        elif data == "stats_profit_btn":
+           await show_profit(query, paper)
+
+        elif data == "stats_winrate_btn":
+           await show_winrate(query, paper)
+
+        elif data == "stats_today_btn":
+           await show_today(query, paper)
+
+        elif data == "stats_week_btn":
+            await show_week(query, paper)
+
+        elif data == "stats_month_btn":
+            await show_month(query, paper)
+
+        elif data == "settings_size_btn":
+            await show_trade_size(query)
+
+        elif data == "settings_risk_btn":
+            await show_risk(query)
+
+        elif data == "settings_quality_btn":
+            await show_quality(query)
+
+        elif data == "settings_timeframe_btn":
+            await show_timeframe(query)
+
+        elif data == "menu_help":
+            await show_help(query)
 
         elif data == "menu_analyze":
             await query.edit_message_text(
@@ -143,28 +259,52 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == "market_scan":
-            await query.edit_message_text("⏳ Сканирую рынок...")
-            results = scanner.scan_market("1h", 10)
-            text = format_scan_results(results)
-            await query.edit_message_text(
-                text,
-                reply_markup=main_menu(),
-            )
-
+            await show_market_scan(query, scanner, format_scan_results)
+            
         elif data == "price_btc":
-            result = core.analyze_symbol("BTCUSDT", "1h")
-            await query.edit_message_text(
-                f"📊 BTC/USDT: {result['price']:,.2f} USDT",
-                reply_markup=main_menu(),
-            )
+            await show_btc_price(query, core)
+
+        elif data == "auto_once_btn":
+            await run_auto_once(query, auto_trader)
+
+        elif data == "auto_on_btn":
+            await turn_auto_on(
+            query,
+            context,
+            auto_state,
+            auto_loop,
+            position_watch_loop,
+            notifier,
+        )
+
+        elif data == "auto_off_btn":
+            await turn_auto_off(query, auto_state)
+
+
+        elif data == "position_btn":
+            await show_position(query, paper)
+
+        elif data == "paper_status_btn":
+            await show_paper_status(query, paper)
+
+        elif data == "paper_stats_btn":
+            await show_paper_stats(query, paper)
+
+        elif data == "paper_balance_btn":
+            await show_paper_balance(query, paper)
+        
+        elif data == "last_trade_btn":
+            await show_last_trade(query, paper)
+
+        elif data == "paper_history_btn":
+            await show_paper_history(query, paper)
 
         elif data == "status":
             await query.edit_message_text(
                 "✅ Бот работает.\n"
                 "Режим: Trading AI Core v5\n"
-                "Автосделки: выключены\n"
                 "Режим риска: безопасный",
-                reply_markup=main_menu(),
+                reply_markup=app_main_menu(),
             )
 
         elif data.startswith("analyze_"):
@@ -177,11 +317,11 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             paper_text = paper.try_trade_text(result)
 
             if paper_text:
-               text += "\n\n" + paper_text
+                text += "\n\n" + paper_text
 
             await query.edit_message_text(
-               text,
-               reply_markup=coins_menu(),
+                text,
+                reply_markup=coins_menu(),
             )
 
     except Exception as e:
@@ -291,12 +431,13 @@ def run_telegram_bot(token: str):
     app.add_handler(CommandHandler("auto_on", auto_on))
     app.add_handler(CommandHandler("auto_off", auto_off))
     app.add_handler(CommandHandler("auto_status", auto_status))
-   # app.add_handler(CommandHandler("paper_check", paper_check))
+    # app.add_handler(CommandHandler("paper_check", paper_check))
     app.add_handler(CommandHandler("auto_once", auto_once))
     app.add_handler(CommandHandler("multi", multi_tf_analyze))
     app.add_handler(CommandHandler("paper_history", paper_history))
     app.add_handler(CommandHandler("paper_stats", paper_stats))
     app.add_handler(CommandHandler("position", position_status))
+    app.add_handler(MessageHandler(filters.Regex("^🏠 Меню$"), open_menu))
     app.add_handler(CallbackQueryHandler(handle_button))
 
     print("✅ Telegram bot started")

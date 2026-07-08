@@ -12,6 +12,7 @@ from strategy.volume_analyzer import VolumeAnalyzer
 from strategy.momentum import Momentum
 from strategy.false_breakout import FalseBreakout
 from strategy.quality_score import QualityScore
+from validation.strategy_validator import StrategyValidator
 
 
 class AutoTrader:
@@ -35,6 +36,7 @@ class AutoTrader:
         self.momentum = Momentum()
         self.false_breakout = FalseBreakout()
         self.quality_score = QualityScore()
+        self.validator = StrategyValidator()
 
     def run_once(self):
         self.logger.log("🤖 Начало автоматического сканирования")
@@ -94,6 +96,12 @@ class AutoTrader:
             breakout=breakout,
             multi_tf=multi_check
         )
+        
+        self.validator.validate(
+            strategy_check,
+            multi_check,
+            quality
+        )     
 
         report_text = self.report.build_report(
             symbol=symbol,
