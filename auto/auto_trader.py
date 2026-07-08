@@ -13,6 +13,8 @@ from strategy.momentum import Momentum
 from strategy.false_breakout import FalseBreakout
 from strategy.quality_score import QualityScore
 from validation.strategy_validator import StrategyValidator
+from strategy.final_strategy_validator import FinalStrategyValidator
+from services.signal_log_service import SignalLogService
 
 
 class AutoTrader:
@@ -37,6 +39,8 @@ class AutoTrader:
         self.false_breakout = FalseBreakout()
         self.quality_score = QualityScore()
         self.validator = StrategyValidator()
+        self.final_validator = FinalStrategyValidator()
+        self.signal_log = SignalLogService()
 
     def run_once(self):
         self.logger.log("🤖 Начало автоматического сканирования")
@@ -97,11 +101,25 @@ class AutoTrader:
             multi_tf=multi_check
         )
         
+        final_check = self.final_validator.validate(
+            quality=quality,
+            strategy_check=strategy_check,
+            multi_check=multi_check
+        )
+        
         self.validator.validate(
             strategy_check,
             multi_check,
             quality
         )     
+        
+        self.signal_log.save_signal_check(
+            best=best,
+            quality=quality,
+            strategy_check=strategy_check,
+            multi_check=multi_check,
+            final_check=final_check,
+        )
 
         report_text = self.report.build_report(
             symbol=symbol,
@@ -111,12 +129,8 @@ class AutoTrader:
             quality=quality
         )
 
-        if not strategy_check["approved"]:
-            self.logger.log(strategy_check["reason"])
-            return report_text
-
-        if not multi_check["approved"]:
-            self.logger.log("Multi-TF фильтр отклонил сделку.")
+        if not final_check["approved"]:
+            self.logger.log("; ".join(final_check["reasons"]))
             return report_text
 
         trade_text = self.paper.try_trade_text(best)

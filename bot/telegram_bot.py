@@ -64,7 +64,6 @@ from bot.handlers.market_handlers import (
     show_btc_price,
 )
 from bot.handlers.stats_handlers import (
-    show_stats,
     show_profit,
     show_winrate,
     show_today,
@@ -79,6 +78,7 @@ from bot.handlers.settings_handlers import (
     show_quality,
     show_timeframe,
 )
+
 core = TradingCore()
 scanner = MarketScanner(core)
 
@@ -95,17 +95,6 @@ POPULAR_COINS = [
     ("AVAX", "AVAXUSDT"),
     ("TON", "TONUSDT"),
 ]
-
-
-def main_menu():
-    keyboard = [
-        [InlineKeyboardButton("📊 Анализ рынка", callback_data="menu_analyze")],
-        [InlineKeyboardButton("🔥 Лучшие сигналы", callback_data="market_scan")],
-        [InlineKeyboardButton("💰 Цена BTC", callback_data="price_btc")],
-        [InlineKeyboardButton("⚙️ Статус", callback_data="status")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
 
 def coins_menu():
     keyboard = []
@@ -189,47 +178,46 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if data in ["back_main", "back_app_main"]:
-           await show_main_menu(query)
-           
+            await show_main_menu(query)
+
         elif data == "refresh_dashboard":
-           await query.edit_message_text(
-           build_dashboard(paper, auto_state),
-           reply_markup=app_main_menu(),
-        )
+            await query.edit_message_text(
+                build_dashboard(paper, auto_state),
+                reply_markup=app_main_menu(),
+            )
 
         elif data == "menu_market":
-           await show_market_menu(query)
+            await show_market_menu(query)
 
         elif data == "menu_auto":
-           await show_auto_menu(query)
+            await show_auto_menu(query)
 
         elif data == "menu_paper":
-           await show_paper_menu(query)
+            await show_paper_menu(query)
 
         elif data == "menu_stats":
             await query.edit_message_text(
-            "📊 Статистика",
-            reply_markup=stats_menu(),
-        )
-            
+                "📊 Статистика",
+                reply_markup=stats_menu(),
+            )
+
         elif data == "menu_settings":
             await show_settings(query)
-        
+
         elif data == "menu_notifications":
             await query.edit_message_text(
-            "🔔 Уведомления\n\n"
-            "Здесь позже появятся настройки уведомлений.",
-            reply_markup=settings_menu(),
-        )
-            
+                "🔔 Уведомления\n\n" "Здесь позже появятся настройки уведомлений.",
+                reply_markup=settings_menu(),
+            )
+
         elif data == "stats_profit_btn":
-           await show_profit(query, paper)
+            await show_profit(query, paper)
 
         elif data == "stats_winrate_btn":
-           await show_winrate(query, paper)
+            await show_winrate(query, paper)
 
         elif data == "stats_today_btn":
-           await show_today(query, paper)
+            await show_today(query, paper)
 
         elif data == "stats_week_btn":
             await show_week(query, paper)
@@ -260,7 +248,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data == "market_scan":
             await show_market_scan(query, scanner, format_scan_results)
-            
+
         elif data == "price_btc":
             await show_btc_price(query, core)
 
@@ -269,17 +257,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data == "auto_on_btn":
             await turn_auto_on(
-            query,
-            context,
-            auto_state,
-            auto_loop,
-            position_watch_loop,
-            notifier,
-        )
+                query,
+                context,
+                auto_state,
+                auto_loop,
+                position_watch_loop,
+                notifier,
+            )
 
         elif data == "auto_off_btn":
             await turn_auto_off(query, auto_state)
-
 
         elif data == "position_btn":
             await show_position(query, paper)
@@ -292,7 +279,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data == "paper_balance_btn":
             await show_paper_balance(query, paper)
-        
+
         elif data == "last_trade_btn":
             await show_last_trade(query, paper)
 
@@ -432,7 +419,6 @@ def run_telegram_bot(token: str):
     app.add_handler(CommandHandler("auto_off", auto_off))
     app.add_handler(CommandHandler("auto_status", auto_status))
     # app.add_handler(CommandHandler("paper_check", paper_check))
-    app.add_handler(CommandHandler("auto_once", auto_once))
     app.add_handler(CommandHandler("multi", multi_tf_analyze))
     app.add_handler(CommandHandler("paper_history", paper_history))
     app.add_handler(CommandHandler("paper_stats", paper_stats))
