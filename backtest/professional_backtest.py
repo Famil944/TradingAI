@@ -2,6 +2,8 @@ from backtest.history_loader import HistoryLoader
 from backtest.trade_simulator import TradeSimulator
 from backtest.backtest_metrics import BacktestMetrics
 from backtest.fee_calculator import FeeCalculator
+from backtest.analysis_adapter import AnalysisAdapter
+from backtest.strategy_runner import StrategyRunner
 
 
 class ProfessionalBacktest:
@@ -11,24 +13,36 @@ class ProfessionalBacktest:
         self.simulator = TradeSimulator()
         self.metrics = BacktestMetrics()
         self.fees = FeeCalculator()
+        self.adapter = AnalysisAdapter()
+        self.strategy = StrategyRunner()
 
     def run(self, symbol="BTCUSDT", interval="1h", limit=500):
         candles = self.loader.load(symbol, interval, limit)
         trades = []
 
-        for i in range(50, len(candles) - 25):
+        for i in range(200, len(candles) - 25):
+            history = candles[i - 200:i + 1]
             current = candles[i]
-            previous = candles[i - 1]
             future = candles[i + 1:i + 25]
 
-            signal = self._get_signal(previous, current)
+            analysis = self.adapter.build(symbol, history)
+            strategy_result = self.strategy.analyze(analysis)
 
-            if not signal:
+            if not strategy_result["approved"]:
+                continue
+
+            direction = strategy_result["direction"]
+
+            if direction == "🟢 LONG":
+                side = "LONG"
+            elif direction == "🔴 SHORT":
+                side = "SHORT"
+            else:
                 continue
 
             trade = self.simulator.simulate(
                 symbol=symbol,
-                side=signal,
+                side=side,
                 entry_candle=current,
                 future_candles=future,
             )
@@ -36,28 +50,28 @@ class ProfessionalBacktest:
             fee = self.fees.calculate(100)
             trade["profit"] = round(trade["profit"] - fee, 2)
             trade["fee"] = round(fee, 4)
+            trade["quality_score"] = strategy_result["quality"]["score"]
+            trade["quality_rating"] = strategy_result["quality"]["rating"]
 
             trades.append(trade)
 
         return self.metrics.calculate(trades)
 
-    def _get_signal(self, previous, current):
-        if current["close"] > previous["close"]:
-            return "LONG"
 
-        if current["close"] < previous["close"]:
-            return "SHORT"
-
-        return None
-
-
-if name == "main":
+if __name__ == "__main__":
     backtest = ProfessionalBacktest()
+
     result = backtest.run(
         symbol="BTCUSDT",
         interval="1h",
-        limit=500
+        limit=500,
     )
 
     print("📊 Professional Backtest")
-    print(result)
+    print(f"Сделок: {result['trades']}")
+    print(f"Winrate: {result['winrate']}%")
+    print(f"Profit Factor: {result['profit_factor']}")
+    print(f"Max Drawdown: {result['max_drawdown']}%")
+    print(f"Стартовый баланс: {result['start_balance']} USDT")
+    print(f"Конечный баланс: {result['end_balance']} USDT")
+    print(f"Общая прибыль: {result['total_profit']} USDT")
