@@ -1,20 +1,22 @@
 from dotenv import load_dotenv
 import os
 
-from bot.telegram_bot import run_telegram_bot
+def main():
+    load_dotenv()
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
 
-load_dotenv()
+    print("=" * 40)
+    print("Trading AI Bot")
+    print("=" * 40)
 
-token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не найден")
 
-print("=" * 40)
-print("Trading AI Bot")
-print("=" * 40)
+    from bot.telegram_bot import run_telegram_bot
 
-if not token:
-    print("❌ Telegram token NOT found")
-    exit()
+    print("✅ Telegram token loaded")
+    run_telegram_bot(token)
 
-print("✅ Telegram token loaded")
 
-run_telegram_bot(token)
+if __name__ == "__main__":
+    main()

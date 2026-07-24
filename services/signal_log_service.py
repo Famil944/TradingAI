@@ -1,6 +1,5 @@
 from database.signal_log_repository import SignalLogRepository
 
-
 class SignalLogService:
 
     def __init__(self):

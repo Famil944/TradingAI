@@ -1,3 +1,7 @@
+import math
+import statistics
+
+
 class BacktestMetrics:
 
     def calculate(self, trades, start_balance=1000):
@@ -34,6 +38,32 @@ class BacktestMetrics:
                 gross_loss += abs(profit)
 
         total = len(trades)
+        returns = [
+            float(trade.get("profit_percent", 0)) / 100
+            for trade in trades
+        ]
+        expectancy = (
+            sum(float(trade.get("profit", 0)) for trade in trades) / total
+            if total
+            else 0
+        )
+        sharpe = 0
+        sortino = 0
+        if len(returns) > 1:
+            deviation = statistics.stdev(returns)
+            if deviation:
+                sharpe = statistics.mean(returns) / deviation * math.sqrt(
+                    len(returns)
+                )
+            downside = [value for value in returns if value < 0]
+            if len(downside) > 1:
+                downside_deviation = statistics.stdev(downside)
+                if downside_deviation:
+                    sortino = (
+                        statistics.mean(returns)
+                        / downside_deviation
+                        * math.sqrt(len(returns))
+                    )
 
         winrate = 0 if total == 0 else round((wins / total) * 100, 2)
         profit_factor = 0 if gross_loss == 0 else round(gross_profit / gross_loss, 2)
@@ -49,4 +79,7 @@ class BacktestMetrics:
             "profit_factor": profit_factor,
             "max_drawdown": round(max_drawdown, 2),
             "equity_curve": equity_curve,
+            "expectancy": round(expectancy, 4),
+            "sharpe": round(sharpe, 3),
+            "sortino": round(sortino, 3),
         }

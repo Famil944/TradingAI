@@ -1,5 +1,7 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+import config.trading_mode as trading_mode
+
 
 def app_main_menu():
     keyboard = [
@@ -18,6 +20,12 @@ def app_main_menu():
         [
             InlineKeyboardButton("⚙️ Настройки", callback_data="menu_settings"),
             InlineKeyboardButton("ℹ️ Помощь", callback_data="menu_help"),
+        ],
+        [
+            InlineKeyboardButton(
+                f"🔁 Счёт: {trading_mode.CURRENT_MODE.value}",
+                callback_data="settings_mode_btn",
+            )
         ],
     ]
 
@@ -72,6 +80,49 @@ def market_menu():
     return InlineKeyboardMarkup(keyboard)
 
 
+def help_menu():
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "🚀 Быстрый старт",
+                callback_data="help_quick_start",
+            ),
+            InlineKeyboardButton(
+                "🤖 Автоторговля",
+                callback_data="help_auto",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "📌 Позиции",
+                callback_data="help_positions",
+            ),
+            InlineKeyboardButton(
+                "📊 Статистика",
+                callback_data="help_statistics",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🔁 Demo / Live",
+                callback_data="help_modes",
+            ),
+            InlineKeyboardButton(
+                "🛡 Безопасность",
+                callback_data="help_safety",
+            ),
+        ],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back_app_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def help_back_menu():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⬅️ К разделам", callback_data="menu_help")]]
+    )
+
+
 def stats_menu():
     keyboard = [
         [
@@ -99,8 +150,104 @@ def settings_menu():
             InlineKeyboardButton("⭐ Quality Score", callback_data="settings_quality_btn"),
             InlineKeyboardButton("🕒 Таймфрейм", callback_data="settings_timeframe_btn"),
         ],
+        [
+            InlineKeyboardButton(
+                "🔁 Demo / Live",
+                callback_data="settings_mode_btn",
+            )
+        ],
         [InlineKeyboardButton("🔔 Уведомления", callback_data="menu_notifications")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="back_app_main")],
     ]
 
     return InlineKeyboardMarkup(keyboard)
+
+
+def trading_mode_menu(current_mode):
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "🧪 DEMO",
+                callback_data="mode_select_demo",
+            ),
+            InlineKeyboardButton(
+                "💰 LIVE",
+                callback_data="mode_select_live",
+            ),
+        ],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="menu_settings")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def live_confirmation_menu():
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "⚠️ Да, выбрать LIVE",
+                callback_data="mode_confirm_live",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "Отмена",
+                callback_data="settings_mode_btn",
+            )
+        ],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def setting_values_menu(prefix, values):
+    keyboard = [
+        [
+            InlineKeyboardButton(label, callback_data=f"set_{prefix}_{value}")
+            for label, value in row
+        ]
+        for row in values
+    ]
+    keyboard.append(
+        [InlineKeyboardButton("⬅️ Назад", callback_data="menu_settings")]
+    )
+    return InlineKeyboardMarkup(keyboard)
+
+
+def risk_menu():
+    return setting_values_menu(
+        "risk",
+        [[("0.5%", "0.5"), ("1%", "1.0"), ("2%", "2.0")]],
+    )
+
+
+def trade_size_menu():
+    return setting_values_menu(
+        "size",
+        [[("0.001", "0.001"), ("0.005", "0.005"), ("0.01", "0.01")]],
+    )
+
+
+def quality_menu():
+    return setting_values_menu(
+        "quality",
+        [
+            [("65", "65"), ("70", "70")],
+            [("75", "75"), ("80", "80")],
+        ],
+    )
+
+
+def timeframe_menu():
+    return setting_values_menu(
+        "timeframe",
+        [[("15m", "15m"), ("1H", "1h"), ("4H", "4h")]],
+    )
+
+
+def notifications_menu():
+    return setting_values_menu(
+        "notifications",
+        [
+            [("🔔 Все", "all"), ("💼 Только сделки", "trades")],
+            [("🔕 Выключить", "off")],
+        ],
+    )

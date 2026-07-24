@@ -26,7 +26,7 @@ position_watch_loop = PositionWatchLoop(core, paper, notifier)
 
 async def auto_once(update: Update, context: ContextTypes.DEFAULT_TYPE):
     notifier.setup(context.bot, update.effective_chat.id)
-    result = auto_trader.run_once()
+    result = await asyncio.to_thread(auto_trader.run_once)
     await update.message.reply_text(result)
 
 
@@ -44,6 +44,8 @@ async def auto_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def auto_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    auto_loop.stop()
+    position_watch_loop.stop()
     await update.message.reply_text(auto_state.turn_off())
 
 

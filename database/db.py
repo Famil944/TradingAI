@@ -1,14 +1,39 @@
 import sqlite3
+import os
 from pathlib import Path
+
+
+class ManagedConnection(sqlite3.Connection):
+    """A sqlite connection that is also closed by a with statement."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
 
 
 class Database:
     def __init__(self):
-        self.db_path = Path("database/trading_ai.db")
-        self.db_path.parent.mkdir(exist_ok=True)
+        project_root = Path(__file__).resolve().parent.parent
+        configured_path = os.getenv("TRADING_AI_DB_PATH")
+        self.db_path = (
+            Path(configured_path).expanduser().resolve()
+            if configured_path
+            else project_root / "database" / "trading_ai.db"
+        )
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def connect(self):
-        return sqlite3.connect(self.db_path)
+        connection = sqlite3.connect(
+            self.db_path,
+            timeout=10,
+            factory=ManagedConnection,
+        )
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 10000")
+        connection.execute("PRAGMA journal_mode = WAL")
+        return connection
 
     def init_db(self):
         with self.connect() as conn:

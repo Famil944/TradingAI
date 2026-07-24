@@ -47,6 +47,7 @@ class MarketAnalyzer:
 
         last = df.iloc[-1]
 
+        atr_percent = (last["ATR"] / last["close"]) * 100
         trend = self._detect_trend(last)
         volume_status = self._detect_volume(last)
 
@@ -59,6 +60,7 @@ class MarketAnalyzer:
             "macd": round(last["MACD"], 4),
             "macd_signal": round(last["MACD_SIGNAL"], 4),
             "atr": round(last["ATR"], 2),
+            "atr_percent": round(atr_percent, 4),
             "bb_high": round(last["BB_HIGH"], 2),
             "bb_low": round(last["BB_LOW"], 2),
             "volume": round(last["volume"], 2),

@@ -5,3 +5,6 @@ class FeeCalculator:
 
     def calculate(self, trade_size):
         return trade_size * (self.fee_percent / 100)
+
+    def calculate_round_trip(self, entry_notional, exit_notional):
+        return self.calculate(entry_notional) + self.calculate(exit_notional)

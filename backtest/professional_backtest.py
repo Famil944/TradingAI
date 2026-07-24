@@ -47,7 +47,12 @@ class ProfessionalBacktest:
                 future_candles=future,
             )
 
-            fee = self.fees.calculate(100)
+            entry_notional = trade["entry_price"] * trade["amount"]
+            exit_notional = trade["exit_price"] * trade["amount"]
+            fee = self.fees.calculate_round_trip(
+                entry_notional,
+                exit_notional,
+            )
             trade["profit"] = round(trade["profit"] - fee, 2)
             trade["fee"] = round(fee, 4)
             trade["quality_score"] = strategy_result["quality"]["score"]

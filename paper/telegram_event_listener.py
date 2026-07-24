@@ -17,9 +17,10 @@ class TelegramEventListener:
         print(text)
 
         try:
-            asyncio.create_task(self.notifier.send(text))
+            asyncio.create_task(self.notifier.send_async(text))
         except RuntimeError:
-            pass
+            # Events may also be emitted from a worker thread.
+            self.notifier.send(text)
 
     def _build_text(self, event):
         data = event.data

@@ -6,7 +6,7 @@ from bot.inline_menus import auto_menu
 async def run_auto_once(query, auto_trader):
     await query.edit_message_text("⏳ Запускаю автоанализ...")
 
-    result = auto_trader.run_once()
+    result = await asyncio.to_thread(auto_trader.run_once)
 
     await query.edit_message_text(
         result,
@@ -16,6 +16,10 @@ async def run_auto_once(query, auto_trader):
 
 async def turn_auto_on(query, context, auto_state, auto_loop, position_watch_loop, notifier):
     notifier.setup(context.bot, query.message.chat_id)
+    auto_state.settings.set(
+        "telegram_chat_id",
+        str(query.message.chat_id),
+    )
 
     auto_state.turn_on()
 
@@ -31,33 +35,45 @@ async def turn_auto_on(query, context, auto_state, auto_loop, position_watch_loo
     )
 
 
-async def turn_auto_off(query, auto_state):
+async def turn_auto_off(
+    query,
+    auto_state,
+    auto_loop=None,
+    position_watch_loop=None,
+):
+    if auto_loop is not None:
+        auto_loop.stop()
+    if position_watch_loop is not None:
+        position_watch_loop.stop()
+
     await query.edit_message_text(
         auto_state.turn_off(),
         reply_markup=auto_menu(),
     )
 
 
-async def show_position(query, paper):
-    position = paper.engine.trader.position
-
-    if not position:
+async def show_position(query, controller):
+    positions = await asyncio.to_thread(
+        controller.client.open_positions
+    )
+    if not positions:
         await query.edit_message_text(
-            "📭 Открытой позиции нет.",
+            "📭 Открытых биржевых позиций нет.",
             reply_markup=auto_menu(),
         )
         return
 
-    text = (
-        f"📌 Текущая Paper-позиция\n\n"
-        f"Монета: {position.symbol}\n"
-        f"Сторона: {position.side}\n"
-        f"Вход: {position.entry_price}\n"
-        f"Объём: {position.amount}\n"
-        f"Take Profit: {position.take_profit}\n"
-        f"Stop Loss: {position.stop_loss}\n"
-        f"Partial TP: {'да' if position.partial_closed else 'нет'}"
-    )
+    rows = ["📌 Открытые биржевые позиции\n"]
+    for position in positions:
+        amount = float(position.get("positionAmt", 0))
+        side = "LONG" if amount > 0 else "SHORT"
+        rows.append(
+            f"{position.get('symbol', '?')} | {side}\n"
+            f"Количество: {abs(amount)}\n"
+            f"Вход: {position.get('entryPrice', '?')}\n"
+            f"PnL: {position.get('unRealizedProfit', '?')} USDT"
+        )
+    text = "\n\n".join(rows)
 
     await query.edit_message_text(
         text,

@@ -3,7 +3,9 @@ from binance.client import Client
 
 class BinanceMarketClient:
     def __init__(self):
-        self.client = Client()
+        # Avoid a network call during module import/startup construction.
+        # Actual market requests still fail normally with a useful error.
+        self.client = Client(ping=False)
 
     def get_price(self, symbol: str = "BTCUSDT") -> float:
         data = self.client.futures_symbol_ticker(symbol=symbol)

@@ -1,3 +1,5 @@
+import asyncio
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -17,7 +19,9 @@ async def position_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Открытой позиции нет.")
         return
 
-    current_price = core.market.get_price(position.symbol)
+    current_price = await asyncio.to_thread(
+        core.market.get_price, position.symbol
+    )
     data = calculator.calculate(position, current_price)
 
     text = (

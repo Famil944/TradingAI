@@ -7,6 +7,16 @@ class StrategyValidator:
         self.filters = FilterResults()
 
     def validate(self, strategy_check, multi_check, quality):
+
+        if strategy_check["approved"] and multi_check["approved"]:
+            minimum_score = 65
+
+        elif strategy_check["approved"]:
+            minimum_score = 75
+
+        else:
+            minimum_score = 85
+
         self.filters.add(
             "Strategy Filter",
             strategy_check["approved"]
@@ -18,8 +28,8 @@ class StrategyValidator:
         )
 
         self.filters.add(
-            "Quality Score >= 70",
-            quality["score"] >= 70
+            f"Quality Score >= {minimum_score}",
+            quality["score"] >= minimum_score
         )
 
     def report(self):

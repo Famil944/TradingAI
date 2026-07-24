@@ -1,0 +1,38 @@
+services:
+  - type: worker
+    name: trading-ai-bot
+    runtime: python
+    plan: starter
+    buildCommand: pip install .
+    startCommand: python main.py
+    autoDeployTrigger: commit
+    maxShutdownDelaySeconds: 60
+    disk:
+      name: trading-ai-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: TRADING_MODE
+        value: DEMO
+      - key: TRADING_CLOSE_ONLY
+        value: "false"
+      - key: TRADING_AI_DB_PATH
+        value: /var/data/trading_ai.db
+      - key: TRADING_MODE_STATE_PATH
+        value: /var/data/trading_mode
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: BINANCE_TESTNET_API_KEY
+        sync: false
+      - key: BINANCE_TESTNET_API_SECRET
+        sync: false
+      - key: BINANCE_LIVE_API_KEY
+        sync: false
+      - key: BINANCE_LIVE_API_SECRET
+        sync: false
+      - key: LIVE_TRADING_CONFIRMATION
+        sync: false

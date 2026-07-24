@@ -15,6 +15,8 @@ from strategy.quality_score import QualityScore
 from validation.strategy_validator import StrategyValidator
 from strategy.final_strategy_validator import FinalStrategyValidator
 from services.signal_log_service import SignalLogService
+from services.demo_trading_controller import DemoTradingController
+from services.app_settings import AppSettings
 
 
 class AutoTrader:
@@ -41,19 +43,44 @@ class AutoTrader:
         self.validator = StrategyValidator()
         self.final_validator = FinalStrategyValidator()
         self.signal_log = SignalLogService()
+        self.demo_controller = DemoTradingController()
+        self.settings = AppSettings()
+        self.last_analysis = None
+        self._run_lock = threading.Lock()
 
     def run_once(self):
+        if not self._run_lock.acquire(blocking=False):
+            return "⏳ Автосканирование уже выполняется."
+        try:
+            return self._run_once()
+        finally:
+            self._run_lock.release()
+
+    def _run_once(self):
         self.logger.log("🤖 Начало автоматического сканирования")
 
-        status = self.paper.engine.status()
+        open_positions = self.demo_controller.client.open_positions()
 
-        if status["has_position"]:
-            text = "📄 Уже есть открытая Paper-сделка."
-            self.logger.log(text)
-            return text
+        open_symbols = {
+            position["symbol"]
+            for position in open_positions
+        }
 
-        results = self.scanner.scan_market("1h", 5)
+        self.logger.log(
+            "Открытые Demo-позиции: "
+            + (
+                ", ".join(sorted(open_symbols))
+                if open_symbols
+                else "нет"
+            )
+        )
+
+        results = self.scanner.scan_market(
+            self.settings.get("timeframe"),
+            5,
+        )
         candidates_report = self.candidate_report.build(results)
+        self.last_analysis = candidates_report
         self.logger.log(candidates_report)
 
         if not results:
@@ -61,13 +88,19 @@ class AutoTrader:
             self.logger.log(text)
             return text
 
-        best = self.selector.select_best(results)
+        best = self.selector.select_best(
+            results,
+            excluded_symbols=open_symbols,
+        )
 
         if best is None:
             text = (
-                "🟡 Подходящих LONG/SHORT сигналов нет.\n\n"
+                "🟡 Свободных подходящих LONG/SHORT сигналов нет.\n\n"
+                f"Уже открыты: "
+                f"{', '.join(sorted(open_symbols)) if open_symbols else 'нет'}\n\n"
                 f"{candidates_report}"
             )
+
             self.logger.log(text)
             return text
 
@@ -100,19 +133,19 @@ class AutoTrader:
             breakout=breakout,
             multi_tf=multi_check
         )
-        
+
         final_check = self.final_validator.validate(
             quality=quality,
             strategy_check=strategy_check,
             multi_check=multi_check
         )
-        
+
         self.validator.validate(
             strategy_check,
             multi_check,
             quality
-        )     
-        
+        )
+
         self.signal_log.save_signal_check(
             best=best,
             quality=quality,
@@ -133,12 +166,31 @@ class AutoTrader:
             self.logger.log("; ".join(final_check["reasons"]))
             return report_text
 
-        trade_text = self.paper.try_trade_text(best)
+        minimum_quality = int(self.settings.get("quality_score"))
+        if quality["score"] < minimum_quality:
+            text = (
+                f"{report_text}\n\n"
+                f"⛔ Quality Score ниже настройки: "
+                f"{quality['score']} < {minimum_quality}"
+            )
+            self.last_analysis = text
+            return text
 
-        if not trade_text:
-            self.logger.log("Сделка не открылась.")
-            return "❌ Сделка не открылась."
+        trade_signal = dict(best)
 
-        self.logger.log("✅ Paper-сделка успешно открыта.")
+        trade_signal["strategy"] = "AI_AUTO_V2"
+        trade_signal["quality_score"] = quality["score"]
 
-        return f"🤖 Auto Trader\n\n{trade_text}"
+        demo_result = self.demo_controller.open_demo_trade(
+            trade_signal
+        )
+
+        self.logger.log(demo_result)
+
+        result = (
+            f"{report_text}\n\n"
+            f"{demo_result}"
+        )
+        self.last_analysis = result
+        return result
+import threading

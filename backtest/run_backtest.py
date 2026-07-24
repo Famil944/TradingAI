@@ -4,31 +4,32 @@ from backtest.backtest_result import BacktestResult
 from backtest.simple_strategy import SimpleStrategy
 
 
-symbol = "BTCUSDT"
-interval = "1h"
+def main():
+    symbol = "BTCUSDT"
+    interval = "1h"
+    loader = HistoryLoader()
+    strategy = SimpleStrategy()
+    simulator = TradeSimulator()
+    result = BacktestResult()
+    candles = loader.load(symbol, interval, limit=500)
 
-loader = HistoryLoader()
-strategy = SimpleStrategy()
-simulator = TradeSimulator()
-result = BacktestResult()
+    for index in range(len(candles) - 25):
+        candle = candles[index]
+        future_candles = candles[index + 1:index + 25]
+        signal = strategy.get_signal(candle)
 
-candles = loader.load(symbol, interval, limit=500)
+        if signal:
+            trade = simulator.simulate(
+                symbol=symbol,
+                side=signal,
+                entry_candle=candle,
+                future_candles=future_candles,
+            )
+            result.add_trade(trade)
 
-for i in range(len(candles) - 25):
-    candle = candles[i]
-    future_candles = candles[i + 1:i + 25]
+    print("📊 Backtest Result")
+    print(result.summary())
 
-    signal = strategy.get_signal(candle)
 
-    if signal:
-        trade = simulator.simulate(
-            symbol=symbol,
-            side=signal,
-            entry_candle=candle,
-            future_candles=future_candles,
-        )
-
-        result.add_trade(trade)
-
-print("📊 Backtest Result")
-print(result.summary())
+if __name__ == "__main__":
+    main()

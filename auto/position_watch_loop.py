@@ -9,25 +9,40 @@ class PositionWatchLoop:
         self.notifier = notifier
         self.interval_seconds = interval_seconds
         self.is_running = False
+        self._stop_requested = False
 
     async def start(self):
         if self.is_running:
             return
 
         self.is_running = True
+        self._stop_requested = False
 
-        while True:
-            try:
-                position = self.paper.engine.trader.position
+        try:
+            while self.is_running and not self._stop_requested:
+                try:
+                    position = self.paper.engine.trader.position
 
-                if position:
-                    price = self.core.market.get_price(position.symbol)
-                    result = self.paper.check_position_text(price)
+                    if position:
+                        price = await asyncio.to_thread(
+                            self.core.market.get_price,
+                            position.symbol,
+                        )
+                        result = self.paper.check_position_text(price)
 
-                    if result:
-                        await self.notifier.send(result)
+                        if result:
+                            await self.notifier.send_async(result)
 
-            except Exception as e:
-                print(f"POSITION WATCH ERROR: {e}")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    print(f"POSITION WATCH ERROR: {error}")
 
-            await asyncio.sleep(self.interval_seconds)
+                await asyncio.sleep(self.interval_seconds)
+        finally:
+            self.is_running = False
+            self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+        self.is_running = False
