@@ -2,6 +2,7 @@ services:
   - type: worker
     name: trading-ai-bot
     runtime: python
+    region: frankfurt
     plan: starter
     buildCommand: pip install .
     startCommand: python main.py
