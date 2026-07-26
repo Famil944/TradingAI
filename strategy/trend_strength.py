@@ -3,9 +3,10 @@ class TrendStrength:
     def calculate(self, structure, analysis):
         score = structure["strength"]
 
-        if analysis["score"] >= 80:
+        directional_score = abs(analysis["score"])
+        if directional_score >= 80:
             score += 20
-        elif analysis["score"] >= 70:
+        elif directional_score >= 70:
             score += 10
 
         score = min(score, 100)

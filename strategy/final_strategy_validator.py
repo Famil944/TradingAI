@@ -5,14 +5,7 @@ class FinalStrategyValidator:
 
     def validate(self, quality, strategy_check, multi_check):
 
-        if strategy_check["approved"] and multi_check["approved"]:
-            min_quality_score = 65
-
-        elif strategy_check["approved"]:
-            min_quality_score = 75
-
-        else:
-            min_quality_score = 85
+        min_quality_score = 60
 
         reasons = []
 

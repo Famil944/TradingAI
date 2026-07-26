@@ -29,6 +29,10 @@ class SignalLogService:
             "multi_tf_approved": multi_check.get("approved"),
             "final_approved": final_check.get("approved"),
             "reject_reason": reason,
+            "strategy_reason": strategy_check.get("reason"),
+            "multi_tf_match_count": multi_check.get("match_count"),
+            "multi_tf_required": multi_check.get("required"),
+            "multi_tf_avg_score": multi_check.get("avg_score"),
         }
 
         return self.repository.save(data)

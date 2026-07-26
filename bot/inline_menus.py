@@ -134,6 +134,11 @@ def stats_menu():
             InlineKeyboardButton("📅 Неделя", callback_data="stats_week_btn"),
         ],
         [InlineKeyboardButton("📅 Месяц", callback_data="stats_month_btn")],
+        [
+            InlineKeyboardButton(
+                "📥 Скачать Excel", callback_data="stats_export_btn"
+            )
+        ],
         [InlineKeyboardButton("⬅️ Назад", callback_data="back_app_main")],
     ]
 

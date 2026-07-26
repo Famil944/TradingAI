@@ -88,6 +88,7 @@ from bot.handlers.settings_handlers import (
 from bot.handlers.analytics_handlers import show_trade_analytics
 from bot.handlers.demo_stats_handlers import demo_stats
 from bot.handlers.demo_history_handlers import trade_history
+from bot.handlers.export_handlers import export_statistics
 from services.telegram_notifier import notifier as demo_notifier
 from services.demo_trade_log_service import DemoTradeLogService
 import config.trading_mode as trading_mode
@@ -391,6 +392,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data == "stats_month_btn":
             await show_month(query, paper)
+
+        elif data == "stats_export_btn":
+            await export_statistics(update, context)
 
         elif data == "settings_size_btn":
             await show_trade_size(query)
@@ -696,6 +700,7 @@ def run_telegram_bot(token: str):
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(CommandHandler("demo_stats", demo_stats))
     app.add_handler(CommandHandler("trade_history", trade_history))
+    app.add_handler(CommandHandler("export_stats", export_statistics))
     app.add_handler(CommandHandler("demo_long", demo_long))
     app.add_handler(CommandHandler("demo_short", demo_short))
     app.add_handler(CommandHandler("trade_long", trade_long))

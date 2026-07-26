@@ -6,6 +6,7 @@ class SignalLogRepository:
     def __init__(self):
         self.db = Database()
         self._init_table()
+        self._add_missing_columns()
 
     def _init_table(self):
         with self.db.connect() as conn:
@@ -30,6 +31,27 @@ class SignalLogRepository:
 
             conn.commit()
 
+    def _add_missing_columns(self):
+        with self.db.connect() as conn:
+            existing = {
+                column[1]
+                for column in conn.execute(
+                    "PRAGMA table_info(signal_logs)"
+                ).fetchall()
+            }
+            columns = {
+                "strategy_reason": "TEXT",
+                "multi_tf_match_count": "INTEGER",
+                "multi_tf_required": "INTEGER",
+                "multi_tf_avg_score": "REAL",
+            }
+            for name, column_type in columns.items():
+                if name not in existing:
+                    conn.execute(
+                        f"ALTER TABLE signal_logs "
+                        f"ADD COLUMN {name} {column_type}"
+                    )
+
     def save(self, data: dict):
         with self.db.connect() as conn:
             cursor = conn.cursor()
@@ -45,9 +67,13 @@ class SignalLogRepository:
                     strategy_approved,
                     multi_tf_approved,
                     final_approved,
-                    reject_reason
+                    reject_reason,
+                    strategy_reason,
+                    multi_tf_match_count,
+                    multi_tf_required,
+                    multi_tf_avg_score
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data.get("symbol"),
                 data.get("signal"),
@@ -59,6 +85,10 @@ class SignalLogRepository:
                 int(data.get("multi_tf_approved", False)),
                 int(data.get("final_approved", False)),
                 data.get("reject_reason"),
+                data.get("strategy_reason"),
+                data.get("multi_tf_match_count"),
+                data.get("multi_tf_required"),
+                data.get("multi_tf_avg_score"),
             ))
 
             conn.commit()

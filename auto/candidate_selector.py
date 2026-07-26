@@ -5,29 +5,18 @@ class CandidateSelector:
         results: list,
         excluded_symbols=None,
     ):
-        if not results:
-            return None
+        candidates = self.select_candidates(results, excluded_symbols)
+        return candidates[0] if candidates else None
 
+    def select_candidates(self, results: list, excluded_symbols=None):
         excluded_symbols = set(excluded_symbols or [])
-
-        valid = []
-
-        for item in results:
-            symbol = item.get("symbol")
-            signal = item.get("signal")
-
-            if symbol in excluded_symbols:
-                continue
-
-            if signal in ["🟢 LONG", "🔴 SHORT"]:
-                valid.append(item)
-
-        if not valid:
-            return None
-
+        valid = [
+            item for item in (results or [])
+            if item.get("symbol") not in excluded_symbols
+            and item.get("signal") in {"🟢 LONG", "🔴 SHORT"}
+        ]
         valid.sort(
-            key=lambda item: float(item.get("score", 0)),
+            key=lambda item: abs(float(item.get("score", 0))),
             reverse=True,
         )
-
-        return valid[0]
+        return valid

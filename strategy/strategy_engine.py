@@ -1,5 +1,6 @@
 class StrategyEngine:
 
+    MIN_SIGNAL_SCORE = 45
     MIN_ATR_PERCENT = 0.25
     MAX_ATR_PERCENT = 3.00
 
@@ -34,10 +35,10 @@ class StrategyEngine:
         if analysis["macd"] <= analysis["macd_signal"]:
             reasons.append("MACD медвежий")
 
-        if not (35 <= analysis["rsi"] <= 60):
+        if not (35 <= analysis["rsi"] <= 68):
             reasons.append("RSI вне рабочей зоны")
 
-        if analysis["score"] < 60:
+        if analysis["score"] < self.MIN_SIGNAL_SCORE:
             reasons.append("Недостаточный Score")
 
         if analysis.get("location") == "RESISTANCE":
@@ -61,10 +62,11 @@ class StrategyEngine:
         if analysis["macd"] >= analysis["macd_signal"]:
             reasons.append("MACD бычий")
 
-        if not (40 <= analysis["rsi"] <= 65):
+        if not (32 <= analysis["rsi"] <= 65):
             reasons.append("RSI вне рабочей зоны")
 
-        if analysis["score"] < 60:
+        # SHORT scores are negative by design in ScoringEngine.
+        if analysis["score"] > -self.MIN_SIGNAL_SCORE:
             reasons.append("Недостаточный Score")
 
         if analysis.get("location") == "SUPPORT":
