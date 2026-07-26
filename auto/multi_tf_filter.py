@@ -22,9 +22,14 @@ class MultiTimeframeFilter:
 
         required = self._required_count()
 
+        directional_avg = (
+            data["avg_score"]
+            if direction == "LONG"
+            else -data["avg_score"]
+        )
         approved = (
             match_count >= required
-            and abs(data["avg_score"]) >= 60
+            or (match_count >= 1 and directional_avg >= 30)
         )
 
         return {
@@ -33,6 +38,7 @@ class MultiTimeframeFilter:
             "direction": direction,
             "final_signal": data["final_signal"],
             "avg_score": data["avg_score"],
+            "directional_avg": directional_avg,
             "match_count": match_count,
             "required": required,
             "details": data["results"]

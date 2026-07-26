@@ -1,3 +1,5 @@
+import threading
+
 from services.logger_service import LoggerService
 from core.multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from auto.multi_tf_filter import MultiTimeframeFilter
@@ -88,12 +90,10 @@ class AutoTrader:
             self.logger.log(text)
             return text
 
-        best = self.selector.select_best(
-            results,
-            excluded_symbols=open_symbols,
+        candidates = self.selector.select_candidates(
+            results, excluded_symbols=open_symbols
         )
-
-        if best is None:
+        if not candidates:
             text = (
                 "🟡 Свободных подходящих LONG/SHORT сигналов нет.\n\n"
                 f"Уже открыты: "
@@ -104,16 +104,34 @@ class AutoTrader:
             self.logger.log(text)
             return text
 
-        symbol = best["symbol"]
+        rejected_reports = []
+        for candidate in candidates:
+            check = self._evaluate_candidate(candidate)
+            if check["approved"]:
+                trade_signal = dict(candidate)
+                trade_signal["strategy"] = "AI_AUTO_V2"
+                trade_signal["quality_score"] = check["quality"]["score"]
+                demo_result = self.demo_controller.open_demo_trade(trade_signal)
+                self.logger.log(demo_result)
+                result = f"{check['report']}\n\n{demo_result}"
+                self.last_analysis = result
+                return result
+            rejected_reports.append(check["report"])
 
+        result = (
+            "🟡 Ни один кандидат не прошёл контролируемые фильтры.\n\n"
+            + "\n\n".join(rejected_reports)
+        )
+        self.last_analysis = result
+        return result
+
+    def _evaluate_candidate(self, best):
+        symbol = best["symbol"]
         self.logger.log(
-            f"Лучшая монета: {symbol} | "
-            f"Сигнал: {best['signal']} | "
+            f"Кандидат: {symbol} | Сигнал: {best['signal']} | "
             f"Score: {best['score']}"
         )
-
         strategy_check = self.strategy_filter.approve(best)
-
         multi_check = self.multi_filter.check(
             symbol=symbol,
             direction=strategy_check.get("direction")
@@ -122,7 +140,9 @@ class AutoTrader:
         structure = self.market_structure.analyze(best)
         trend = self.trend_strength.calculate(structure, best)
         volume = self.volume_analyzer.analyze(best)
-        momentum = self.momentum.analyze(best)
+        momentum = self.momentum.analyze(
+            best, direction=strategy_check.get("direction")
+        )
         breakout = self.false_breakout.analyze(best)
 
         quality = self.quality_score.calculate(
@@ -162,35 +182,25 @@ class AutoTrader:
             quality=quality
         )
 
-        if not final_check["approved"]:
-            self.logger.log("; ".join(final_check["reasons"]))
-            return report_text
-
         minimum_quality = int(self.settings.get("quality_score"))
-        if quality["score"] < minimum_quality:
-            text = (
+        approved = (
+            final_check["approved"]
+            and quality["score"] >= minimum_quality
+        )
+        if not approved:
+            reasons = list(final_check["reasons"])
+            if quality["score"] < minimum_quality:
+                reasons.append(
+                    f"Quality Score ниже настройки: "
+                    f"{quality['score']} < {minimum_quality}"
+                )
+            self.logger.log("; ".join(reasons))
+            report_text = (
                 f"{report_text}\n\n"
-                f"⛔ Quality Score ниже настройки: "
-                f"{quality['score']} < {minimum_quality}"
+                f"⛔ {'; '.join(reasons)}"
             )
-            self.last_analysis = text
-            return text
-
-        trade_signal = dict(best)
-
-        trade_signal["strategy"] = "AI_AUTO_V2"
-        trade_signal["quality_score"] = quality["score"]
-
-        demo_result = self.demo_controller.open_demo_trade(
-            trade_signal
-        )
-
-        self.logger.log(demo_result)
-
-        result = (
-            f"{report_text}\n\n"
-            f"{demo_result}"
-        )
-        self.last_analysis = result
-        return result
-import threading
+        return {
+            "approved": approved,
+            "quality": quality,
+            "report": report_text,
+        }

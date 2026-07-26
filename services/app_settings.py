@@ -6,7 +6,7 @@ DEFAULTS = {
     "max_quantity": "0.01",
     "auto_risk": "true",
     "max_balance_percent": "20",
-    "quality_score": "70",
+    "quality_score": "60",
     "timeframe": "1h",
     "notifications": "all",
     "auto_enabled": "false",
@@ -86,7 +86,7 @@ class AppSettings:
             return str(number)
         if key == "quality_score":
             number = int(value)
-            if number not in {65, 70, 75, 80}:
+            if number not in {60, 65, 70, 75, 80}:
                 raise ValueError("Недопустимый Quality Score")
             return str(number)
         if key == "timeframe":
