@@ -41,6 +41,16 @@ class StatisticsExportService:
             approved_count = self._count(
                 connection, "signal_logs", "final_approved = 1"
             )
+            opened_count = self._count(
+                connection,
+                "signal_logs",
+                "execution_status = 'opened'",
+            )
+            failed_count = self._count(
+                connection,
+                "signal_logs",
+                "execution_status = 'failed'",
+            )
         labels = {
             "total_trades": "Всего сделок",
             "open_trades": "Открытых сделок",
@@ -59,6 +69,8 @@ class StatisticsExportService:
         rows.extend([
             ["Проверено сигналов", signal_count],
             ["Одобрено сигналов", approved_count],
+            ["Успешно открыто по сигналам", opened_count],
+            ["Ошибок исполнения", failed_count],
             [
                 "Доля одобренных, %",
                 round(approved_count / signal_count * 100, 2)

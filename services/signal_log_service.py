@@ -11,7 +11,9 @@ class SignalLogService:
         quality,
         strategy_check,
         multi_check,
-        final_check
+        final_check,
+        execution_status=None,
+        execution_error=None,
     ):
         reason = None
 
@@ -33,6 +35,8 @@ class SignalLogService:
             "multi_tf_match_count": multi_check.get("match_count"),
             "multi_tf_required": multi_check.get("required"),
             "multi_tf_avg_score": multi_check.get("avg_score"),
+            "execution_status": execution_status,
+            "execution_error": execution_error,
         }
 
         return self.repository.save(data)
