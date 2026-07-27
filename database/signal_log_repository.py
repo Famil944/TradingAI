@@ -44,6 +44,8 @@ class SignalLogRepository:
                 "multi_tf_match_count": "INTEGER",
                 "multi_tf_required": "INTEGER",
                 "multi_tf_avg_score": "REAL",
+                "execution_status": "TEXT",
+                "execution_error": "TEXT",
             }
             for name, column_type in columns.items():
                 if name not in existing:
@@ -71,9 +73,11 @@ class SignalLogRepository:
                     strategy_reason,
                     multi_tf_match_count,
                     multi_tf_required,
-                    multi_tf_avg_score
+                    multi_tf_avg_score,
+                    execution_status,
+                    execution_error
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data.get("symbol"),
                 data.get("signal"),
@@ -89,6 +93,8 @@ class SignalLogRepository:
                 data.get("multi_tf_match_count"),
                 data.get("multi_tf_required"),
                 data.get("multi_tf_avg_score"),
+                data.get("execution_status"),
+                data.get("execution_error"),
             ))
 
             conn.commit()

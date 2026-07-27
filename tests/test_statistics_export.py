@@ -35,6 +35,8 @@ class StatisticsExportTests(unittest.TestCase):
                     "multi_tf_match_count": 2,
                     "multi_tf_required": 2,
                     "multi_tf_avg_score": 48,
+                    "execution_status": "failed",
+                    "execution_error": "symbol unavailable",
                 })
                 AppSettings().set("quality_score", "60")
 
@@ -46,10 +48,18 @@ class StatisticsExportTests(unittest.TestCase):
                 self.assertIn("xl/worksheets/sheet2.xml", names)
                 workbook_xml = archive.read("xl/workbook.xml")
                 trades_xml = archive.read("xl/worksheets/sheet2.xml")
+                summary_xml = archive.read("xl/worksheets/sheet1.xml")
+                signals_xml = archive.read("xl/worksheets/sheet3.xml")
                 ElementTree.fromstring(workbook_xml)
                 ElementTree.fromstring(trades_xml)
                 self.assertIn("Сделки".encode(), workbook_xml)
                 self.assertIn(b"BTCUSDT", trades_xml)
+                self.assertIn(
+                    "Ошибок исполнения".encode(),
+                    summary_xml,
+                )
+                self.assertIn(b"execution_status", signals_xml)
+                self.assertIn(b"symbol unavailable", signals_xml)
 
 
 if __name__ == "__main__":

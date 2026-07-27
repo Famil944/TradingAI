@@ -111,11 +111,39 @@ class AutoTrader:
                 trade_signal = dict(candidate)
                 trade_signal["strategy"] = "AI_AUTO_V2"
                 trade_signal["quality_score"] = check["quality"]["score"]
-                demo_result = self.demo_controller.open_demo_trade(trade_signal)
+                try:
+                    demo_result = self.demo_controller.open_demo_trade(
+                        trade_signal
+                    )
+                except Exception as error:
+                    error_text = (
+                        f"Ошибка открытия {candidate['symbol']}: {error}"
+                    )
+                    self.logger.log(error_text)
+                    self._save_signal_check(
+                        candidate,
+                        check,
+                        execution_status="failed",
+                        execution_error=str(error),
+                    )
+                    rejected_reports.append(
+                        f"{check['report']}\n\n❌ {error_text}"
+                    )
+                    continue
+                self._save_signal_check(
+                    candidate,
+                    check,
+                    execution_status="opened",
+                )
                 self.logger.log(demo_result)
                 result = f"{check['report']}\n\n{demo_result}"
                 self.last_analysis = result
                 return result
+            self._save_signal_check(
+                candidate,
+                check,
+                execution_status="filtered",
+            )
             rejected_reports.append(check["report"])
 
         result = (
@@ -166,14 +194,6 @@ class AutoTrader:
             quality
         )
 
-        self.signal_log.save_signal_check(
-            best=best,
-            quality=quality,
-            strategy_check=strategy_check,
-            multi_check=multi_check,
-            final_check=final_check,
-        )
-
         report_text = self.report.build_report(
             symbol=symbol,
             analysis=best,
@@ -203,4 +223,29 @@ class AutoTrader:
             "approved": approved,
             "quality": quality,
             "report": report_text,
+            "strategy_check": strategy_check,
+            "multi_check": multi_check,
+            "final_check": {
+                **final_check,
+                "approved": approved,
+                "reasons": reasons if not approved else [],
+                "minimum_score": minimum_quality,
+            },
         }
+
+    def _save_signal_check(
+        self,
+        candidate,
+        check,
+        execution_status,
+        execution_error=None,
+    ):
+        self.signal_log.save_signal_check(
+            best=candidate,
+            quality=check["quality"],
+            strategy_check=check["strategy_check"],
+            multi_check=check["multi_check"],
+            final_check=check["final_check"],
+            execution_status=execution_status,
+            execution_error=execution_error,
+        )
