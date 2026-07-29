@@ -8,7 +8,7 @@ DEFAULTS = {
     "max_balance_percent": "20",
     "quality_score": "60",
     "timeframe": "1h",
-    "notifications": "all",
+    "notifications": "trades",
     "auto_enabled": "false",
     "telegram_chat_id": "",
 }
