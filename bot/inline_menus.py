@@ -252,7 +252,7 @@ def notifications_menu():
     return setting_values_menu(
         "notifications",
         [
-            [("🔔 Все", "all"), ("💼 Только сделки", "trades")],
+            [("💼 Только сделки", "trades")],
             [("🔕 Выключить", "off")],
         ],
     )

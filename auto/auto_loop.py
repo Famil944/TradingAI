@@ -48,7 +48,6 @@ class AutoLoop:
 
                     if result:
                         print(result)
-
                         try:
                             await self.notifier.send_async(result)
                         except Exception as notify_error:
@@ -58,19 +57,7 @@ class AutoLoop:
                             )
 
                 except Exception as error:
-                    error_text = (
-                        f"❌ Ошибка AutoLoop\n\n{error}"
-                    )
-
                     print(f"AUTO ERROR: {error}")
-
-                    try:
-                        await self.notifier.send_async(error_text)
-                    except Exception as notify_error:
-                        print(
-                            "TELEGRAM NOTIFY ERROR: "
-                            f"{notify_error}"
-                        )
 
                 # Ждём небольшими частями, чтобы выключение
                 # автоторговли срабатывало быстро.

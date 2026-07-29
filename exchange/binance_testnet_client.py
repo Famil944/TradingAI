@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import config.trading_mode as trading_mode
 from config.trading_mode import TradingMode
 from exchange.binance_futures_client import BinanceFuturesClient
+from exchange.usdm_futures_api import UsdmFuturesApi
 
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -22,11 +23,12 @@ class BinanceTestnetClient(BinanceFuturesClient):
                 "BINANCE_TESTNET_API_KEY или BINANCE_TESTNET_API_SECRET "
                 "не найдены в .env"
             )
-        client = UMFutures(
+        public_client = UMFutures(
             key=api_key,
             secret=api_secret,
             base_url="https://demo-fapi.binance.com",
         )
+        client = UsdmFuturesApi(public_client)
         super().__init__(client, self._check_demo_access)
 
     @staticmethod

@@ -69,8 +69,8 @@ async def show_timeframe(query):
 
 async def show_notifications(query):
     labels = {
-        "all": "Все сообщения",
-        "trades": "Только сделки и ошибки",
+        "all": "Только совершённые сделки",
+        "trades": "Только совершённые сделки",
         "off": "Выключены",
     }
     current = settings.get("notifications")
