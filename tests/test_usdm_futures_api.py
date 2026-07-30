@@ -24,7 +24,8 @@ class FakeClient:
             return []
         return {"algoId": payload.get("algoId"), "algoStatus": "NEW"}
 
-    def get_open_orders(self, symbol=None):
+    def get_orders(self, **kwargs):
+        self.calls.append(("get_orders", kwargs))
         return []
 
     def cancel_open_orders(self, symbol):
@@ -76,4 +77,16 @@ class UsdmFuturesApiTests(unittest.TestCase):
         self.assertEqual(
             self.raw.calls[-1][1],
             "/fapi/v1/algoOrder",
+        )
+
+    def test_open_orders_uses_plural_sdk_endpoint(self):
+        result = self.api.get_open_orders("BTCUSDT")
+        self.assertEqual(result, [])
+        self.assertEqual(
+            self.raw.calls[0],
+            ("get_orders", {"symbol": "BTCUSDT"}),
+        )
+        self.assertEqual(
+            self.raw.calls[1][1],
+            "/fapi/v1/openAlgoOrders",
         )

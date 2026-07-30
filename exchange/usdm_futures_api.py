@@ -76,11 +76,19 @@ class UsdmFuturesApi:
         return self._normalize_algo_order(result)
 
     def get_open_orders(self, symbol=None):
-        normal = self.client.get_open_orders(symbol=symbol)
+        # In binance-futures-connector, get_open_orders is the singular
+        # /fapi/v1/openOrder endpoint and requires orderId. The plural
+        # /fapi/v1/openOrders endpoint is exposed as get_orders.
+        normal = (
+            self.client.get_orders(symbol=symbol)
+            if symbol
+            else self.client.get_orders()
+        )
+        algo_params = {"symbol": symbol} if symbol else {}
         algo = self._algo_request(
             "GET",
             "/fapi/v1/openAlgoOrders",
-            symbol=symbol,
+            **algo_params,
         )
         normalized = [
             self._normalize_algo_order(item)
