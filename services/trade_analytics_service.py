@@ -1,31 +1,19 @@
-from database.db import Database
+from services.demo_statistics_service import DemoStatisticsService
 
 
 class TradeAnalyticsService:
 
-    def __init__(self):
-        self.db = Database()
+    def __init__(self, statistics=None):
+        self.statistics = statistics or DemoStatisticsService()
 
-    def summary(self):
-        with self.db.connect() as conn:
-            cursor = conn.cursor()
-
-            cursor.execute("""
-                SELECT
-                    COUNT(*),
-                    COALESCE(SUM(profit),0),
-                    COALESCE(AVG(profit),0),
-                    COALESCE(MAX(profit),0),
-                    COALESCE(MIN(profit),0)
-                FROM trade_results
-            """)
-
-            count, total, average, best, worst = cursor.fetchone()
-
-            return {
-                "count": count,
-                "total_profit": round(total, 2),
-                "average_profit": round(average, 2),
-                "best_trade": round(best, 2),
-                "worst_trade": round(worst, 2),
-            }
+    def summary(self, trading_mode=None):
+        stats = self.statistics.get_statistics(
+            trading_mode=trading_mode,
+        )
+        return {
+            "count": stats["closed_trades"],
+            "total_profit": stats["total_pnl"],
+            "average_profit": stats["average_pnl"],
+            "best_trade": stats["best_trade"],
+            "worst_trade": stats["worst_trade"],
+        }
