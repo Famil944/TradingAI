@@ -17,5 +17,15 @@ class AutoState:
         self.settings.set("auto_enabled", "false")
         return "⛔ Авто-режим выключен"
 
+    def emergency_stop(self):
+        """Immediately persist a block on all new automatic entries."""
+        self.enabled = False
+        self.settings.set("auto_enabled", "false")
+        return (
+            "🛑 Аварийная остановка включена.\n"
+            "Новые сделки запрещены. Мониторинг и защита уже открытых "
+            "позиций продолжают работать."
+        )
+
     def status(self):
         return "включён" if self.enabled else "выключен"

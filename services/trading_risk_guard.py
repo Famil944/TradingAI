@@ -5,12 +5,12 @@ from datetime import datetime, timedelta, timezone
 class TradingRiskGuard:
     def __init__(
         self,
-        max_open_positions=3,
+        max_open_positions=2,
         min_reward_risk=1.2,
-        max_daily_loss_percent=3,
-        max_drawdown_percent=10,
-        max_consecutive_losses=3,
-        cooldown_minutes=15,
+        max_daily_loss_percent=2,
+        max_drawdown_percent=5,
+        max_consecutive_losses=2,
+        cooldown_minutes=30,
     ):
         self.max_open_positions = max_open_positions
         self.min_reward_risk = min_reward_risk

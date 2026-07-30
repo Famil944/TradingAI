@@ -136,6 +136,10 @@ class DemoTradingController:
             quantity=quantity,
         )
 
+        self.client.set_leverage(
+            symbol,
+            int(self.settings.get("leverage")),
+        )
         order = (
             self.manager.open_long(symbol, quantity)
             if side == "LONG"
@@ -268,13 +272,15 @@ class DemoTradingController:
                 )
                 continue
 
+            # Re-check exchange protection even when a monitor is already
+            # running; an order may have been cancelled externally.
+            self._ensure_protection(trade, abs(position_amount))
+
             if symbol in self.active_monitors:
                 skipped.append(
                     f"{symbol}: монитор уже запущен"
                 )
                 continue
-
-            self._ensure_protection(trade, abs(position_amount))
 
             monitor = self.monitor_factory(
                 symbol=symbol,

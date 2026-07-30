@@ -9,6 +9,7 @@ class FakeClient:
         self.fail_protection = fail_protection
         self.closed = []
         self.cancelled = []
+        self.leverage = []
 
     def open_positions(self, symbol=None):
         return []
@@ -32,6 +33,10 @@ class FakeClient:
             "executedQty": str(quantity),
             "avgPrice": "100",
         }
+
+    def set_leverage(self, symbol, leverage):
+        self.leverage.append((symbol, leverage))
+        return {"symbol": symbol, "leverage": leverage}
 
     def place_protective_orders(self, **kwargs):
         if self.fail_protection:
@@ -96,6 +101,7 @@ class TradingControllerTests(unittest.TestCase):
         self.assertEqual(
             trade_log.saved[0]["take_profit_order_id"], 3
         )
+        self.assertEqual(client.leverage, [("BTCUSDT", 2)])
 
     def test_protection_failure_closes_new_position(self):
         client = FakeClient(fail_protection=True)

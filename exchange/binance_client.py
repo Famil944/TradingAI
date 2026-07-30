@@ -2,6 +2,14 @@ from binance.client import Client
 
 
 class BinanceMarketClient:
+    # Binance exposes TradFi perpetuals in the same ticker feed, but these
+    # require a separate agreement and must not enter the crypto auto-trader.
+    BLOCKED_TRADFI_SYMBOLS = {
+        "XAUUSDT",
+        "XAGUSDT",
+        "SPCXUSDT",
+    }
+
     def __init__(self):
         # Avoid a network call during module import/startup construction.
         # Actual market requests still fail normally with a useful error.
@@ -39,6 +47,9 @@ class BinanceMarketClient:
             symbol = ticker.get("symbol", "")
 
             if not symbol.endswith("USDT"):
+                continue
+
+            if symbol in self.BLOCKED_TRADFI_SYMBOLS:
                 continue
 
             if any(bad in symbol for bad in blocked):

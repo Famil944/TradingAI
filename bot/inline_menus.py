@@ -43,6 +43,12 @@ def auto_menu():
             InlineKeyboardButton("📌 Позиция", callback_data="position_btn"),
             InlineKeyboardButton("📋 Последний анализ", callback_data="last_analysis_btn"),
         ],
+        [
+            InlineKeyboardButton(
+                "🛑 Аварийная остановка",
+                callback_data="emergency_stop_btn",
+            )
+        ],
         [InlineKeyboardButton("⬅️ Назад", callback_data="back_app_main")],
     ]
 
