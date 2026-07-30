@@ -1,4 +1,5 @@
 import threading
+from datetime import datetime, timezone
 
 from services.logger_service import LoggerService
 from core.multi_timeframe_analyzer import MultiTimeframeAnalyzer
@@ -19,6 +20,7 @@ from strategy.final_strategy_validator import FinalStrategyValidator
 from services.signal_log_service import SignalLogService
 from services.demo_trading_controller import DemoTradingController
 from services.app_settings import AppSettings
+from services.error_formatter import user_error_message
 
 
 class AutoTrader:
@@ -48,6 +50,7 @@ class AutoTrader:
         self.demo_controller = DemoTradingController()
         self.settings = AppSettings()
         self.last_analysis = None
+        self.unavailable_symbols = set()
         self._run_lock = threading.Lock()
 
     def run_once(self):
@@ -60,6 +63,13 @@ class AutoTrader:
 
     def _run_once(self):
         self.logger.log("🤖 Начало автоматического сканирования")
+
+        reconciliation = self.demo_controller.restore_open_trades()
+        if reconciliation["skipped"]:
+            self.logger.log(
+                "Сверка позиций: "
+                + "; ".join(reconciliation["skipped"])
+            )
 
         open_positions = self.demo_controller.client.open_positions()
 
@@ -81,6 +91,10 @@ class AutoTrader:
             self.settings.get("timeframe"),
             5,
         )
+        self.settings.set(
+            "last_scan_at",
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
         candidates_report = self.candidate_report.build(results)
         self.last_analysis = candidates_report
         self.logger.log(candidates_report)
@@ -90,8 +104,9 @@ class AutoTrader:
             self.logger.log(text)
             return text
 
+        excluded_symbols = open_symbols | self.unavailable_symbols
         candidates = self.selector.select_candidates(
-            results, excluded_symbols=open_symbols
+            results, excluded_symbols=excluded_symbols
         )
         if not candidates:
             text = (
@@ -105,6 +120,7 @@ class AutoTrader:
             return text
 
         rejected_reports = []
+        execution_failures = 0
         for candidate in candidates:
             check = self._evaluate_candidate(candidate)
             if check["approved"]:
@@ -116,8 +132,12 @@ class AutoTrader:
                         trade_signal
                     )
                 except Exception as error:
+                    if "-4411" in str(error):
+                        self.unavailable_symbols.add(candidate["symbol"])
+                    execution_failures += 1
+                    safe_error = user_error_message(error) or "Ошибка Binance"
                     error_text = (
-                        f"Ошибка открытия {candidate['symbol']}: {error}"
+                        f"Ошибка открытия {candidate['symbol']}: {safe_error}"
                     )
                     self.logger.log(error_text)
                     self._save_signal_check(
@@ -146,10 +166,12 @@ class AutoTrader:
             )
             rejected_reports.append(check["report"])
 
-        result = (
-            "🟡 Ни один кандидат не прошёл контролируемые фильтры.\n\n"
-            + "\n\n".join(rejected_reports)
+        heading = (
+            "🟡 Подходящие сигналы найдены, но сделки не открыты."
+            if execution_failures
+            else "🟡 Ни один кандидат не прошёл контролируемые фильтры."
         )
+        result = f"{heading}\n\n" + "\n\n".join(rejected_reports)
         self.last_analysis = result
         return result
 

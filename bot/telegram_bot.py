@@ -99,6 +99,9 @@ from services.error_formatter import user_error_message
 core = TradingCore()
 scanner = MarketScanner(core)
 demo_controller = DemoTradingController()
+# One controller owns exchange positions and monitors across commands and
+# automatic scans. This prevents duplicate monitor threads after a restart.
+auto_trader.demo_controller = demo_controller
 demo_trade_log = DemoTradeLogService()
 mode_switcher = TradingModeSwitcher()
 
@@ -349,11 +352,26 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if data in ["back_main", "back_app_main"]:
-            await show_main_menu(query)
+            dashboard = await asyncio.to_thread(
+                build_dashboard,
+                paper,
+                auto_state,
+                demo_controller,
+            )
+            await query.edit_message_text(
+                dashboard,
+                reply_markup=app_main_menu(),
+            )
 
         elif data == "refresh_dashboard":
+            dashboard = await asyncio.to_thread(
+                build_dashboard,
+                paper,
+                auto_state,
+                demo_controller,
+            )
             await query.edit_message_text(
-                build_dashboard(paper, auto_state),
+                dashboard,
                 reply_markup=app_main_menu(),
             )
 
@@ -460,6 +478,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 auto_state,
                 auto_loop,
                 position_watch_loop,
+            )
+
+        elif data == "emergency_stop_btn":
+            auto_loop.stop()
+            # Exchange-position monitors intentionally remain active.
+            await query.edit_message_text(
+                auto_state.emergency_stop(),
+                reply_markup=auto_menu(),
             )
 
         elif data == "position_btn":

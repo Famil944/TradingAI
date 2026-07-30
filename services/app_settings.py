@@ -2,15 +2,18 @@ from database.db import Database
 
 
 DEFAULTS = {
-    "risk_percent": "1.0",
+    # Conservative defaults suitable for a future 100 USDT live account.
+    "risk_percent": "0.5",
     "max_quantity": "0.01",
     "auto_risk": "true",
     "max_balance_percent": "20",
-    "quality_score": "60",
+    "quality_score": "75",
+    "leverage": "2",
     "timeframe": "1h",
     "notifications": "trades",
     "auto_enabled": "false",
     "telegram_chat_id": "",
+    "last_scan_at": "",
 }
 
 
@@ -89,6 +92,11 @@ class AppSettings:
             if number not in {60, 65, 70, 75, 80}:
                 raise ValueError("Недопустимый Quality Score")
             return str(number)
+        if key == "leverage":
+            number = int(value)
+            if number not in {1, 2}:
+                raise ValueError("Для малого счёта разрешено плечо 1x или 2x")
+            return str(number)
         if key == "timeframe":
             if value not in {"15m", "1h", "4h"}:
                 raise ValueError("Недопустимый таймфрейм")
@@ -105,4 +113,6 @@ class AppSettings:
             if value in {"", None}:
                 return ""
             return str(int(value))
+        if key == "last_scan_at":
+            return str(value or "")
         raise KeyError(key)

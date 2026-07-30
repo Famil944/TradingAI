@@ -6,6 +6,11 @@ def user_error_message(error):
             "для выбранного Demo/Live-счёта, разрешена Futures-торговля "
             "и IP входит в whitelist."
         )
+    if code == -4411:
+        return (
+            "Инструмент относится к Binance TradFi Perpetuals и недоступен "
+            "без отдельного соглашения. Он исключён из следующих попыток."
+        )
     if code is not None:
         message = getattr(error, "error_message", "Ошибка Binance")
         return f"Binance {code}: {message}"

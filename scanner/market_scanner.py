@@ -1,3 +1,6 @@
+from config.trading_universe import is_auto_trading_symbol
+
+
 class MarketScanner:
     def __init__(self, core):
         self.core = core
@@ -6,7 +9,13 @@ class MarketScanner:
         results = []
 
         try:
-            symbols = self.core.market.get_top_usdt_symbols(symbols_limit)
+            symbols = [
+                symbol
+                for symbol in self.core.market.get_top_usdt_symbols(
+                    max(symbols_limit, 100)
+                )
+                if is_auto_trading_symbol(symbol)
+            ][:symbols_limit]
         except Exception as e:
             print(f"Ошибка получения списка монет: {e}")
             symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
