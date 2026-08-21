@@ -19,6 +19,10 @@ class Settings(BaseModel):
     
     # Scanner
     scan_interval_minutes: int = int(os.getenv("SCAN_INTERVAL_MINUTES", "5"))
+    auto_scan_enabled: bool = os.getenv("AUTO_SCAN_ENABLED", "true").lower() in (
+        "1", "true", "yes", "on"
+    )
+    auto_notify_min_score: int = int(os.getenv("AUTO_NOTIFY_MIN_SCORE", "75"))
     min_signal_score: int = int(os.getenv("MIN_SIGNAL_SCORE", "75"))
     signal_cooldown_minutes: int = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "45"))
     signal_score_change_threshold: int = int(os.getenv("SIGNAL_SCORE_CHANGE_THRESHOLD", "10"))
