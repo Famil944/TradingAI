@@ -4,16 +4,11 @@ version = "1.0.0"
 description = "Telegram bot for SPOT market analysis and signal generation"
 requires-python = ">=3.12"
 dependencies = [
-    "aiogram==3.3.0",
-    "httpx==0.25.2",
+    "aiogram==3.4.1",
     "aiohttp==3.9.1",
-    "pandas==2.2.0",
-    "numpy==1.24.3",
-    "aiosqlite==3.0.0",
-    "pydantic==2.5.0",
-    "pydantic-settings==2.1.0",
+    "numpy==1.26.0",
+    "pydantic==2.5.3",
     "python-dotenv==1.0.0",
-    "sqlalchemy==2.0.23",
 ]
 
 [build-system]
@@ -22,7 +17,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*"]
+include = ["analysis*", "bot*", "config*", "core*", "database*", "exchange*", "services*"]
 exclude = ["logs*", "tests*", "data*"]
 namespaces = true
 
