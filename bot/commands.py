@@ -56,17 +56,26 @@ def _format_signal(signal) -> str:
         quality = "🟡 Подтверждённый"
     else:
         quality = "🟠 Только наблюдение"
+    risk_note = (
+        "⚠️ Ранний вход: повышенный риск, используйте меньший объём.\n"
+        if signal.score < 75 else ""
+    )
+    trade_levels = (
+        f"{risk_note}"
+        f"TP: ${_price(signal.targets.tp1, signal.tick_size)} (+3%) · "
+        f"${_price(signal.targets.tp2, signal.tick_size)} (+5%) · "
+        f"${_price(signal.targets.tp3, signal.tick_size)} (+8%) · "
+        f"${_price(signal.targets.tp4, signal.tick_size)} (+15%)\n"
+        f"SL: ${_price(signal.stop_loss, signal.tick_size)} · "
+        f"−{signal.stop_loss_percent:.1f}%\n"
+        f"R/R до TP2: {signal.risk_reward:.2f}"
+    )
     text = (
         f"{quality} · {signal.symbol} · {signal.score}/100\n\n"
         f"Вход: ${_price(signal.entry_zone_min, signal.tick_size)}–"
         f"${_price(signal.entry_zone_max, signal.tick_size)}\n"
         f"Сейчас: ${_price(signal.current_price, signal.tick_size)} · {entry_status}\n\n"
-        f"TP: ${_price(signal.targets.tp1, signal.tick_size)} · "
-        f"${_price(signal.targets.tp2, signal.tick_size)} · "
-        f"${_price(signal.targets.tp3, signal.tick_size)} · "
-        f"${_price(signal.targets.tp4, signal.tick_size)}\n"
-        f"SL: ${_price(signal.stop_loss, signal.tick_size)} · −{signal.stop_loss_percent:.1f}%\n"
-        f"R/R до TP2: {signal.risk_reward:.2f}\n\n"
+        f"{trade_levels}\n\n"
         f"Почему:\n{reasons}\n\n"
         f"⏳ До {valid_until:%H:%M} МСК"
     )
@@ -88,12 +97,13 @@ def _scan_keyboard(signals) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _detail_keyboard(index: int, symbol: str) -> InlineKeyboardMarkup:
+def _detail_keyboard(index: int, symbol: str, score: int) -> InlineKeyboardMarkup:
+    first_row = [
+        InlineKeyboardButton(text="🔔 Следить", callback_data=f"scan_watch:{index}"),
+        InlineKeyboardButton(text="📈 Обновить цену", callback_data=f"scan_price:{symbol}"),
+    ]
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔔 Следить", callback_data=f"scan_watch:{index}"),
-            InlineKeyboardButton(text="📈 Обновить цену", callback_data=f"scan_price:{symbol}"),
-        ],
+        first_row,
         [InlineKeyboardButton(text="⬅️ К списку", callback_data="scan_back")],
     ])
 
@@ -311,7 +321,8 @@ async def scan_detail(query: types.CallbackQuery):
         await query.message.answer("Результаты устарели. Запустите новый скан.")
         return
     await query.message.answer(
-        _format_signal(signal), reply_markup=_detail_keyboard(index, signal.symbol)
+        _format_signal(signal),
+        reply_markup=_detail_keyboard(index, signal.symbol, signal.score),
     )
 
 
@@ -336,6 +347,7 @@ async def scan_profile(query: types.CallbackQuery):
 async def scan_watch(query: types.CallbackQuery):
     try:
         index = int(query.data.split(":", 1)[1])
+        signal = scan_results[query.message.chat.id][index]
         signal_id = scan_signal_ids[query.message.chat.id][index]
     except (KeyError, ValueError, IndexError):
         await query.answer("Результаты устарели", show_alert=True)
@@ -345,6 +357,23 @@ async def scan_watch(query: types.CallbackQuery):
     )
     await query.answer(
         "Наблюдение включено" if saved else "Сигнал не найден",
+        show_alert=True,
+    )
+
+
+@router.callback_query(F.data.startswith("auto_watch:"))
+async def auto_watch(query: types.CallbackQuery):
+    try:
+        signal_id = int(query.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await query.answer("Некорректный сигнал", show_alert=True)
+        return
+    saved = Database().watch_signal(
+        query.message.chat.id, signal_id, settings.signal_validity_minutes
+    )
+    await query.answer(
+        "Слежение включено: сообщу о входе, TP и Stop"
+        if saved else "Сигнал уже недоступен",
         show_alert=True,
     )
 
