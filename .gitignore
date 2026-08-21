@@ -6,6 +6,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 logs/
+data/
+*.xlsx
 database/*.db
 database/*.db-shm
 database/*.db-wal
