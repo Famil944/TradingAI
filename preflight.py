@@ -1,26 +1,26 @@
-from config.trading_mode import (
-    CURRENT_MODE,
-    LIVE_TRADING_ENABLED,
-    NEW_POSITIONS_ENABLED,
-)
-from exchange.trading_client_factory import create_trading_client
+import asyncio
+
+from config.settings import settings
+from database.db import Database
+from exchange.binance_client import BinanceClient
+
+
+async def check_spot():
+    async with BinanceClient() as client:
+        ticker = await client.get_ticker("BTCUSDT")
+    if not ticker or ticker["price"] <= 0:
+        raise RuntimeError("Binance Spot API недоступен")
+    return ticker["price"]
 
 
 def main():
-    client = create_trading_client()
-    health = client.health_check()
-    btc_rules = client.symbol_rules("BTCUSDT")
-
-    print(f"Trading mode: {CURRENT_MODE.value}")
-    print(f"New positions: {NEW_POSITIONS_ENABLED}")
-    print(f"Live unlocked: {LIVE_TRADING_ENABLED}")
-    print(f"Binance health: {health}")
-    print(
-        "BTCUSDT rules: "
-        f"tick={btc_rules.tick_size}, "
-        f"step={btc_rules.step_size}, "
-        f"min_notional={btc_rules.min_notional}"
-    )
+    Database().init_db()
+    if not settings.telegram_bot_token or ":" not in settings.telegram_bot_token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не настроен")
+    btc_price = asyncio.run(check_spot())
+    print("Database: OK")
+    print("Telegram token: configured")
+    print(f"Binance Spot API: OK (BTCUSDT={btc_price})")
     print("Preflight completed. No orders were submitted.")
 
 
