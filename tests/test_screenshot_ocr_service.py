@@ -19,6 +19,17 @@ $128,72
         self.assertEqual(result.quantity, 0.076923)
         self.assertEqual(result.opened_at, "2026-08-27 13:04:07")
 
+    def test_parses_integer_price_and_ocr_letter_o(self):
+        result = parse_binance_screenshot_text("""
+TAO
+O,0383616
+Cost basis S253
+Purchase +0,0205
+27 Aug 2026 20:11:14
+""")
+        self.assertEqual(result.entry_price, 253)
+        self.assertEqual(result.quantity, 0.0383616)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,7 +32,14 @@ def _number(value: str) -> float:
 
 def parse_binance_screenshot_text(text: str) -> ScreenshotTradeData:
     normalized = text.replace("−", "-").replace("—", "-")
-    price_match = re.search(r"\$\s*([0-9][0-9\s]*[.,][0-9]+)", normalized)
+    # Tesseract часто читает ноль перед запятой как латинскую O.
+    normalized = re.sub(r"(?<![\w])[Oo](?=[.,]\d)", "0", normalized)
+    # Binance может показывать как $128,72, так и целую себестоимость $253.
+    # Знак доллара иногда распознаётся как S.
+    price_match = re.search(
+        r"(?:\$|(?<![A-Za-z])S)\s*([0-9][0-9\s]*(?:[.,][0-9]+)?)",
+        normalized,
+    )
     entry_price = _number(price_match.group(1)) if price_match else None
 
     quantity = None
