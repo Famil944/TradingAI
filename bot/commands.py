@@ -1,10 +1,14 @@
 import asyncio
+import tempfile
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router, types
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton,
     InlineKeyboardMarkup, BufferedInputFile,
@@ -15,6 +19,9 @@ import logging
 from services.scanner import MarketScanner
 from exchange.binance_client import BinanceClient
 from services.trade_export_service import build_trades_xlsx
+from services.screenshot_ocr_service import (
+    find_tesseract, recognize_binance_screenshot,
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -27,6 +34,15 @@ MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 MAX_SCAN_RESULTS = 5
 SCAN_PROFILE_THRESHOLDS = {"safe": 80, "normal": 75, "more": 65}
 SCAN_PROFILE_LABELS = {"safe": "Безопасный", "normal": "Обычный", "more": "Больше вариантов"}
+
+
+class TradeSetup(StatesGroup):
+    choosing_price = State()
+    waiting_price = State()
+    choosing_amount = State()
+    waiting_amount = State()
+    waiting_screenshot = State()
+    confirming = State()
 
 
 def _price(value: float, tick_size: float = None) -> str:
@@ -358,33 +374,78 @@ async def scan_watch(query: types.CallbackQuery):
     )
 
 
-async def _take_trade(query: types.CallbackQuery, signal_id: int, symbol: str):
+async def _begin_trade_setup(query: types.CallbackQuery, state: FSMContext,
+                             signal_id: int, symbol: str):
     async with BinanceClient() as client:
         ticker = await client.get_ticker(symbol)
     if not ticker:
         await query.answer("Не удалось получить цену Binance", show_alert=True)
         return
-    entry_price = float(ticker["price"])
-    trade_id = Database().open_manual_trade(
-        query.message.chat.id, signal_id, entry_price
+    suggested_price = float(ticker["price"])
+    await state.clear()
+    await state.update_data(
+        signal_id=signal_id, symbol=symbol, entry_price=suggested_price
     )
-    if trade_id is None:
-        await query.answer("Эта монета уже есть в открытых сделках", show_alert=True)
-        return
-    if trade_id is False:
-        await query.answer("Сигнал не найден", show_alert=True)
-        return
-    await query.answer("Сделка сохранена", show_alert=True)
+    await state.set_state(TradeSetup.choosing_price)
+    await query.answer()
     await query.message.answer(
-        f"✅ Сделка #{trade_id} открыта\n\n{symbol}\n"
-        f"Фактическая цена входа: ${_price(entry_price)}\n"
-        f"Цель +3%: ${_price(entry_price * 1.03)}\n"
-        "Бот сохранит её после выключения и продолжит проверку при следующем запуске."
+        f"✅ Вы выбрали {symbol}\n\nКакая цена входа?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"📈 Взять текущую ${_price(suggested_price)}",
+                callback_data="setup_price_market",
+            )],
+            [InlineKeyboardButton(
+                text="✍️ Ввести цену вручную",
+                callback_data="setup_price_manual",
+            )],
+            [InlineKeyboardButton(
+                text="📷 Заполнить по скриншоту",
+                callback_data="setup_screenshot",
+            )],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="setup_cancel")],
+        ]),
+    )
+
+
+async def _show_amount_keyboard(target):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="$10", callback_data="setup_amount:10"),
+         InlineKeyboardButton(text="$20", callback_data="setup_amount:20"),
+         InlineKeyboardButton(text="$30", callback_data="setup_amount:30")],
+        [InlineKeyboardButton(text="$40", callback_data="setup_amount:40"),
+         InlineKeyboardButton(text="$50", callback_data="setup_amount:50")],
+        [InlineKeyboardButton(text="✍️ Другая сумма", callback_data="setup_amount_manual")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="setup_cancel")],
+    ])
+    await target.answer("Выберите сумму сделки в USDT:", reply_markup=keyboard)
+
+
+async def _show_trade_confirmation(target, state: FSMContext):
+    data = await state.get_data()
+    price = float(data["entry_price"])
+    amount = float(data["position_usdt"])
+    quantity = float(data.get("quantity") or amount / price)
+    opened = data.get("opened_at") or "время подтверждения"
+    await state.set_state(TradeSetup.confirming)
+    await target.answer(
+        "Проверьте сделку:\n\n"
+        f"Монета: {data['symbol']}\n"
+        f"Цена входа: ${_price(price)}\n"
+        f"Сумма: ${amount:g}\n"
+        f"Количество: {quantity:g}\n"
+        f"Открыта: {opened}\n"
+        f"Цель +3%: ${_price(price * 1.03)}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Всё правильно", callback_data="setup_confirm")],
+            [InlineKeyboardButton(text="⬅️ Изменить", callback_data="setup_restart")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="setup_cancel")],
+        ]),
     )
 
 
 @router.callback_query(F.data.startswith("scan_take:"))
-async def scan_take(query: types.CallbackQuery):
+async def scan_take(query: types.CallbackQuery, state: FSMContext):
     try:
         index = int(query.data.split(":", 1)[1])
         signal = scan_results[query.message.chat.id][index]
@@ -392,11 +453,7 @@ async def scan_take(query: types.CallbackQuery):
     except (KeyError, ValueError, IndexError):
         await query.answer("Результаты устарели. Запустите /scan", show_alert=True)
         return
-    await _take_trade(query, signal_id, signal.symbol)
-    await query.answer(
-        "Наблюдение включено" if saved else "Сигнал не найден",
-        show_alert=True,
-    )
+    await _begin_trade_setup(query, state, signal_id, signal.symbol)
 
 
 @router.callback_query(F.data.startswith("auto_watch:"))
@@ -417,7 +474,7 @@ async def auto_watch(query: types.CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("auto_take:"))
-async def auto_take(query: types.CallbackQuery):
+async def auto_take(query: types.CallbackQuery, state: FSMContext):
     try:
         signal_id = int(query.data.split(":", 1)[1])
     except (ValueError, IndexError):
@@ -430,7 +487,158 @@ async def auto_take(query: types.CallbackQuery):
     if not row:
         await query.answer("Сигнал не найден", show_alert=True)
         return
-    await _take_trade(query, signal_id, row[0])
+    await _begin_trade_setup(query, state, signal_id, row[0])
+
+
+@router.callback_query(TradeSetup.choosing_price, F.data == "setup_price_market")
+async def setup_price_market(query: types.CallbackQuery, state: FSMContext):
+    await query.answer()
+    await state.set_state(TradeSetup.choosing_amount)
+    await _show_amount_keyboard(query.message)
+
+
+@router.callback_query(TradeSetup.choosing_price, F.data == "setup_price_manual")
+async def setup_price_manual(query: types.CallbackQuery, state: FSMContext):
+    await query.answer()
+    await state.set_state(TradeSetup.waiting_price)
+    await query.message.answer("Введите фактическую цену покупки, например: 128.72")
+
+
+@router.callback_query(TradeSetup.choosing_price, F.data == "setup_screenshot")
+async def setup_screenshot(query: types.CallbackQuery, state: FSMContext):
+    if not find_tesseract():
+        await query.answer(
+            "OCR не установлен на устройстве, где запущен бот",
+            show_alert=True,
+        )
+        return
+    await query.answer()
+    await state.set_state(TradeSetup.waiting_screenshot)
+    await query.message.answer(
+        "Отправьте скриншот позиции или истории покупки Binance как фотографию."
+    )
+
+
+@router.message(TradeSetup.waiting_screenshot, F.photo)
+async def setup_receive_screenshot(message: types.Message, state: FSMContext):
+    temporary = Path(tempfile.gettempdir()) / f"tradingai_{message.chat.id}.jpg"
+    try:
+        await message.bot.download(message.photo[-1], destination=temporary)
+        parsed = await recognize_binance_screenshot(temporary)
+    except Exception:
+        logger.exception("Не удалось распознать скриншот Binance")
+        await message.answer(
+            "Не удалось распознать данные. Выберите ручной ввод цены.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="✍️ Ввести вручную", callback_data="setup_price_manual"
+                )
+            ]]),
+        )
+        await state.set_state(TradeSetup.choosing_price)
+        return
+    finally:
+        temporary.unlink(missing_ok=True)
+    if not parsed.entry_price or not parsed.quantity:
+        await message.answer(
+            "На скриншоте не удалось уверенно найти цену и количество. "
+            "Используйте ручной ввод."
+        )
+        await state.set_state(TradeSetup.choosing_price)
+        return
+    amount = parsed.entry_price * parsed.quantity
+    await state.update_data(
+        entry_price=parsed.entry_price, quantity=parsed.quantity,
+        position_usdt=amount, opened_at=parsed.opened_at,
+    )
+    await _show_trade_confirmation(message, state)
+
+
+@router.message(TradeSetup.waiting_screenshot)
+async def setup_screenshot_requires_photo(message: types.Message):
+    await message.answer("Нужно отправить изображение или скриншот как фотографию.")
+
+
+@router.message(TradeSetup.waiting_price)
+async def setup_receive_price(message: types.Message, state: FSMContext):
+    try:
+        price = float(message.text.replace(",", ".").strip())
+        if price <= 0:
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer("Введите положительное число, например: 128.72")
+        return
+    await state.update_data(entry_price=price)
+    await state.set_state(TradeSetup.choosing_amount)
+    await _show_amount_keyboard(message)
+
+
+@router.callback_query(TradeSetup.choosing_amount, F.data.startswith("setup_amount:"))
+async def setup_amount_fixed(query: types.CallbackQuery, state: FSMContext):
+    amount = float(query.data.rsplit(":", 1)[1])
+    await state.update_data(position_usdt=amount)
+    await query.answer()
+    await _show_trade_confirmation(query.message, state)
+
+
+@router.callback_query(TradeSetup.choosing_amount, F.data == "setup_amount_manual")
+async def setup_amount_manual(query: types.CallbackQuery, state: FSMContext):
+    await query.answer()
+    await state.set_state(TradeSetup.waiting_amount)
+    await query.message.answer("Введите сумму сделки в USDT, например: 15")
+
+
+@router.message(TradeSetup.waiting_amount)
+async def setup_receive_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = float(message.text.replace(",", ".").strip())
+        if amount <= 0:
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer("Введите положительную сумму, например: 15")
+        return
+    await state.update_data(position_usdt=amount)
+    await _show_trade_confirmation(message, state)
+
+
+@router.callback_query(TradeSetup.confirming, F.data == "setup_confirm")
+async def setup_confirm(query: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    trade_id = Database().open_manual_trade(
+        query.message.chat.id, data["signal_id"], data["entry_price"]
+    )
+    if trade_id is None:
+        await query.answer("Эта монета уже есть в открытых сделках", show_alert=True)
+        await state.clear()
+        return
+    if trade_id is False:
+        await query.answer("Сигнал больше недоступен", show_alert=True)
+        await state.clear()
+        return
+    Database().edit_manual_trade(
+        trade_id, query.message.chat.id, data["entry_price"], data["position_usdt"]
+    )
+    if data.get("opened_at"):
+        Database().update_manual_trade(trade_id, opened_at=data["opened_at"])
+    await query.answer("Сделка сохранена", show_alert=True)
+    await state.clear()
+    await query.message.answer(
+        f"✅ Сделка #{trade_id} сохранена. Контроль +3% и Stop включён."
+    )
+
+
+@router.callback_query(F.data == "setup_restart")
+async def setup_restart(query: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await _begin_trade_setup(
+        query, state, data["signal_id"], data["symbol"]
+    )
+
+
+@router.callback_query(F.data == "setup_cancel")
+async def setup_cancel(query: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await query.answer("Добавление сделки отменено")
 
 
 def _trade_keyboard(trade_id: int) -> InlineKeyboardMarkup:

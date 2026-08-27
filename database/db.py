@@ -317,7 +317,7 @@ class Database:
             "tp4_hit", "status", "close_price", "close_reason",
             "closed_at", "last_checked_at", "current_price", "critical_alerted",
             "position_usdt", "quantity", "pending_reason", "pending_price",
-            "pending_at", "dismissed_reason",
+            "pending_at", "dismissed_reason", "opened_at",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
