@@ -12,7 +12,6 @@ from bot.commands import (
 from core.single_instance import SingleInstance
 from services.signal_watch_service import SignalWatchService
 from services.auto_signal_service import AutoSignalService
-from services.news_sentiment_service import NewsSentimentService
 
 # Настройка логирования
 logging.basicConfig(
@@ -56,12 +55,9 @@ async def main():
         raise
     
     logger.info("✅ Бот создан и настроен")
-    news_service = NewsSentimentService()
-    watch_service = SignalWatchService(bot, news_service=news_service)
+    watch_service = SignalWatchService(bot)
     watch_task = asyncio.create_task(watch_service.run())
-    auto_signal_service = AutoSignalService(
-        bot, manual_scanner, scan_lock, news_service
-    )
+    auto_signal_service = AutoSignalService(bot, manual_scanner, scan_lock)
     auto_signal_task = (
         asyncio.create_task(auto_signal_service.run())
         if settings.auto_scan_enabled else None

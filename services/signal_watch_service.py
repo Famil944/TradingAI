@@ -12,12 +12,10 @@ logger = logging.getLogger(__name__)
 class SignalWatchService:
     """Tracks user-selected signals and sends state-change notifications."""
 
-    def __init__(self, bot, interval_seconds: int = 30, news_service=None):
+    def __init__(self, bot, interval_seconds: int = 30):
         self.bot = bot
         self.db = Database()
         self.interval_seconds = interval_seconds
-        self.news_service = news_service
-        self._news_risk_alerted = set()
         self._stop_event = asyncio.Event()
 
     async def run(self):
@@ -68,24 +66,6 @@ class SignalWatchService:
             return
         price = float(ticker["price"])
 
-        if self.news_service and watch_id not in self._news_risk_alerted:
-            news = await self.news_service.assess(symbol)
-            if news.available and (news.critical_risk or news.score <= -40):
-                self._news_risk_alerted.add(watch_id)
-                heading = "🔴 СИГНАЛ ВЫХОДА" if entered else "⛔ ВХОД ОТМЕНЁН"
-                action = (
-                    "Рекомендуется закрыть позицию или существенно снизить риск."
-                    if entered else "Не входить: обнаружен критический рыночный риск."
-                )
-                await self.bot.send_message(
-                    user_id,
-                    f"{heading}\n\n{symbol}\nЦена: ${price:g}\n"
-                    f"Причина: критический новостной риск.\n{action}",
-                )
-                if not entered:
-                    self.db.update_watch(watch_id, status="cancelled_by_risk")
-                    return
-
         if not entered and entry_min <= price <= entry_max:
             entered = 1
             self.db.update_watch(watch_id, entered=1)
@@ -116,3 +96,4 @@ class SignalWatchService:
                 await self.bot.send_message(
                     user_id, f"✅ {symbol}: достигнут {label} ${target:g}\nЦена: ${price:g}"
                 )
+
