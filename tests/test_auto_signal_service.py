@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from services.auto_signal_service import AutoSignalService
 from services.news_sentiment_service import NewsAssessment
@@ -40,6 +41,18 @@ class FakeNewsService:
 
 
 class AutoSignalServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_scans_immediately_before_waiting(self):
+        service = AutoSignalService(
+            FakeBot(), FakeScanner(), asyncio.Lock(), FakeNewsService()
+        )
+
+        async def scan_once():
+            service.stop()
+
+        service.scan_and_notify = AsyncMock(side_effect=scan_once)
+        await service.run()
+        service.scan_and_notify.assert_awaited_once()
+
     async def test_strong_signal_is_sent_with_watch_button(self):
         bot = FakeBot()
         service = AutoSignalService(

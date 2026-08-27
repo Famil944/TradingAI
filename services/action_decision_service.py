@@ -16,7 +16,11 @@ class ActionDecisionService:
     @staticmethod
     def decide(technical_score: int, news: NewsAssessment) -> ActionDecision:
         if not news.available:
-            return ActionDecision("WAIT", technical_score, "недоступен")
+            if technical_score >= 75:
+                return ActionDecision(
+                    "BUY", technical_score, "новости недоступны · технический сигнал"
+                )
+            return ActionDecision("WAIT", technical_score, "новости недоступны")
         priority = max(0, min(100, technical_score + news.score // 5))
         if news.critical_risk or news.score <= -40:
             return ActionDecision("AVOID", priority, "критический риск")
@@ -26,4 +30,3 @@ class ActionDecisionService:
         if 65 <= technical_score < 75 and news.score >= 20:
             return ActionDecision("EARLY_BUY", priority, "положительный")
         return ActionDecision("WAIT", priority, "нейтральный")
-

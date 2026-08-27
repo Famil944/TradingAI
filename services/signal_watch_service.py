@@ -60,6 +60,7 @@ class SignalWatchService:
         price = float(ticker["price"])
         observed_high = price
         observed_low = price
+        recovered = []
         try:
             last_checked = datetime.fromisoformat(str(trade["last_checked_at"])).replace(
                 tzinfo=timezone.utc
@@ -74,12 +75,12 @@ class SignalWatchService:
             candles = await client.get_klines(
                 trade["symbol"], interval, limit=min(1000, max(2, int(units) + 2))
             )
-            recovered = [
+            recovered = sorted([
                 candle for candle in candles
                 if datetime.fromtimestamp(
                     candle.timestamp / 1000, tz=timezone.utc
                 ) >= last_checked
-            ]
+            ], key=lambda candle: candle.timestamp)
             if recovered:
                 observed_high = max(observed_high, *(candle.high for candle in recovered))
                 observed_low = min(observed_low, *(candle.low for candle in recovered))
@@ -91,18 +92,51 @@ class SignalWatchService:
                 "%Y-%m-%d %H:%M:%S"
             ),
         }
-        if observed_low <= float(trade["stop_loss"]):
+        stop_price = float(trade["stop_loss"])
+        target_price = float(trade["tp1"])
+        event = None
+        event_time = datetime.now(timezone.utc)
+        for candle in recovered:
+            stop_hit = candle.low <= stop_price
+            target_hit = candle.high >= target_price
+            if stop_hit or target_hit:
+                # Внутри одной OHLC-свечи порядок неизвестен: консервативно Stop.
+                event = "STOP" if stop_hit else "TP +3%"
+                event_time = datetime.fromtimestamp(
+                    candle.timestamp / 1000, tz=timezone.utc
+                )
+                break
+        if event is None:
+            if price <= stop_price:
+                event = "STOP"
+            elif price >= target_price:
+                event = "TP +3%"
+
+        if event == "STOP":
             updates.update({
-                "status": "closed", "close_price": float(trade["stop_loss"]),
-                "close_reason": "STOP", "closed_at": datetime.now(
-                    timezone.utc
-                ).strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "closed", "close_price": stop_price,
+                "close_reason": "STOP",
+                "closed_at": event_time.strftime("%Y-%m-%d %H:%M:%S"),
             })
             self.db.update_manual_trade(trade["id"], **updates)
             await self.bot.send_message(
                 trade["user_id"],
                 f"🛑 Сделка {trade['symbol']} закрыта по Stop\n"
                 f"Цена: ${price:g} · Stop: ${trade['stop_loss']:g}",
+            )
+            return
+
+        if event == "TP +3%":
+            updates.update({
+                "tp1_hit": 1, "status": "closed", "close_price": target_price,
+                "close_reason": "TP +3%",
+                "closed_at": event_time.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            self.db.update_manual_trade(trade["id"], **updates)
+            await self.bot.send_message(
+                trade["user_id"],
+                f"✅ {trade['symbol']}: достигнута цель +3%\n"
+                f"Цель: ${target_price:g}\nСделка завершена.",
             )
             return
 
@@ -123,22 +157,7 @@ class SignalWatchService:
         elif not is_critical and trade.get("critical_alerted"):
             updates["critical_alerted"] = 0
 
-        target_hit = not trade["tp1_hit"] and observed_high >= float(trade["tp1"])
-        if target_hit:
-            updates.update({
-                "tp1_hit": 1,
-                "status": "closed", "close_price": float(trade["tp1"]),
-                "close_reason": "TP +3%", "closed_at": datetime.now(
-                    timezone.utc
-                ).strftime("%Y-%m-%d %H:%M:%S"),
-            })
         self.db.update_manual_trade(trade["id"], **updates)
-        if target_hit:
-            await self.bot.send_message(
-                trade["user_id"],
-                f"✅ {trade['symbol']}: достигнута цель +3%\n"
-                f"Цена: ${price:g}\nСделка завершена.",
-            )
 
     async def _check_watch(self, client, watch, now):
         (

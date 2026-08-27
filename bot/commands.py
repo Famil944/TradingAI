@@ -377,6 +377,7 @@ async def _take_trade(query: types.CallbackQuery, signal_id: int, symbol: str):
     await query.message.answer(
         f"✅ Сделка #{trade_id} открыта\n\n{symbol}\n"
         f"Фактическая цена входа: ${_price(entry_price)}\n"
+        f"Цель +3%: ${_price(entry_price * 1.03)}\n"
         "Бот сохранит её после выключения и продолжит проверку при следующем запуске."
     )
 
@@ -447,6 +448,7 @@ async def cmd_trades(message: types.Message):
         return
     open_trades = [trade for trade in trades if trade["status"] == "open"]
     closed = [trade for trade in trades if trade["status"] != "open"]
+    statistics = Database().get_manual_trade_statistics(message.chat.id)
     critical = []
     profitable = []
     for trade in open_trades:
@@ -457,18 +459,13 @@ async def cmd_trades(message: types.Message):
             critical.append(trade)
         elif pnl > 0:
             profitable.append(trade)
-    closed_profit = sum(
-        bool(trade.get("close_price"))
-        and trade["close_price"] > trade["entry_price"]
-        for trade in closed
-    )
     await message.answer(
         "📊 СОСТОЯНИЕ СДЕЛОК\n\n"
         f"🟢 В процессе: {len(open_trades)}\n"
         f"📈 Сейчас в плюсе: {len(profitable)}\n"
         f"🚨 Критическая зона: {len(critical)}\n"
         f"✅ Закрыто: {len(closed)}\n"
-        f"🏆 Закрыто в плюс: {closed_profit}"
+        f"🏆 Закрыто в плюс: {statistics['wins']}"
     )
     for trade in open_trades:
         current = trade.get("current_price") or trade["entry_price"]
@@ -566,17 +563,20 @@ async def scan_back(query: types.CallbackQuery):
 @router.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     """Команда /stats - статистика."""
-    db = Database()
-    
-    stats = db.get_signal_statistics()
-    text = f"""📊 Статистика сигналов:
+    stats = Database().get_manual_trade_statistics(message.chat.id)
+    text = f"""📊 Статистика ваших сделок:
 
-Всего создано: {stats['signals']}
-Отслежено: {stats['tracked']}
-Достигли цели (+3%): {stats['tp1']}
-Попали на Stop: {stats['stops']}
+Всего выбрано: {stats['total']}
+🟢 В процессе: {stats['open']}
+🚨 Критическая зона: {stats['critical']}
+✅ Закрыто: {stats['closed']}
+🏆 В плюс: {stats['wins']}
+📉 В минус: {stats['losses']}
+🎯 Закрыто по цели +3%: {stats['targets']}
+🛑 Закрыто по Stop: {stats['stops']}
+✋ Закрыто вручную: {stats['manual']}
 
-Если «Отслежено» равно нулю, модуль контроля результатов ещё не накопил данные."""
+Средний результат закрытых: {stats['average_result']:+.2f}%"""
 
     await message.answer(text)
 

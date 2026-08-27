@@ -13,6 +13,7 @@ class TradeExportTests(unittest.TestCase):
             "close_price": 105.0, "close_reason": "manual",
             "tp1": 103, "tp2": 105, "tp3": 108, "tp4": 115,
             "stop_loss": 97, "max_price": 106, "min_price": 99,
+            "current_price": 104,
             "opened_at": "2026-08-01", "closed_at": "2026-08-02",
         }])
         with ZipFile(BytesIO(content)) as archive:

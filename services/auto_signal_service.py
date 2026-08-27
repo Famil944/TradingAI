@@ -33,16 +33,15 @@ class AutoSignalService:
         )
         while not self._stop_event.is_set():
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
-                break
-            except asyncio.TimeoutError:
-                pass
-            try:
                 await self.scan_and_notify()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Automatic signal scan failed")
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
 
     def stop(self):
         self._stop_event.set()
@@ -59,6 +58,8 @@ class AutoSignalService:
         decisions = []
         for item in results:
             signal = item["signal_object"]
+            if signal.score < settings.auto_notify_min_score:
+                continue
             news = await self.news_service.assess(signal.symbol)
             decision = self.decision_service.decide(signal.score, news)
             if decision.action in {"BUY", "EARLY_BUY", "AVOID"}:

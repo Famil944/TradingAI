@@ -45,6 +45,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(len(trades), 1)
             self.assertEqual(trades[0]["symbol"], "BTCUSDT")
             self.assertEqual(trades[0]["entry_price"], 100.5)
+            self.assertAlmostEqual(trades[0]["tp1"], 100.5 * 1.03)
 
     def test_manual_trade_can_be_closed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -62,6 +63,9 @@ class DatabaseTests(unittest.TestCase):
             trade = database.get_manual_trades(123)[0]
             self.assertEqual(trade["status"], "closed")
             self.assertEqual(trade["close_price"], 104)
+            stats = database.get_manual_trade_statistics(123)
+            self.assertEqual(stats["closed"], 1)
+            self.assertEqual(stats["wins"], 1)
 
 
 if __name__ == "__main__":

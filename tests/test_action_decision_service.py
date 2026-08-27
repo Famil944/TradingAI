@@ -27,11 +27,11 @@ class ActionDecisionServiceTests(unittest.TestCase):
         )
         self.assertEqual(result.action, "AVOID")
 
-    def test_missing_news_fails_closed(self):
+    def test_missing_news_keeps_strong_technical_signal(self):
         result = ActionDecisionService.decide(
             90, NewsAssessment(available=False)
         )
-        self.assertEqual(result.action, "WAIT")
+        self.assertEqual(result.action, "BUY")
 
     def test_news_parser_detects_hack(self):
         result = NewsSentimentService._score_posts([

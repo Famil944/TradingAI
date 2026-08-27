@@ -196,6 +196,15 @@ class Database:
                 cursor.execute(
                     "ALTER TABLE manual_trades ADD COLUMN critical_alerted INTEGER DEFAULT 0"
                 )
+            # Единственная цель всегда считается от фактической цены входа.
+            cursor.execute(
+                """UPDATE manual_trades
+                   SET tp1 = entry_price * 1.03,
+                       tp2 = entry_price * 1.03,
+                       tp3 = entry_price * 1.03,
+                       tp4 = entry_price * 1.03
+                   WHERE status = 'open'"""
+            )
 
             conn.commit()
 
@@ -212,12 +221,13 @@ class Database:
             if existing:
                 return None
             signal = conn.execute(
-                """SELECT symbol, score, tp1, tp2, tp3, tp4, stop_loss
+                """SELECT symbol, score, stop_loss
                    FROM signals WHERE id = ?""",
                 (int(signal_id),),
             ).fetchone()
             if not signal:
                 return False
+            target = float(entry_price) * 1.03
             cursor = conn.execute(
                 """INSERT INTO manual_trades (
                        user_id, signal_id, symbol, score, entry_price, current_price,
@@ -225,11 +235,38 @@ class Database:
                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     int(user_id), int(signal_id), signal[0], signal[1],
-                    float(entry_price), float(entry_price), signal[2], signal[3], signal[4],
-                    signal[5], signal[6], float(entry_price), float(entry_price),
+                    float(entry_price), float(entry_price), target, target, target,
+                    target, signal[2], float(entry_price), float(entry_price),
                 ),
             )
             return cursor.lastrowid
+
+    def get_manual_trade_statistics(self, user_id: int) -> dict:
+        trades = self.get_manual_trades(user_id)
+        opened = [trade for trade in trades if trade["status"] == "open"]
+        closed = [trade for trade in trades if trade["status"] != "open"]
+        critical = 0
+        profitable_open = 0
+        for trade in opened:
+            current = trade.get("current_price") or trade["entry_price"]
+            pnl = (current / trade["entry_price"] - 1) * 100
+            stop_distance = (current - trade["stop_loss"]) / current * 100
+            critical += pnl <= -2 or stop_distance <= 1
+            profitable_open += pnl > 0
+        results = [
+            (trade["close_price"] / trade["entry_price"] - 1) * 100
+            for trade in closed if trade.get("close_price")
+        ]
+        return {
+            "total": len(trades), "open": len(opened), "closed": len(closed),
+            "critical": int(critical), "profitable_open": int(profitable_open),
+            "wins": sum(result > 0 for result in results),
+            "losses": sum(result < 0 for result in results),
+            "targets": sum(trade.get("close_reason") == "TP +3%" for trade in closed),
+            "stops": sum(trade.get("close_reason") == "STOP" for trade in closed),
+            "manual": sum(trade.get("close_reason") == "manual" for trade in closed),
+            "average_result": sum(results) / len(results) if results else 0.0,
+        }
 
     def get_manual_trades(self, user_id: int = None, status: str = None):
         query = "SELECT * FROM manual_trades WHERE 1 = 1"
