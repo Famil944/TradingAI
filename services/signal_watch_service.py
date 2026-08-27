@@ -103,24 +103,19 @@ class SignalWatchService:
                 "%Y-%m-%d %H:%M:%S"
             ),
         }
-        stop_price = float(trade["stop_loss"])
         target_price = float(trade["tp1"])
         event = None
         event_time = datetime.now(timezone.utc)
         for candle in recovered:
-            stop_hit = candle.low <= stop_price
             target_hit = candle.high >= target_price
-            if stop_hit or target_hit:
-                # Внутри одной OHLC-свечи порядок неизвестен: консервативно Stop.
-                event = "STOP" if stop_hit else "TP +3%"
+            if target_hit:
+                event = "TP +3%"
                 event_time = datetime.fromtimestamp(
                     candle.timestamp / 1000, tz=timezone.utc
                 )
                 break
         if event is None:
-            if price <= stop_price:
-                event = "STOP"
-            elif price >= target_price:
+            if price >= target_price:
                 event = "TP +3%"
 
         dismissed = trade.get("dismissed_reason")
@@ -130,7 +125,7 @@ class SignalWatchService:
             updates["dismissed_reason"] = None
 
         if event:
-            event_price = stop_price if event == "STOP" else target_price
+            event_price = target_price
             self.db.update_manual_trade(trade["id"], **updates)
             self.db.set_trade_pending(
                 trade["id"], event, event_price,
@@ -146,27 +141,23 @@ class SignalWatchService:
                     callback_data=f"trade_keep_open:{trade['id']}",
                 )],
             ])
-            heading = "🛑 Обнаружен Stop" if event == "STOP" else "🎯 Достигнута цель +3%"
             await self.bot.send_message(
                 trade["user_id"],
-                f"{heading}\n\n{trade['symbol']} · уровень ${event_price:g}\n"
+                f"🎯 Достигнута цель +3%\n\n"
+                f"{trade['symbol']} · уровень ${event_price:g}\n"
                 "Проверьте Binance и подтвердите фактическое закрытие.",
                 reply_markup=keyboard,
             )
             return
 
         pnl_percent = (price / float(trade["entry_price"]) - 1) * 100
-        stop_distance = (
-            (price - float(trade["stop_loss"])) / price * 100 if price else 0
-        )
-        is_critical = pnl_percent <= -2 or stop_distance <= 1
+        is_critical = pnl_percent <= -2
         if is_critical and not trade.get("critical_alerted"):
             updates["critical_alerted"] = 1
             await self.bot.send_message(
                 trade["user_id"],
                 f"🚨 КРИТИЧЕСКАЯ ЗОНА\n\n{trade['symbol']}\n"
                 f"Цена: ${price:g} · результат: {pnl_percent:+.2f}%\n"
-                f"До Stop осталось: {max(0, stop_distance):.2f}%\n"
                 "Проверьте позицию в Binance.",
             )
         elif not is_critical and trade.get("critical_alerted"):
@@ -222,13 +213,6 @@ class SignalWatchService:
 
         if not entered:
             return
-        if price <= stop_loss:
-            self.db.update_watch(watch_id, stop_hit=1, status="stopped")
-            await self.bot.send_message(
-                user_id, f"🛑 {symbol}: достигнут Stop ${stop_loss:g}. Наблюдение завершено."
-            )
-            return
-
         if not tp1_hit and price >= tp1:
             self.db.update_watch(watch_id, tp1_hit=1, status="completed")
             await self.bot.send_message(
