@@ -67,6 +67,46 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(stats["closed"], 1)
             self.assertEqual(stats["wins"], 1)
 
+    def test_pending_trade_requires_user_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(str(Path(directory) / "pending.db"))
+            database.init_db()
+            signal_id = database.save_signal({
+                "symbol": "SOLUSDT", "score": 80, "entry_price": 100,
+                "entry_zone_min": 99, "entry_zone_max": 101,
+                "tp1": 103, "tp2": 103, "tp3": 103, "tp4": 103,
+                "stop_loss": 97, "stop_loss_percent": 3,
+                "support": 98, "resistance": 110, "risk_reward": 1,
+            })
+            trade_id = database.open_manual_trade(123, signal_id, 100)
+            database.set_trade_pending(
+                trade_id, "TP +3%", 103, "2026-08-27 10:00:00"
+            )
+            self.assertEqual(
+                database.get_manual_trades(123)[0]["status"], "pending_close"
+            )
+            self.assertTrue(database.confirm_pending_trade(trade_id, 123))
+            trade = database.get_manual_trades(123)[0]
+            self.assertEqual(trade["status"], "closed")
+            self.assertEqual(trade["close_reason"], "TP +3%")
+
+    def test_trade_entry_and_position_can_be_corrected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(str(Path(directory) / "edit.db"))
+            database.init_db()
+            signal_id = database.save_signal({
+                "symbol": "XRPUSDT", "score": 80, "entry_price": 1,
+                "entry_zone_min": 0.99, "entry_zone_max": 1.01,
+                "tp1": 1.03, "tp2": 1.03, "tp3": 1.03, "tp4": 1.03,
+                "stop_loss": 0.97, "stop_loss_percent": 3,
+                "support": 0.98, "resistance": 1.1, "risk_reward": 1,
+            })
+            trade_id = database.open_manual_trade(123, signal_id, 1)
+            self.assertTrue(database.edit_manual_trade(trade_id, 123, 1.1, 11))
+            trade = database.get_manual_trades(123)[0]
+            self.assertAlmostEqual(trade["tp1"], 1.133)
+            self.assertAlmostEqual(trade["quantity"], 10)
+
 
 if __name__ == "__main__":
     unittest.main()

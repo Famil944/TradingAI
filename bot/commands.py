@@ -246,7 +246,8 @@ async def cmd_help(message: types.Message):
 /scan - Принудительный скан рынка
 /trades - Мои открытые и закрытые сделки
 /export - Скачать журнал сделок Excel
-/history - История сигналов
+/history - История ваших сделок
+/edit_trade ID ЦЕНА СУММА - Уточнить вход и сумму USDT
 /stats - Статистика эффективности
 /settings - Персональные настройки
 /help - Эта справка
@@ -447,7 +448,8 @@ async def cmd_trades(message: types.Message):
         await message.answer("Сделок пока нет. Запустите /scan и нажмите «Я вошёл».")
         return
     open_trades = [trade for trade in trades if trade["status"] == "open"]
-    closed = [trade for trade in trades if trade["status"] != "open"]
+    pending = [trade for trade in trades if trade["status"] == "pending_close"]
+    closed = [trade for trade in trades if trade["status"] == "closed"]
     statistics = Database().get_manual_trade_statistics(message.chat.id)
     critical = []
     profitable = []
@@ -464,6 +466,7 @@ async def cmd_trades(message: types.Message):
         f"🟢 В процессе: {len(open_trades)}\n"
         f"📈 Сейчас в плюсе: {len(profitable)}\n"
         f"🚨 Критическая зона: {len(critical)}\n"
+        f"⏳ Ждут подтверждения: {len(pending)}\n"
         f"✅ Закрыто: {len(closed)}\n"
         f"🏆 Закрыто в плюс: {statistics['wins']}"
     )
@@ -482,6 +485,22 @@ async def cmd_trades(message: types.Message):
             f"Stop: ${_price(trade['stop_loss'])}\n"
             f"Открыта: {trade['opened_at']} UTC",
             reply_markup=_trade_keyboard(trade["id"]),
+        )
+    for trade in pending:
+        await message.answer(
+            f"⏳ #{trade['id']} {trade['symbol']} · требуется подтверждение\n"
+            f"Обнаружено: {trade.get('pending_reason')}\n"
+            f"Уровень: ${_price(trade.get('pending_price') or 0)}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="✅ Подтверждаю закрытие",
+                    callback_data=f"trade_confirm_close:{trade['id']}",
+                )],
+                [InlineKeyboardButton(
+                    text="⏳ Сделка ещё открыта",
+                    callback_data=f"trade_keep_open:{trade['id']}",
+                )],
+            ]),
         )
     if closed:
         lines = ["Последние закрытые:"]
@@ -509,6 +528,26 @@ async def trade_close(query: types.CallbackQuery):
     if not trade:
         await query.answer("Сделка уже закрыта", show_alert=True)
         return
+    await query.answer()
+    await query.message.answer(
+        f"Вы действительно закрыли {trade['symbol']} в Binance?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="✅ Да, закрыта", callback_data=f"trade_manual_confirm:{trade_id}"
+            ),
+            InlineKeyboardButton(text="Отмена", callback_data="trade_close_cancel"),
+        ]]),
+    )
+
+
+@router.callback_query(F.data.startswith("trade_manual_confirm:"))
+async def trade_manual_confirm(query: types.CallbackQuery):
+    trade_id = int(query.data.rsplit(":", 1)[1])
+    trades = Database().get_manual_trades(query.message.chat.id, status="open")
+    trade = next((item for item in trades if item["id"] == trade_id), None)
+    if not trade:
+        await query.answer("Сделка уже закрыта или ожидает подтверждения", show_alert=True)
+        return
     async with BinanceClient() as client:
         ticker = await client.get_ticker(trade["symbol"])
     if not ticker:
@@ -517,10 +556,68 @@ async def trade_close(query: types.CallbackQuery):
     price = float(ticker["price"])
     Database().close_manual_trade(trade_id, query.message.chat.id, price)
     result = (price / trade["entry_price"] - 1) * 100
-    await query.answer("Сделка закрыта и сохранена", show_alert=True)
+    await query.answer("Закрытие сохранено", show_alert=True)
     await query.message.answer(
         f"🔴 {trade['symbol']} закрыта\nЦена: ${_price(price)}\n"
         f"Результат: {result:+.2f}%"
+    )
+
+
+@router.callback_query(F.data == "trade_close_cancel")
+async def trade_close_cancel(query: types.CallbackQuery):
+    await query.answer("Закрытие отменено")
+
+
+@router.callback_query(F.data.startswith("trade_confirm_close:"))
+async def trade_confirm_close(query: types.CallbackQuery):
+    trade_id = int(query.data.rsplit(":", 1)[1])
+    saved = Database().confirm_pending_trade(trade_id, query.message.chat.id)
+    await query.answer(
+        "Закрытие подтверждено" if saved else "Подтверждение уже обработано",
+        show_alert=True,
+    )
+    if saved:
+        await query.message.answer(f"✅ Сделка #{trade_id} перенесена в историю.")
+
+
+@router.callback_query(F.data.startswith("trade_keep_open:"))
+async def trade_keep_open(query: types.CallbackQuery):
+    trade_id = int(query.data.rsplit(":", 1)[1])
+    saved = Database().keep_pending_trade_open(
+        trade_id, query.message.chat.id
+    )
+    await query.answer(
+        "Продолжаю наблюдение" if saved else "Подтверждение уже обработано",
+        show_alert=True,
+    )
+
+
+@router.message(Command("edit_trade"))
+async def cmd_edit_trade(message: types.Message):
+    parts = message.text.replace(",", ".").split()
+    if len(parts) not in {3, 4}:
+        await message.answer(
+            "Использование: /edit_trade ID ЦЕНА [СУММА_USDT]\n"
+            "Пример: /edit_trade 7 0.001501 10"
+        )
+        return
+    try:
+        trade_id = int(parts[1])
+        entry_price = float(parts[2])
+        position_usdt = float(parts[3]) if len(parts) == 4 else None
+    except ValueError:
+        await message.answer("ID, цена и сумма должны быть числами.")
+        return
+    saved = Database().edit_manual_trade(
+        trade_id, message.chat.id, entry_price, position_usdt
+    )
+    if not saved:
+        await message.answer("Открытая сделка не найдена или значения некорректны.")
+        return
+    amount = f" · сумма ${position_usdt:g}" if position_usdt else ""
+    await message.answer(
+        f"✅ Сделка #{trade_id} обновлена\nВход: ${_price(entry_price)}{amount}\n"
+        f"Цель +3%: ${_price(entry_price * 1.03)}"
     )
 
 
@@ -569,6 +666,7 @@ async def cmd_stats(message: types.Message):
 Всего выбрано: {stats['total']}
 🟢 В процессе: {stats['open']}
 🚨 Критическая зона: {stats['critical']}
+⏳ Ждут подтверждения: {stats['pending']}
 ✅ Закрыто: {stats['closed']}
 🏆 В плюс: {stats['wins']}
 📉 В минус: {stats['losses']}
@@ -590,8 +688,8 @@ async def cmd_coin(message: types.Message):
         await message.answer("📌 Использование: /coin <TICKER>\nПримеры: /coin BTC, /coin ETH, /coin SOL")
         return
     
-    ticker = args[1].upper()
-    symbol = f"{ticker}USDT"
+    ticker = args[1].upper().replace("/", "")
+    symbol = ticker if ticker.endswith("USDT") else f"{ticker}USDT"
     
     await message.answer(f"📊 Анализ {symbol}...")
     try:
@@ -614,30 +712,37 @@ async def cmd_settings(message: types.Message):
     """Команда /settings - настройки пользователя."""
     text = """⚙️ **Персональные настройки:**
 
-Минимальный Score: 75 (по умолчанию)
-Цели фиксации: 3% / 5% / 8% / 15%
-Режим сканирования: ручной (/scan)
+Профили сканирования:
+🛡 Безопасный: Score 80+
+⚖️ Обычный: Score 75+
+🔎 Больше вариантов: Score 65+
 
-Для изменения настроек напишите:
-`/set_score 70` - изменить минимальный Score"""
+Единственная цель: +3%
+Критическая зона: убыток от −2% или расстояние до Stop не больше 1%.
+
+Профиль выбирается кнопками после команды /scan."""
 
     await message.answer(text)
 
 
 @router.message(Command("history"))
 async def cmd_history(message: types.Message):
-    """Команда /history - история сигналов."""
-    db = Database()
-    signals = db.get_signals(limit=20)
-    
-    text = "📜 **История последних 20 сигналов:**\n\n"
-    
-    if not signals:
-        await message.answer("История пуста")
+    """Команда /history - история реальных выбранных сделок."""
+    trades = Database().get_manual_trades(message.chat.id)
+    closed = [trade for trade in trades if trade["status"] == "closed"][:20]
+    if not closed:
+        await message.answer("История закрытых сделок пока пуста.")
         return
-    
-    for signal in signals:
-        id, symbol, score, entry_price, *_, created_at = signal
-        text += f"• {symbol} | Score: {score} | Цена: ${entry_price:.2f} | {created_at[:10]}\n"
-    
+    lines = ["📜 История последних сделок:", ""]
+    for trade in closed:
+        result = (trade["close_price"] / trade["entry_price"] - 1) * 100
+        pnl = (
+            f" · {trade['position_usdt'] * result / 100:+.2f} USDT"
+            if trade.get("position_usdt") else ""
+        )
+        lines.append(
+            f"#{trade['id']} {trade['symbol']} · {result:+.2f}%{pnl} · "
+            f"{trade.get('close_reason') or 'вручную'}"
+        )
+    text = "\n".join(lines)
     await message.answer(text)

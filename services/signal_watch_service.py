@@ -2,6 +2,8 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 from database.db import Database
 from exchange.binance_client import BinanceClient
 
@@ -69,17 +71,26 @@ class SignalWatchService:
             last_checked = datetime.now(timezone.utc)
         offline_seconds = (datetime.now(timezone.utc) - last_checked).total_seconds()
         if offline_seconds > 120:
-            # 1h покрывает примерно 41 день. Для более старой сделки берём 1d.
-            interval = "1h" if offline_seconds <= 40 * 86400 else "1d"
-            units = offline_seconds / (3600 if interval == "1h" else 86400)
+            if offline_seconds <= 12 * 3600:
+                interval, interval_seconds = "1m", 60
+            elif offline_seconds <= 3 * 86400:
+                interval, interval_seconds = "5m", 300
+            elif offline_seconds <= 10 * 86400:
+                interval, interval_seconds = "15m", 900
+            elif offline_seconds <= 40 * 86400:
+                interval, interval_seconds = "1h", 3600
+            else:
+                interval, interval_seconds = "1d", 86400
+            units = offline_seconds / interval_seconds
             candles = await client.get_klines(
                 trade["symbol"], interval, limit=min(1000, max(2, int(units) + 2))
             )
             recovered = sorted([
                 candle for candle in candles
                 if datetime.fromtimestamp(
-                    candle.timestamp / 1000, tz=timezone.utc
-                ) >= last_checked
+                    (candle.timestamp / 1000) + interval_seconds,
+                    tz=timezone.utc,
+                ) > last_checked
             ], key=lambda candle: candle.timestamp)
             if recovered:
                 observed_high = max(observed_high, *(candle.high for candle in recovered))
@@ -112,31 +123,35 @@ class SignalWatchService:
             elif price >= target_price:
                 event = "TP +3%"
 
-        if event == "STOP":
-            updates.update({
-                "status": "closed", "close_price": stop_price,
-                "close_reason": "STOP",
-                "closed_at": event_time.strftime("%Y-%m-%d %H:%M:%S"),
-            })
-            self.db.update_manual_trade(trade["id"], **updates)
-            await self.bot.send_message(
-                trade["user_id"],
-                f"🛑 Сделка {trade['symbol']} закрыта по Stop\n"
-                f"Цена: ${price:g} · Stop: ${trade['stop_loss']:g}",
-            )
-            return
+        dismissed = trade.get("dismissed_reason")
+        if event and event == dismissed:
+            event = None
+        elif not event and dismissed:
+            updates["dismissed_reason"] = None
 
-        if event == "TP +3%":
-            updates.update({
-                "tp1_hit": 1, "status": "closed", "close_price": target_price,
-                "close_reason": "TP +3%",
-                "closed_at": event_time.strftime("%Y-%m-%d %H:%M:%S"),
-            })
+        if event:
+            event_price = stop_price if event == "STOP" else target_price
             self.db.update_manual_trade(trade["id"], **updates)
+            self.db.set_trade_pending(
+                trade["id"], event, event_price,
+                event_time.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="✅ Подтверждаю закрытие",
+                    callback_data=f"trade_confirm_close:{trade['id']}",
+                )],
+                [InlineKeyboardButton(
+                    text="⏳ Сделка ещё открыта",
+                    callback_data=f"trade_keep_open:{trade['id']}",
+                )],
+            ])
+            heading = "🛑 Обнаружен Stop" if event == "STOP" else "🎯 Достигнута цель +3%"
             await self.bot.send_message(
                 trade["user_id"],
-                f"✅ {trade['symbol']}: достигнута цель +3%\n"
-                f"Цель: ${target_price:g}\nСделка завершена.",
+                f"{heading}\n\n{trade['symbol']} · уровень ${event_price:g}\n"
+                "Проверьте Binance и подтвердите фактическое закрытие.",
+                reply_markup=keyboard,
             )
             return
 

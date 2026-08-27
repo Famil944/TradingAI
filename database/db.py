@@ -16,8 +16,17 @@ class ManagedConnection(sqlite3.Connection):
 class Database:
     def __init__(self, db_path: str = None):
         configured_path = db_path or os.getenv("TRADING_AI_DB_PATH")
+        configured_url = os.getenv("DATABASE_URL", "") if not configured_path else ""
+        if configured_url:
+            for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
+                if configured_url.startswith(prefix):
+                    configured_path = configured_url[len(prefix):]
+                    break
         if configured_path:
-            self.db_path = Path(configured_path).expanduser().resolve()
+            path = Path(configured_path).expanduser()
+            if not path.is_absolute():
+                path = Path(__file__).resolve().parent.parent / path
+            self.db_path = path.resolve()
         else:
             project_root = Path(__file__).resolve().parent.parent
             self.db_path = project_root / "data" / "bot.db"
@@ -178,6 +187,12 @@ class Database:
                     closed_at TIMESTAMP,
                     last_checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     critical_alerted INTEGER DEFAULT 0,
+                    position_usdt REAL,
+                    quantity REAL,
+                    pending_reason TEXT,
+                    pending_price REAL,
+                    pending_at TIMESTAMP,
+                    dismissed_reason TEXT,
                     FOREIGN KEY (signal_id) REFERENCES signals(id)
                 )
             """)
@@ -196,6 +211,18 @@ class Database:
                 cursor.execute(
                     "ALTER TABLE manual_trades ADD COLUMN critical_alerted INTEGER DEFAULT 0"
                 )
+            for column, definition in {
+                "position_usdt": "REAL",
+                "quantity": "REAL",
+                "pending_reason": "TEXT",
+                "pending_price": "REAL",
+                "pending_at": "TIMESTAMP",
+                "dismissed_reason": "TEXT",
+            }.items():
+                if column not in trade_columns:
+                    cursor.execute(
+                        f"ALTER TABLE manual_trades ADD COLUMN {column} {definition}"
+                    )
             # Единственная цель всегда считается от фактической цены входа.
             cursor.execute(
                 """UPDATE manual_trades
@@ -244,7 +271,8 @@ class Database:
     def get_manual_trade_statistics(self, user_id: int) -> dict:
         trades = self.get_manual_trades(user_id)
         opened = [trade for trade in trades if trade["status"] == "open"]
-        closed = [trade for trade in trades if trade["status"] != "open"]
+        pending = [trade for trade in trades if trade["status"] == "pending_close"]
+        closed = [trade for trade in trades if trade["status"] == "closed"]
         critical = 0
         profitable_open = 0
         for trade in opened:
@@ -258,7 +286,8 @@ class Database:
             for trade in closed if trade.get("close_price")
         ]
         return {
-            "total": len(trades), "open": len(opened), "closed": len(closed),
+            "total": len(trades), "open": len(opened), "pending": len(pending),
+            "closed": len(closed),
             "critical": int(critical), "profitable_open": int(profitable_open),
             "wins": sum(result > 0 for result in results),
             "losses": sum(result < 0 for result in results),
@@ -287,6 +316,8 @@ class Database:
             "max_price", "min_price", "tp1_hit", "tp2_hit", "tp3_hit",
             "tp4_hit", "status", "close_price", "close_reason",
             "closed_at", "last_checked_at", "current_price", "critical_alerted",
+            "position_usdt", "quantity", "pending_reason", "pending_price",
+            "pending_at", "dismissed_reason",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
@@ -297,6 +328,58 @@ class Database:
                 f"UPDATE manual_trades SET {assignments} WHERE id = ?",
                 (*updates.values(), int(trade_id)),
             )
+
+    def set_trade_pending(self, trade_id: int, reason: str, price: float,
+                          detected_at: str):
+        self.update_manual_trade(
+            trade_id, status="pending_close", pending_reason=reason,
+            pending_price=float(price), pending_at=detected_at,
+        )
+
+    def confirm_pending_trade(self, trade_id: int, user_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE manual_trades
+                   SET status = 'closed', close_price = pending_price,
+                       close_reason = pending_reason,
+                       closed_at = COALESCE(pending_at, CURRENT_TIMESTAMP),
+                       tp1_hit = CASE WHEN pending_reason = 'TP +3%' THEN 1 ELSE tp1_hit END,
+                       pending_reason = NULL, pending_price = NULL, pending_at = NULL
+                   WHERE id = ? AND user_id = ? AND status = 'pending_close'""",
+                (int(trade_id), int(user_id)),
+            )
+            return cursor.rowcount > 0
+
+    def keep_pending_trade_open(self, trade_id: int, user_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE manual_trades
+                   SET status = 'open', dismissed_reason = pending_reason,
+                       pending_reason = NULL, pending_price = NULL, pending_at = NULL,
+                       last_checked_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND user_id = ? AND status = 'pending_close'""",
+                (int(trade_id), int(user_id)),
+            )
+            return cursor.rowcount > 0
+
+    def edit_manual_trade(self, trade_id: int, user_id: int, entry_price: float,
+                          position_usdt: float = None) -> bool:
+        entry_price = float(entry_price)
+        if entry_price <= 0 or (position_usdt is not None and position_usdt <= 0):
+            return False
+        target = entry_price * 1.03
+        quantity = float(position_usdt) / entry_price if position_usdt else None
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE manual_trades
+                   SET entry_price = ?, tp1 = ?, tp2 = ?, tp3 = ?, tp4 = ?,
+                       position_usdt = ?, quantity = ?,
+                       max_price = MAX(max_price, ?), min_price = MIN(min_price, ?)
+                   WHERE id = ? AND user_id = ? AND status IN ('open', 'pending_close')""",
+                (entry_price, target, target, target, target, position_usdt,
+                 quantity, entry_price, entry_price, int(trade_id), int(user_id)),
+            )
+            return cursor.rowcount > 0
 
     def close_manual_trade(self, trade_id: int, user_id: int, price: float,
                            reason: str = "manual") -> bool:

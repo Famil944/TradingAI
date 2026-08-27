@@ -6,6 +6,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 HEADERS = (
     "ID", "Монета", "Score", "Статус", "Цена входа", "Текущая цена",
     "Цена выхода", "Текущий результат, %", "Макс. результат, %",
+    "Сумма, USDT", "Количество", "Результат, USDT",
     "Причина закрытия", "Цель +3%", "Stop",
     "Макс. цена", "Мин. цена", "Дата входа", "Дата закрытия",
 )
@@ -38,10 +39,12 @@ def build_trades_xlsx(trades: list[dict]) -> bytes:
         max_result = round(
             (trade["max_price"] / trade["entry_price"] - 1) * 100, 4
         )
+        position = trade.get("position_usdt")
+        pnl_usdt = round(position * current_result / 100, 6) if position else None
         rows.append((
             trade["id"], trade["symbol"], trade["score"], trade["status"],
             trade["entry_price"], current, close, current_result, max_result,
-            trade.get("close_reason"),
+            position, trade.get("quantity"), pnl_usdt, trade.get("close_reason"),
             trade["tp1"], trade["stop_loss"], trade["max_price"], trade["min_price"],
             trade["opened_at"], trade.get("closed_at"),
         ))
@@ -51,7 +54,7 @@ def build_trades_xlsx(trades: list[dict]) -> bytes:
                               row_number == 1)
                         for column, value in enumerate(row, 1))
         xml_rows.append(f'<row r="{row_number}">{cells}</row>')
-    last_cell = f"P{len(rows)}"
+    last_cell = f"S{len(rows)}"
     sheet = (f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <dimension ref="A1:{last_cell}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" state="frozen"/></sheetView></sheetViews>

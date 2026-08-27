@@ -9,8 +9,8 @@ class FakeBot:
     def __init__(self):
         self.messages = []
 
-    async def send_message(self, user_id, text):
-        self.messages.append((user_id, text))
+    async def send_message(self, user_id, text, reply_markup=None):
+        self.messages.append((user_id, text, reply_markup))
 
 
 class FakeDatabase:
@@ -19,6 +19,12 @@ class FakeDatabase:
 
     def update_manual_trade(self, trade_id, **fields):
         self.updates.append((trade_id, fields))
+
+    def set_trade_pending(self, trade_id, reason, price, detected_at):
+        self.updates.append((trade_id, {
+            "status": "pending_close", "pending_reason": reason,
+            "pending_price": price, "pending_at": detected_at,
+        }))
 
 
 class FakeClient:
@@ -59,8 +65,8 @@ class SignalWatchServiceTests(unittest.IsolatedAsyncioTestCase):
             trade((now - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")),
         )
         update = service.db.updates[-1][1]
-        self.assertEqual(update["close_reason"], "TP +3%")
-        self.assertEqual(update["close_price"], 103)
+        self.assertEqual(update["pending_reason"], "TP +3%")
+        self.assertEqual(update["pending_price"], 103)
 
     async def test_same_candle_uses_conservative_stop(self):
         now = datetime.now(timezone.utc)
@@ -74,7 +80,7 @@ class SignalWatchServiceTests(unittest.IsolatedAsyncioTestCase):
             FakeClient([candle]),
             trade((now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")),
         )
-        self.assertEqual(service.db.updates[-1][1]["close_reason"], "STOP")
+        self.assertEqual(service.db.updates[-1][1]["pending_reason"], "STOP")
 
 
 if __name__ == "__main__":
