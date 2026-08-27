@@ -59,14 +59,11 @@ class TestScoringLogic(unittest.TestCase):
         entry_price = 100
         targets = SignalScorer.calculate_tp_levels(entry_price, atr=0.5)
         
-        # Проверяем, что цели возрастают
+        # Активна только одна цель +3%; остальные поля — совместимость БД.
         self.assertGreater(targets.tp1, entry_price)
-        self.assertGreater(targets.tp2, targets.tp1)
-        self.assertGreater(targets.tp3, targets.tp2)
-        self.assertGreater(targets.tp4, targets.tp3)
         for actual, expected in zip(
             [targets.tp1, targets.tp2, targets.tp3, targets.tp4],
-            [103.0, 105.0, 108.0, 115.0],
+            [103.0, 103.0, 103.0, 103.0],
         ):
             self.assertAlmostEqual(actual, expected)
     

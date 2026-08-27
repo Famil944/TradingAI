@@ -1,8 +1,10 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from services.auto_signal_service import AutoSignalService
+from services.news_sentiment_service import NewsAssessment
 
 
 class FakeBot:
@@ -33,10 +35,29 @@ class FakeScanner:
         return [{"signal_id": 7, "signal_object": signal}]
 
 
+class FakeNewsService:
+    async def assess(self, symbol):
+        return NewsAssessment(available=True, score=20, relevant_items=2)
+
+
 class AutoSignalServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_scans_immediately_before_waiting(self):
+        service = AutoSignalService(
+            FakeBot(), FakeScanner(), asyncio.Lock(), FakeNewsService()
+        )
+
+        async def scan_once():
+            service.stop()
+
+        service.scan_and_notify = AsyncMock(side_effect=scan_once)
+        await service.run()
+        service.scan_and_notify.assert_awaited_once()
+
     async def test_strong_signal_is_sent_with_watch_button(self):
         bot = FakeBot()
-        service = AutoSignalService(bot, FakeScanner(), asyncio.Lock())
+        service = AutoSignalService(
+            bot, FakeScanner(), asyncio.Lock(), FakeNewsService()
+        )
         service.db = FakeDatabase()
 
         await service.scan_and_notify()
@@ -45,8 +66,9 @@ class AutoSignalServiceTests(unittest.IsolatedAsyncioTestCase):
         user_id, text, keyboard = bot.messages[0]
         self.assertEqual(user_id, 123)
         self.assertIn("TESTUSDT", text)
+        self.assertIn("ПОКУПКА", text)
         self.assertEqual(
-            keyboard.inline_keyboard[0][0].callback_data, "auto_watch:7"
+            keyboard.inline_keyboard[0][0].callback_data, "auto_take:7"
         )
 
 

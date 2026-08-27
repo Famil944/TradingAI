@@ -12,6 +12,7 @@ from bot.commands import (
 from core.single_instance import SingleInstance
 from services.signal_watch_service import SignalWatchService
 from services.auto_signal_service import AutoSignalService
+from services.news_sentiment_service import NewsSentimentService
 
 # Настройка логирования
 logging.basicConfig(
@@ -44,6 +45,10 @@ async def main():
         BotCommand(command="signals", description="Текущие сигналы"),
         BotCommand(command="top", description="TOP-10 по Score"),
         BotCommand(command="scan", description="Запустить скан"),
+        BotCommand(command="trades", description="Мои сделки"),
+        BotCommand(command="history", description="История сделок"),
+        BotCommand(command="edit_trade", description="Уточнить вход и сумму"),
+        BotCommand(command="export", description="Скачать журнал Excel"),
         BotCommand(command="stats", description="Статистика"),
         BotCommand(command="settings", description="Настройки"),
         BotCommand(command="help", description="Справка"),
@@ -55,9 +60,12 @@ async def main():
         raise
     
     logger.info("✅ Бот создан и настроен")
-    watch_service = SignalWatchService(bot)
+    news_service = NewsSentimentService()
+    watch_service = SignalWatchService(bot, news_service=news_service)
     watch_task = asyncio.create_task(watch_service.run())
-    auto_signal_service = AutoSignalService(bot, manual_scanner, scan_lock)
+    auto_signal_service = AutoSignalService(
+        bot, manual_scanner, scan_lock, news_service
+    )
     auto_signal_task = (
         asyncio.create_task(auto_signal_service.run())
         if settings.auto_scan_enabled else None

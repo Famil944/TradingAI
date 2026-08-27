@@ -16,8 +16,17 @@ class ManagedConnection(sqlite3.Connection):
 class Database:
     def __init__(self, db_path: str = None):
         configured_path = db_path or os.getenv("TRADING_AI_DB_PATH")
+        configured_url = os.getenv("DATABASE_URL", "") if not configured_path else ""
+        if configured_url:
+            for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
+                if configured_url.startswith(prefix):
+                    configured_path = configured_url[len(prefix):]
+                    break
         if configured_path:
-            self.db_path = Path(configured_path).expanduser().resolve()
+            path = Path(configured_path).expanduser()
+            if not path.is_absolute():
+                path = Path(__file__).resolve().parent.parent / path
+            self.db_path = path.resolve()
         else:
             project_root = Path(__file__).resolve().parent.parent
             self.db_path = project_root / "data" / "bot.db"
@@ -149,7 +158,241 @@ class Database:
                 )
             """)
 
+            # Сделки, которые пользователь действительно открыл вручную на Binance.
+            # Они не имеют срока действия и переживают любые перезапуски бота.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS manual_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    signal_id INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    score INTEGER NOT NULL,
+                    entry_price REAL NOT NULL,
+                    current_price REAL NOT NULL,
+                    tp1 REAL NOT NULL,
+                    tp2 REAL NOT NULL,
+                    tp3 REAL NOT NULL,
+                    tp4 REAL NOT NULL,
+                    stop_loss REAL NOT NULL,
+                    max_price REAL NOT NULL,
+                    min_price REAL NOT NULL,
+                    tp1_hit INTEGER DEFAULT 0,
+                    tp2_hit INTEGER DEFAULT 0,
+                    tp3_hit INTEGER DEFAULT 0,
+                    tp4_hit INTEGER DEFAULT 0,
+                    status TEXT DEFAULT 'open',
+                    close_price REAL,
+                    close_reason TEXT,
+                    opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    closed_at TIMESTAMP,
+                    last_checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    critical_alerted INTEGER DEFAULT 0,
+                    position_usdt REAL,
+                    quantity REAL,
+                    pending_reason TEXT,
+                    pending_price REAL,
+                    pending_at TIMESTAMP,
+                    dismissed_reason TEXT,
+                    FOREIGN KEY (signal_id) REFERENCES signals(id)
+                )
+            """)
+            trade_columns = {
+                row[1] for row in cursor.execute("PRAGMA table_info(manual_trades)")
+            }
+            if "current_price" not in trade_columns:
+                cursor.execute(
+                    "ALTER TABLE manual_trades ADD COLUMN current_price REAL"
+                )
+                cursor.execute(
+                    "UPDATE manual_trades SET current_price = entry_price "
+                    "WHERE current_price IS NULL"
+                )
+            if "critical_alerted" not in trade_columns:
+                cursor.execute(
+                    "ALTER TABLE manual_trades ADD COLUMN critical_alerted INTEGER DEFAULT 0"
+                )
+            for column, definition in {
+                "position_usdt": "REAL",
+                "quantity": "REAL",
+                "pending_reason": "TEXT",
+                "pending_price": "REAL",
+                "pending_at": "TIMESTAMP",
+                "dismissed_reason": "TEXT",
+            }.items():
+                if column not in trade_columns:
+                    cursor.execute(
+                        f"ALTER TABLE manual_trades ADD COLUMN {column} {definition}"
+                    )
+            # Единственная цель всегда считается от фактической цены входа.
+            cursor.execute(
+                """UPDATE manual_trades
+                   SET tp1 = entry_price * 1.03,
+                       tp2 = entry_price * 1.03,
+                       tp3 = entry_price * 1.03,
+                       tp4 = entry_price * 1.03
+                   WHERE status = 'open'"""
+            )
+
             conn.commit()
+
+    def open_manual_trade(self, user_id: int, signal_id: int, entry_price: float):
+        """Записать фактически выбранную пользователем сделку."""
+        with self.connect() as conn:
+            existing = conn.execute(
+                """SELECT id FROM manual_trades
+                   WHERE user_id = ? AND symbol = (
+                       SELECT symbol FROM signals WHERE id = ?
+                   ) AND status = 'open'""",
+                (int(user_id), int(signal_id)),
+            ).fetchone()
+            if existing:
+                return None
+            signal = conn.execute(
+                """SELECT symbol, score, stop_loss
+                   FROM signals WHERE id = ?""",
+                (int(signal_id),),
+            ).fetchone()
+            if not signal:
+                return False
+            target = float(entry_price) * 1.03
+            cursor = conn.execute(
+                """INSERT INTO manual_trades (
+                       user_id, signal_id, symbol, score, entry_price, current_price,
+                       tp1, tp2, tp3, tp4, stop_loss, max_price, min_price
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    int(user_id), int(signal_id), signal[0], signal[1],
+                    float(entry_price), float(entry_price), target, target, target,
+                    target, signal[2], float(entry_price), float(entry_price),
+                ),
+            )
+            return cursor.lastrowid
+
+    def get_manual_trade_statistics(self, user_id: int) -> dict:
+        trades = self.get_manual_trades(user_id)
+        opened = [trade for trade in trades if trade["status"] == "open"]
+        pending = [trade for trade in trades if trade["status"] == "pending_close"]
+        closed = [trade for trade in trades if trade["status"] == "closed"]
+        critical = 0
+        profitable_open = 0
+        for trade in opened:
+            current = trade.get("current_price") or trade["entry_price"]
+            pnl = (current / trade["entry_price"] - 1) * 100
+            stop_distance = (current - trade["stop_loss"]) / current * 100
+            critical += pnl <= -2 or stop_distance <= 1
+            profitable_open += pnl > 0
+        results = [
+            (trade["close_price"] / trade["entry_price"] - 1) * 100
+            for trade in closed if trade.get("close_price")
+        ]
+        return {
+            "total": len(trades), "open": len(opened), "pending": len(pending),
+            "closed": len(closed),
+            "critical": int(critical), "profitable_open": int(profitable_open),
+            "wins": sum(result > 0 for result in results),
+            "losses": sum(result < 0 for result in results),
+            "targets": sum(trade.get("close_reason") == "TP +3%" for trade in closed),
+            "stops": sum(trade.get("close_reason") == "STOP" for trade in closed),
+            "manual": sum(trade.get("close_reason") == "manual" for trade in closed),
+            "average_result": sum(results) / len(results) if results else 0.0,
+        }
+
+    def get_manual_trades(self, user_id: int = None, status: str = None):
+        query = "SELECT * FROM manual_trades WHERE 1 = 1"
+        params = []
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(int(user_id))
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY opened_at DESC"
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(row) for row in conn.execute(query, params).fetchall()]
+
+    def update_manual_trade(self, trade_id: int, **fields):
+        allowed = {
+            "max_price", "min_price", "tp1_hit", "tp2_hit", "tp3_hit",
+            "tp4_hit", "status", "close_price", "close_reason",
+            "closed_at", "last_checked_at", "current_price", "critical_alerted",
+            "position_usdt", "quantity", "pending_reason", "pending_price",
+            "pending_at", "dismissed_reason", "opened_at",
+        }
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        if not updates:
+            return
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE manual_trades SET {assignments} WHERE id = ?",
+                (*updates.values(), int(trade_id)),
+            )
+
+    def set_trade_pending(self, trade_id: int, reason: str, price: float,
+                          detected_at: str):
+        self.update_manual_trade(
+            trade_id, status="pending_close", pending_reason=reason,
+            pending_price=float(price), pending_at=detected_at,
+        )
+
+    def confirm_pending_trade(self, trade_id: int, user_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE manual_trades
+                   SET status = 'closed', close_price = pending_price,
+                       close_reason = pending_reason,
+                       closed_at = COALESCE(pending_at, CURRENT_TIMESTAMP),
+                       tp1_hit = CASE WHEN pending_reason = 'TP +3%' THEN 1 ELSE tp1_hit END,
+                       pending_reason = NULL, pending_price = NULL, pending_at = NULL
+                   WHERE id = ? AND user_id = ? AND status = 'pending_close'""",
+                (int(trade_id), int(user_id)),
+            )
+            return cursor.rowcount > 0
+
+    def keep_pending_trade_open(self, trade_id: int, user_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE manual_trades
+                   SET status = 'open', dismissed_reason = pending_reason,
+                       pending_reason = NULL, pending_price = NULL, pending_at = NULL,
+                       last_checked_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND user_id = ? AND status = 'pending_close'""",
+                (int(trade_id), int(user_id)),
+            )
+            return cursor.rowcount > 0
+
+    def edit_manual_trade(self, trade_id: int, user_id: int, entry_price: float,
+                          position_usdt: float = None) -> bool:
+        entry_price = float(entry_price)
+        if entry_price <= 0 or (position_usdt is not None and position_usdt <= 0):
+            return False
+        target = entry_price * 1.03
+        quantity = float(position_usdt) / entry_price if position_usdt else None
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE manual_trades
+                   SET entry_price = ?, tp1 = ?, tp2 = ?, tp3 = ?, tp4 = ?,
+                       position_usdt = ?, quantity = ?,
+                       max_price = MAX(max_price, ?), min_price = MIN(min_price, ?)
+                   WHERE id = ? AND user_id = ? AND status IN ('open', 'pending_close')""",
+                (entry_price, target, target, target, target, position_usdt,
+                 quantity, entry_price, entry_price, int(trade_id), int(user_id)),
+            )
+            return cursor.rowcount > 0
+
+    def close_manual_trade(self, trade_id: int, user_id: int, price: float,
+                           reason: str = "manual") -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE manual_trades
+                   SET status = 'closed', close_price = ?, close_reason = ?,
+                       closed_at = CURRENT_TIMESTAMP,
+                       last_checked_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND user_id = ? AND status = 'open'""",
+                (float(price), reason, int(trade_id), int(user_id)),
+            )
+            return cursor.rowcount > 0
     
     def save_signal(self, signal_data: dict) -> int:
         """Сохранить сигнал в БД. Возвращает ID сигнала."""
@@ -238,16 +481,14 @@ class Database:
             total = conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
             row = conn.execute(
                 """
-                SELECT COUNT(*),
-                       COALESCE(SUM(tp1_hit), 0), COALESCE(SUM(tp2_hit), 0),
-                       COALESCE(SUM(tp3_hit), 0), COALESCE(SUM(tp4_hit), 0),
+                SELECT COUNT(*), COALESCE(SUM(tp1_hit), 0),
                        COALESCE(SUM(stop_hit), 0)
                 FROM signal_results
                 """
             ).fetchone()
         return {
             "signals": total, "tracked": row[0], "tp1": row[1],
-            "tp2": row[2], "tp3": row[3], "tp4": row[4], "stops": row[5],
+            "stops": row[2],
         }
 
     def register_user(self, user_id: int):

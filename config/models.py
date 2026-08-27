@@ -59,10 +59,10 @@ class MarketData(BaseModel):
 
 class SignalTargets(BaseModel):
     """Уровни ТП для сигнала."""
-    tp1: float  # +1%
-    tp2: float  # +2%
-    tp3: float  # +3%
-    tp4: float  # +5%
+    tp1: float  # единственная активная цель +3%
+    tp2: float  # устаревшее поле совместимости БД
+    tp3: float  # устаревшее поле совместимости БД
+    tp4: float  # устаревшее поле совместимости БД
 
 
 class TradeSignal(BaseModel):
@@ -125,7 +125,7 @@ class SignalResult(BaseModel):
     tp4_hit: bool = False
     stop_hit: bool = False
     
-    final_result: Optional[str] = None  # "TP1", "TP2", "TP3", "TP4", "STOP", None
+    final_result: Optional[str] = None  # "TP1", "STOP", None
 
 
 class UserSettings(BaseModel):

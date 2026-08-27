@@ -96,6 +96,9 @@ class MarketScanner:
         normalized = symbol.upper().replace("/", "")
         if not normalized.endswith("USDT"):
             normalized += "USDT"
+        if normalized in settings.excluded_symbols:
+            logger.info("%s пропущен: локальный риск-стоп-лист", normalized)
+            return None
         async with BinanceClient() as client:
             return await self._analyze_symbol(client, normalized)
     
@@ -130,6 +133,10 @@ class MarketScanner:
                 if not symbols:
                     logger.warning("Не удалось получить TOP пары, используем тестовый список")
                     symbols = test_symbols[:top_limit]
+                symbols = [
+                    symbol for symbol in symbols
+                    if symbol not in settings.excluded_symbols
+                ]
                 
                 semaphore = asyncio.Semaphore(settings.scanner_concurrency)
 
