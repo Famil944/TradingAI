@@ -42,6 +42,8 @@ class NewsSentimentService:
         self._cache = {}
 
     async def assess(self, symbol: str) -> NewsAssessment:
+        if not settings.news_enabled:
+            return NewsAssessment(available=False)
         ticker = symbol.upper().removesuffix("USDT")
         cached = self._cache.get(ticker)
         now = datetime.now(timezone.utc)

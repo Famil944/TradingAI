@@ -26,6 +26,9 @@ class Settings(BaseModel):
     auto_priority_top_limit: int = int(os.getenv("AUTO_PRIORITY_TOP_LIMIT", "20"))
     cryptopanic_auth_token: str = os.getenv("CRYPTOPANIC_AUTH_TOKEN", "")
     cryptopanic_api_plan: str = os.getenv("CRYPTOPANIC_API_PLAN", "developer")
+    news_enabled: bool = os.getenv("NEWS_ENABLED", "false").lower() in (
+        "1", "true", "yes", "on"
+    )
     news_cache_minutes: int = int(os.getenv("NEWS_CACHE_MINUTES", "5"))
     min_signal_score: int = int(os.getenv("MIN_SIGNAL_SCORE", "75"))
     signal_cooldown_minutes: int = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "45"))
