@@ -68,7 +68,7 @@ class SignalWatchServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update["pending_reason"], "TP +3%")
         self.assertEqual(update["pending_price"], 103)
 
-    async def test_same_candle_uses_conservative_stop(self):
+    async def test_stop_is_ignored_and_target_still_requires_confirmation(self):
         now = datetime.now(timezone.utc)
         candle = SimpleNamespace(
             timestamp=int((now - timedelta(hours=1)).timestamp() * 1000),
@@ -80,7 +80,7 @@ class SignalWatchServiceTests(unittest.IsolatedAsyncioTestCase):
             FakeClient([candle]),
             trade((now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")),
         )
-        self.assertEqual(service.db.updates[-1][1]["pending_reason"], "STOP")
+        self.assertEqual(service.db.updates[-1][1]["pending_reason"], "TP +3%")
 
 
 if __name__ == "__main__":

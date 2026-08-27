@@ -278,8 +278,7 @@ class Database:
         for trade in opened:
             current = trade.get("current_price") or trade["entry_price"]
             pnl = (current / trade["entry_price"] - 1) * 100
-            stop_distance = (current - trade["stop_loss"]) / current * 100
-            critical += pnl <= -2 or stop_distance <= 1
+            critical += pnl <= -2
             profitable_open += pnl > 0
         results = [
             (trade["close_price"] / trade["entry_price"] - 1) * 100
@@ -292,7 +291,6 @@ class Database:
             "wins": sum(result > 0 for result in results),
             "losses": sum(result < 0 for result in results),
             "targets": sum(trade.get("close_reason") == "TP +3%" for trade in closed),
-            "stops": sum(trade.get("close_reason") == "STOP" for trade in closed),
             "manual": sum(trade.get("close_reason") == "manual" for trade in closed),
             "average_result": sum(results) / len(results) if results else 0.0,
         }

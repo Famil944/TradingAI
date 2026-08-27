@@ -80,9 +80,7 @@ def _format_signal(signal) -> str:
     trade_levels = (
         f"{risk_note}"
         f"Цель: ${_price(signal.targets.tp1, signal.tick_size)} (+3%)\n"
-        f"SL: ${_price(signal.stop_loss, signal.tick_size)} · "
-        f"−{signal.stop_loss_percent:.1f}%\n"
-        f"R/R до цели: {signal.risk_reward:.2f}"
+        "Закрытие позиции подтверждается вручную."
     )
     text = (
         f"{quality} · {signal.symbol} · {signal.score}/100\n\n"
@@ -236,7 +234,7 @@ async def cmd_start(message: types.Message):
 **Главные возможности:**
 - 🎯 Поиск точек входа после снижения цены
 - 📊 Анализ технических индикаторов (RSI, MACD, Bollinger Bands)
-- 💡 Расчёт цели +3% и Stop-Loss
+- 💡 Расчёт единственной цели +3%
 - 🕹️ Ручной запуск сканирования командой /scan
 - ⚙️ Персональные настройки
 
@@ -296,8 +294,7 @@ async def cmd_signals(message: types.Message):
         text += f"Цена: ${entry_price:.2f}\n"
         text += f"Зона входа: ${entry_zone_min:.2f} - ${entry_zone_max:.2f}\n"
         text += f"Цель +3%: ${tp1:.2f}\n"
-        text += f"🛑 Stop: ${stop_loss:.2f} (-{stop_loss_percent:.1f}%)\n"
-        text += f"📊 R/R: {risk_reward:.2f}\n\n"
+        text += "Закрытие подтверждается вручную.\n\n"
     
     await message.answer(text)
 
@@ -467,7 +464,7 @@ async def auto_watch(query: types.CallbackQuery):
         query.message.chat.id, signal_id, settings.signal_validity_minutes
     )
     await query.answer(
-        "Слежение включено: сообщу о входе, TP и Stop"
+        "Слежение включено: сообщу о входе и цели +3%"
         if saved else "Сигнал уже недоступен",
         show_alert=True,
     )
@@ -623,7 +620,7 @@ async def setup_confirm(query: types.CallbackQuery, state: FSMContext):
     await query.answer("Сделка сохранена", show_alert=True)
     await state.clear()
     await query.message.answer(
-        f"✅ Сделка #{trade_id} сохранена. Контроль +3% и Stop включён."
+        f"✅ Сделка #{trade_id} сохранена. Контроль цели +3% включён."
     )
 
 
@@ -664,8 +661,7 @@ async def cmd_trades(message: types.Message):
     for trade in open_trades:
         current = trade.get("current_price") or trade["entry_price"]
         pnl = (current / trade["entry_price"] - 1) * 100
-        stop_distance = (current - trade["stop_loss"]) / current * 100
-        if pnl <= -2 or stop_distance <= 1:
+        if pnl <= -2:
             critical.append(trade)
         elif pnl > 0:
             profitable.append(trade)
@@ -681,16 +677,13 @@ async def cmd_trades(message: types.Message):
     for trade in open_trades:
         current = trade.get("current_price") or trade["entry_price"]
         change = (current / trade["entry_price"] - 1) * 100
-        stop_distance = (current - trade["stop_loss"]) / current * 100
         marker = "🚨 КРИТИЧНО" if trade in critical else "🟢 В процессе"
         await message.answer(
             f"{marker} · #{trade['id']} {trade['symbol']}\n"
             f"Вход: ${_price(trade['entry_price'])}\n"
             f"Сейчас: ${_price(current)} ({change:+.2f}%)\n"
-            f"До Stop: {max(0, stop_distance):.2f}%\n"
             f"Максимум: ${_price(trade['max_price'])}\n"
             f"Цель +3%: ${_price(trade['tp1'])}\n"
-            f"Stop: ${_price(trade['stop_loss'])}\n"
             f"Открыта: {trade['opened_at']} UTC",
             reply_markup=_trade_keyboard(trade["id"]),
         )
@@ -879,7 +872,6 @@ async def cmd_stats(message: types.Message):
 🏆 В плюс: {stats['wins']}
 📉 В минус: {stats['losses']}
 🎯 Закрыто по цели +3%: {stats['targets']}
-🛑 Закрыто по Stop: {stats['stops']}
 ✋ Закрыто вручную: {stats['manual']}
 
 Средний результат закрытых: {stats['average_result']:+.2f}%"""
@@ -926,7 +918,7 @@ async def cmd_settings(message: types.Message):
 🔎 Больше вариантов: Score 65+
 
 Единственная цель: +3%
-Критическая зона: убыток от −2% или расстояние до Stop не больше 1%.
+Критическая зона: текущий результат сделки −2% или ниже.
 
 Профиль выбирается кнопками после команды /scan."""
 
