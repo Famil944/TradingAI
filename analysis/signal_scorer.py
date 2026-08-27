@@ -145,13 +145,15 @@ class SignalScorer:
         atr: Optional[float] = None
     ) -> SignalTargets:
         """
-        Цели спотовой стратегии: +3%, +5%, +8%, +15%.
+        Единственная цель спотовой стратегии: +3%.
         """
         return SignalTargets(
             tp1=entry_price * 1.03,
-            tp2=entry_price * 1.05,
-            tp3=entry_price * 1.08,
-            tp4=entry_price * 1.15,
+            # Поля сохранены для совместимости со старой БД, но дополнительных
+            # целей в стратегии больше нет.
+            tp2=entry_price * 1.03,
+            tp3=entry_price * 1.03,
+            tp4=entry_price * 1.03,
         )
     
     @staticmethod
@@ -301,8 +303,9 @@ class SignalScorer:
         # Расчёт Stop-Loss
         stop_loss, stop_percent = SignalScorer.calculate_stop_loss(market_data.current_price, support)
         
-        # Основная цель стратегии — TP2 (+5%), TP1 используется для частичной фиксации.
-        risk_reward = SignalScorer.calculate_risk_reward(market_data.current_price, stop_loss, targets.tp2)
+        risk_reward = SignalScorer.calculate_risk_reward(
+            market_data.current_price, stop_loss, targets.tp1
+        )
         if risk_reward < 1.2:
             return None
         

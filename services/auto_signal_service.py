@@ -89,7 +89,7 @@ class AutoSignalService:
                 f"{signal.symbol} · Score {signal.score}/100\n"
                 f"Цена: ${signal.current_price:g}\n"
                 f"Вход: ${signal.entry_zone_min:g}–${signal.entry_zone_max:g}\n"
-                f"TP1: ${signal.targets.tp1:g} · TP2: ${signal.targets.tp2:g}\n"
+                f"Цель +3%: ${signal.targets.tp1:g}\n"
                 f"Stop: ${signal.stop_loss:g}\n"
                 f"R/R: {signal.risk_reward:.2f}\n"
                 f"Приоритет: {decision.priority}/100\n"

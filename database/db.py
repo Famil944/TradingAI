@@ -361,16 +361,14 @@ class Database:
             total = conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
             row = conn.execute(
                 """
-                SELECT COUNT(*),
-                       COALESCE(SUM(tp1_hit), 0), COALESCE(SUM(tp2_hit), 0),
-                       COALESCE(SUM(tp3_hit), 0), COALESCE(SUM(tp4_hit), 0),
+                SELECT COUNT(*), COALESCE(SUM(tp1_hit), 0),
                        COALESCE(SUM(stop_hit), 0)
                 FROM signal_results
                 """
             ).fetchone()
         return {
             "signals": total, "tracked": row[0], "tp1": row[1],
-            "tp2": row[2], "tp3": row[3], "tp4": row[4], "stops": row[5],
+            "stops": row[2],
         }
 
     def register_user(self, user_id: int):

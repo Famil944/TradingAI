@@ -63,13 +63,10 @@ def _format_signal(signal) -> str:
     )
     trade_levels = (
         f"{risk_note}"
-        f"TP: ${_price(signal.targets.tp1, signal.tick_size)} (+3%) · "
-        f"${_price(signal.targets.tp2, signal.tick_size)} (+5%) · "
-        f"${_price(signal.targets.tp3, signal.tick_size)} (+8%) · "
-        f"${_price(signal.targets.tp4, signal.tick_size)} (+15%)\n"
+        f"Цель: ${_price(signal.targets.tp1, signal.tick_size)} (+3%)\n"
         f"SL: ${_price(signal.stop_loss, signal.tick_size)} · "
         f"−{signal.stop_loss_percent:.1f}%\n"
-        f"R/R до TP2: {signal.risk_reward:.2f}"
+        f"R/R до цели: {signal.risk_reward:.2f}"
     )
     text = (
         f"{quality} · {signal.symbol} · {signal.score}/100\n\n"
@@ -223,7 +220,7 @@ async def cmd_start(message: types.Message):
 **Главные возможности:**
 - 🎯 Поиск точек входа после снижения цены
 - 📊 Анализ технических индикаторов (RSI, MACD, Bollinger Bands)
-- 💡 Расчёт целей (TP1-TP4) и Stop-Loss
+- 💡 Расчёт цели +3% и Stop-Loss
 - 🕹️ Ручной запуск сканирования командой /scan
 - ⚙️ Персональные настройки
 
@@ -281,7 +278,7 @@ async def cmd_signals(message: types.Message):
         text += f"💰 **{symbol}** | Score: {score}/100\n"
         text += f"Цена: ${entry_price:.2f}\n"
         text += f"Зона входа: ${entry_zone_min:.2f} - ${entry_zone_max:.2f}\n"
-        text += f"TP1: ${tp1:.2f} | TP2: ${tp2:.2f} | TP3: ${tp3:.2f}\n"
+        text += f"Цель +3%: ${tp1:.2f}\n"
         text += f"🛑 Stop: ${stop_loss:.2f} (-{stop_loss_percent:.1f}%)\n"
         text += f"📊 R/R: {risk_reward:.2f}\n\n"
     
@@ -484,8 +481,7 @@ async def cmd_trades(message: types.Message):
             f"Сейчас: ${_price(current)} ({change:+.2f}%)\n"
             f"До Stop: {max(0, stop_distance):.2f}%\n"
             f"Максимум: ${_price(trade['max_price'])}\n"
-            f"TP: ${_price(trade['tp1'])} / ${_price(trade['tp2'])} / "
-            f"${_price(trade['tp3'])} / ${_price(trade['tp4'])}\n"
+            f"Цель +3%: ${_price(trade['tp1'])}\n"
             f"Stop: ${_price(trade['stop_loss'])}\n"
             f"Открыта: {trade['opened_at']} UTC",
             reply_markup=_trade_keyboard(trade["id"]),
@@ -577,10 +573,7 @@ async def cmd_stats(message: types.Message):
 
 Всего создано: {stats['signals']}
 Отслежено: {stats['tracked']}
-Достигли TP1 (+3%): {stats['tp1']}
-Достигли TP2 (+5%): {stats['tp2']}
-Достигли TP3 (+8%): {stats['tp3']}
-Достигли TP4 (+15%): {stats['tp4']}
+Достигли цели (+3%): {stats['tp1']}
 Попали на Stop: {stats['stops']}
 
 Если «Отслежено» равно нулю, модуль контроля результатов ещё не накопил данные."""

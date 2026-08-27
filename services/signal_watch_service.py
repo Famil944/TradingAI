@@ -93,7 +93,7 @@ class SignalWatchService:
         }
         if observed_low <= float(trade["stop_loss"]):
             updates.update({
-                "status": "closed", "close_price": price,
+                "status": "closed", "close_price": float(trade["stop_loss"]),
                 "close_reason": "STOP", "closed_at": datetime.now(
                     timezone.utc
                 ).strftime("%Y-%m-%d %H:%M:%S"),
@@ -123,26 +123,21 @@ class SignalWatchService:
         elif not is_critical and trade.get("critical_alerted"):
             updates["critical_alerted"] = 0
 
-        newly_hit = []
-        for index in range(1, 5):
-            field = f"tp{index}_hit"
-            if not trade[field] and observed_high >= float(trade[f"tp{index}"]):
-                updates[field] = 1
-                newly_hit.append(f"TP{index}")
-        if updates.get("tp4_hit"):
+        target_hit = not trade["tp1_hit"] and observed_high >= float(trade["tp1"])
+        if target_hit:
             updates.update({
-                "status": "closed", "close_price": price,
-                "close_reason": "TP4", "closed_at": datetime.now(
+                "tp1_hit": 1,
+                "status": "closed", "close_price": float(trade["tp1"]),
+                "close_reason": "TP +3%", "closed_at": datetime.now(
                     timezone.utc
                 ).strftime("%Y-%m-%d %H:%M:%S"),
             })
         self.db.update_manual_trade(trade["id"], **updates)
-        if newly_hit:
-            closed = "\n✅ Сделка завершена по TP4." if updates.get("tp4_hit") else ""
+        if target_hit:
             await self.bot.send_message(
                 trade["user_id"],
-                f"✅ {trade['symbol']}: достигнуты {', '.join(newly_hit)}\n"
-                f"Цена: ${price:g}{closed}",
+                f"✅ {trade['symbol']}: достигнута цель +3%\n"
+                f"Цена: ${price:g}\nСделка завершена.",
             )
 
     async def _check_watch(self, client, watch, now):
@@ -200,15 +195,10 @@ class SignalWatchService:
             )
             return
 
-        targets = (("TP1", tp1, tp1_hit), ("TP2", tp2, tp2_hit),
-                   ("TP3", tp3, tp3_hit), ("TP4", tp4, tp4_hit))
-        for index, (label, target, was_hit) in enumerate(targets, 1):
-            if not was_hit and price >= target:
-                field = f"tp{index}_hit"
-                updates = {field: 1}
-                if index == 4:
-                    updates["status"] = "completed"
-                self.db.update_watch(watch_id, **updates)
-                await self.bot.send_message(
-                    user_id, f"✅ {symbol}: достигнут {label} ${target:g}\nЦена: ${price:g}"
-                )
+        if not tp1_hit and price >= tp1:
+            self.db.update_watch(watch_id, tp1_hit=1, status="completed")
+            await self.bot.send_message(
+                user_id,
+                f"✅ {symbol}: достигнута цель +3% (${tp1:g})\n"
+                f"Цена: ${price:g}. Наблюдение завершено.",
+            )
