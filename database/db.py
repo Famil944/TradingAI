@@ -159,6 +159,7 @@ class Database:
                     symbol TEXT NOT NULL,
                     score INTEGER NOT NULL,
                     entry_price REAL NOT NULL,
+                    current_price REAL NOT NULL,
                     tp1 REAL NOT NULL,
                     tp2 REAL NOT NULL,
                     tp3 REAL NOT NULL,
@@ -176,9 +177,25 @@ class Database:
                     opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     closed_at TIMESTAMP,
                     last_checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    critical_alerted INTEGER DEFAULT 0,
                     FOREIGN KEY (signal_id) REFERENCES signals(id)
                 )
             """)
+            trade_columns = {
+                row[1] for row in cursor.execute("PRAGMA table_info(manual_trades)")
+            }
+            if "current_price" not in trade_columns:
+                cursor.execute(
+                    "ALTER TABLE manual_trades ADD COLUMN current_price REAL"
+                )
+                cursor.execute(
+                    "UPDATE manual_trades SET current_price = entry_price "
+                    "WHERE current_price IS NULL"
+                )
+            if "critical_alerted" not in trade_columns:
+                cursor.execute(
+                    "ALTER TABLE manual_trades ADD COLUMN critical_alerted INTEGER DEFAULT 0"
+                )
 
             conn.commit()
 
@@ -203,12 +220,12 @@ class Database:
                 return False
             cursor = conn.execute(
                 """INSERT INTO manual_trades (
-                       user_id, signal_id, symbol, score, entry_price,
+                       user_id, signal_id, symbol, score, entry_price, current_price,
                        tp1, tp2, tp3, tp4, stop_loss, max_price, min_price
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     int(user_id), int(signal_id), signal[0], signal[1],
-                    float(entry_price), signal[2], signal[3], signal[4],
+                    float(entry_price), float(entry_price), signal[2], signal[3], signal[4],
                     signal[5], signal[6], float(entry_price), float(entry_price),
                 ),
             )
@@ -232,7 +249,7 @@ class Database:
         allowed = {
             "max_price", "min_price", "tp1_hit", "tp2_hit", "tp3_hit",
             "tp4_hit", "status", "close_price", "close_reason",
-            "closed_at", "last_checked_at",
+            "closed_at", "last_checked_at", "current_price", "critical_alerted",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:

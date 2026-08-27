@@ -84,6 +84,7 @@ class SignalWatchService:
                 observed_high = max(observed_high, *(candle.high for candle in recovered))
                 observed_low = min(observed_low, *(candle.low for candle in recovered))
         updates = {
+            "current_price": price,
             "max_price": max(float(trade["max_price"]), observed_high),
             "min_price": min(float(trade["min_price"]), observed_low),
             "last_checked_at": datetime.now(timezone.utc).strftime(
@@ -104,6 +105,23 @@ class SignalWatchService:
                 f"Цена: ${price:g} · Stop: ${trade['stop_loss']:g}",
             )
             return
+
+        pnl_percent = (price / float(trade["entry_price"]) - 1) * 100
+        stop_distance = (
+            (price - float(trade["stop_loss"])) / price * 100 if price else 0
+        )
+        is_critical = pnl_percent <= -2 or stop_distance <= 1
+        if is_critical and not trade.get("critical_alerted"):
+            updates["critical_alerted"] = 1
+            await self.bot.send_message(
+                trade["user_id"],
+                f"🚨 КРИТИЧЕСКАЯ ЗОНА\n\n{trade['symbol']}\n"
+                f"Цена: ${price:g} · результат: {pnl_percent:+.2f}%\n"
+                f"До Stop осталось: {max(0, stop_distance):.2f}%\n"
+                "Проверьте позицию в Binance.",
+            )
+        elif not is_critical and trade.get("critical_alerted"):
+            updates["critical_alerted"] = 0
 
         newly_hit = []
         for index in range(1, 5):

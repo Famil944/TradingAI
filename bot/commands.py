@@ -450,15 +450,40 @@ async def cmd_trades(message: types.Message):
         return
     open_trades = [trade for trade in trades if trade["status"] == "open"]
     closed = [trade for trade in trades if trade["status"] != "open"]
+    critical = []
+    profitable = []
+    for trade in open_trades:
+        current = trade.get("current_price") or trade["entry_price"]
+        pnl = (current / trade["entry_price"] - 1) * 100
+        stop_distance = (current - trade["stop_loss"]) / current * 100
+        if pnl <= -2 or stop_distance <= 1:
+            critical.append(trade)
+        elif pnl > 0:
+            profitable.append(trade)
+    closed_profit = sum(
+        bool(trade.get("close_price"))
+        and trade["close_price"] > trade["entry_price"]
+        for trade in closed
+    )
     await message.answer(
-        f"📒 Мои сделки\n\nОткрыто: {len(open_trades)} · Закрыто: {len(closed)}"
+        "📊 СОСТОЯНИЕ СДЕЛОК\n\n"
+        f"🟢 В процессе: {len(open_trades)}\n"
+        f"📈 Сейчас в плюсе: {len(profitable)}\n"
+        f"🚨 Критическая зона: {len(critical)}\n"
+        f"✅ Закрыто: {len(closed)}\n"
+        f"🏆 Закрыто в плюс: {closed_profit}"
     )
     for trade in open_trades:
-        change = (trade["max_price"] / trade["entry_price"] - 1) * 100
+        current = trade.get("current_price") or trade["entry_price"]
+        change = (current / trade["entry_price"] - 1) * 100
+        stop_distance = (current - trade["stop_loss"]) / current * 100
+        marker = "🚨 КРИТИЧНО" if trade in critical else "🟢 В процессе"
         await message.answer(
-            f"🟢 #{trade['id']} {trade['symbol']} · открыта\n"
+            f"{marker} · #{trade['id']} {trade['symbol']}\n"
             f"Вход: ${_price(trade['entry_price'])}\n"
-            f"Максимум: ${_price(trade['max_price'])} ({change:+.2f}%)\n"
+            f"Сейчас: ${_price(current)} ({change:+.2f}%)\n"
+            f"До Stop: {max(0, stop_distance):.2f}%\n"
+            f"Максимум: ${_price(trade['max_price'])}\n"
             f"TP: ${_price(trade['tp1'])} / ${_price(trade['tp2'])} / "
             f"${_price(trade['tp3'])} / ${_price(trade['tp4'])}\n"
             f"Stop: ${_price(trade['stop_loss'])}\n"
