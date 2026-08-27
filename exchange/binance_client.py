@@ -187,6 +187,10 @@ class BinanceClient:
                 
                 if symbol == "USDTUSDT":
                     continue
+
+                if symbol in settings.excluded_symbols:
+                    logger.info("%s исключён локальным риск-фильтром", symbol)
+                    continue
                 
                 if any(kw in symbol for kw in stablecoin_keywords):
                     continue

@@ -75,8 +75,8 @@ class AutoSignalService:
             if is_buy:
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(
-                        text="🔔 Следить до TP/Stop",
-                        callback_data=f"auto_watch:{item['signal_id']}",
+                        text="✅ Я вошёл в сделку",
+                        callback_data=f"auto_take:{item['signal_id']}",
                     )
                 ]])
             heading = {

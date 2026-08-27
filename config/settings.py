@@ -37,6 +37,15 @@ class Settings(BaseModel):
     scanner_concurrency: int = int(os.getenv("SCANNER_CONCURRENCY", "8"))
     min_listing_days: int = int(os.getenv("MIN_LISTING_DAYS", "60"))
     signal_validity_minutes: int = int(os.getenv("SIGNAL_VALIDITY_MINUTES", "30"))
+    excluded_symbols_csv: str = os.getenv("EXCLUDED_SYMBOLS", "TLMUSDT")
+
+    @property
+    def excluded_symbols(self) -> set[str]:
+        return {
+            item.strip().upper().replace("/", "")
+            for item in self.excluded_symbols_csv.split(",")
+            if item.strip()
+        }
     
     # Database
     database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/bot.db")

@@ -42,12 +42,90 @@ class SignalWatchService:
 
     async def check_once(self):
         watches = self.db.get_active_watches()
-        if not watches:
+        trades = self.db.get_manual_trades(status="open")
+        if not watches and not trades:
             return
         now = datetime.now(timezone.utc)
         async with BinanceClient() as client:
             for watch in watches:
                 await self._check_watch(client, watch, now)
+            for trade in trades:
+                await self._check_manual_trade(client, trade)
+
+    async def _check_manual_trade(self, client, trade):
+        """Продолжает контроль подтверждённой сделки после перезапуска."""
+        ticker = await client.get_ticker(trade["symbol"])
+        if not ticker:
+            return
+        price = float(ticker["price"])
+        observed_high = price
+        observed_low = price
+        try:
+            last_checked = datetime.fromisoformat(str(trade["last_checked_at"])).replace(
+                tzinfo=timezone.utc
+            )
+        except (TypeError, ValueError):
+            last_checked = datetime.now(timezone.utc)
+        offline_seconds = (datetime.now(timezone.utc) - last_checked).total_seconds()
+        if offline_seconds > 120:
+            # 1h покрывает примерно 41 день. Для более старой сделки берём 1d.
+            interval = "1h" if offline_seconds <= 40 * 86400 else "1d"
+            units = offline_seconds / (3600 if interval == "1h" else 86400)
+            candles = await client.get_klines(
+                trade["symbol"], interval, limit=min(1000, max(2, int(units) + 2))
+            )
+            recovered = [
+                candle for candle in candles
+                if datetime.fromtimestamp(
+                    candle.timestamp / 1000, tz=timezone.utc
+                ) >= last_checked
+            ]
+            if recovered:
+                observed_high = max(observed_high, *(candle.high for candle in recovered))
+                observed_low = min(observed_low, *(candle.low for candle in recovered))
+        updates = {
+            "max_price": max(float(trade["max_price"]), observed_high),
+            "min_price": min(float(trade["min_price"]), observed_low),
+            "last_checked_at": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+        }
+        if observed_low <= float(trade["stop_loss"]):
+            updates.update({
+                "status": "closed", "close_price": price,
+                "close_reason": "STOP", "closed_at": datetime.now(
+                    timezone.utc
+                ).strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            self.db.update_manual_trade(trade["id"], **updates)
+            await self.bot.send_message(
+                trade["user_id"],
+                f"🛑 Сделка {trade['symbol']} закрыта по Stop\n"
+                f"Цена: ${price:g} · Stop: ${trade['stop_loss']:g}",
+            )
+            return
+
+        newly_hit = []
+        for index in range(1, 5):
+            field = f"tp{index}_hit"
+            if not trade[field] and observed_high >= float(trade[f"tp{index}"]):
+                updates[field] = 1
+                newly_hit.append(f"TP{index}")
+        if updates.get("tp4_hit"):
+            updates.update({
+                "status": "closed", "close_price": price,
+                "close_reason": "TP4", "closed_at": datetime.now(
+                    timezone.utc
+                ).strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        self.db.update_manual_trade(trade["id"], **updates)
+        if newly_hit:
+            closed = "\n✅ Сделка завершена по TP4." if updates.get("tp4_hit") else ""
+            await self.bot.send_message(
+                trade["user_id"],
+                f"✅ {trade['symbol']}: достигнуты {', '.join(newly_hit)}\n"
+                f"Цена: ${price:g}{closed}",
+            )
 
     async def _check_watch(self, client, watch, now):
         (

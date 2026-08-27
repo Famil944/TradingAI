@@ -45,6 +45,8 @@ async def main():
         BotCommand(command="signals", description="Текущие сигналы"),
         BotCommand(command="top", description="TOP-10 по Score"),
         BotCommand(command="scan", description="Запустить скан"),
+        BotCommand(command="trades", description="Мои сделки"),
+        BotCommand(command="export", description="Скачать журнал Excel"),
         BotCommand(command="stats", description="Статистика"),
         BotCommand(command="settings", description="Настройки"),
         BotCommand(command="help", description="Справка"),

@@ -7,13 +7,14 @@ from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton,
-    InlineKeyboardMarkup,
+    InlineKeyboardMarkup, BufferedInputFile,
 )
 from database.db import Database
 from config.settings import settings
 import logging
 from services.scanner import MarketScanner
 from exchange.binance_client import BinanceClient
+from services.trade_export_service import build_trades_xlsx
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ def _scan_keyboard(signals) -> InlineKeyboardMarkup:
 
 def _detail_keyboard(index: int, symbol: str, score: int) -> InlineKeyboardMarkup:
     first_row = [
-        InlineKeyboardButton(text="🔔 Следить", callback_data=f"scan_watch:{index}"),
+        InlineKeyboardButton(text="✅ Я вошёл", callback_data=f"scan_take:{index}"),
         InlineKeyboardButton(text="📈 Обновить цену", callback_data=f"scan_price:{symbol}"),
     ]
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -203,8 +204,8 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     """Основное меню бота."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="/signals"), KeyboardButton(text="/top")],
-            [KeyboardButton(text="/scan"), KeyboardButton(text="/stats")],
+            [KeyboardButton(text="/scan"), KeyboardButton(text="/trades")],
+            [KeyboardButton(text="/export"), KeyboardButton(text="/stats")],
             [KeyboardButton(text="/settings"), KeyboardButton(text="/help")]
         ],
         resize_keyboard=True
@@ -246,6 +247,8 @@ async def cmd_help(message: types.Message):
 /top - TOP-10 монет по Score
 /coin <TICKER> - Подробный анализ пары (напр. /coin BTC)
 /scan - Принудительный скан рынка
+/trades - Мои открытые и закрытые сделки
+/export - Скачать журнал сделок Excel
 /history - История сигналов
 /stats - Статистика эффективности
 /settings - Персональные настройки
@@ -355,6 +358,42 @@ async def scan_watch(query: types.CallbackQuery):
     saved = Database().watch_signal(
         query.message.chat.id, signal_id, settings.signal_validity_minutes
     )
+
+
+async def _take_trade(query: types.CallbackQuery, signal_id: int, symbol: str):
+    async with BinanceClient() as client:
+        ticker = await client.get_ticker(symbol)
+    if not ticker:
+        await query.answer("Не удалось получить цену Binance", show_alert=True)
+        return
+    entry_price = float(ticker["price"])
+    trade_id = Database().open_manual_trade(
+        query.message.chat.id, signal_id, entry_price
+    )
+    if trade_id is None:
+        await query.answer("Эта монета уже есть в открытых сделках", show_alert=True)
+        return
+    if trade_id is False:
+        await query.answer("Сигнал не найден", show_alert=True)
+        return
+    await query.answer("Сделка сохранена", show_alert=True)
+    await query.message.answer(
+        f"✅ Сделка #{trade_id} открыта\n\n{symbol}\n"
+        f"Фактическая цена входа: ${_price(entry_price)}\n"
+        "Бот сохранит её после выключения и продолжит проверку при следующем запуске."
+    )
+
+
+@router.callback_query(F.data.startswith("scan_take:"))
+async def scan_take(query: types.CallbackQuery):
+    try:
+        index = int(query.data.split(":", 1)[1])
+        signal = scan_results[query.message.chat.id][index]
+        signal_id = scan_signal_ids[query.message.chat.id][index]
+    except (KeyError, ValueError, IndexError):
+        await query.answer("Результаты устарели. Запустите /scan", show_alert=True)
+        return
+    await _take_trade(query, signal_id, signal.symbol)
     await query.answer(
         "Наблюдение включено" if saved else "Сигнал не найден",
         show_alert=True,
@@ -375,6 +414,109 @@ async def auto_watch(query: types.CallbackQuery):
         "Слежение включено: сообщу о входе, TP и Stop"
         if saved else "Сигнал уже недоступен",
         show_alert=True,
+    )
+
+
+@router.callback_query(F.data.startswith("auto_take:"))
+async def auto_take(query: types.CallbackQuery):
+    try:
+        signal_id = int(query.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await query.answer("Некорректный сигнал", show_alert=True)
+        return
+    with Database().connect() as conn:
+        row = conn.execute(
+            "SELECT symbol FROM signals WHERE id = ?", (signal_id,)
+        ).fetchone()
+    if not row:
+        await query.answer("Сигнал не найден", show_alert=True)
+        return
+    await _take_trade(query, signal_id, row[0])
+
+
+def _trade_keyboard(trade_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="🔴 Я закрыл сделку", callback_data=f"trade_close:{trade_id}"
+        )
+    ]])
+
+
+@router.message(Command("trades"))
+async def cmd_trades(message: types.Message):
+    trades = Database().get_manual_trades(message.chat.id)
+    if not trades:
+        await message.answer("Сделок пока нет. Запустите /scan и нажмите «Я вошёл».")
+        return
+    open_trades = [trade for trade in trades if trade["status"] == "open"]
+    closed = [trade for trade in trades if trade["status"] != "open"]
+    await message.answer(
+        f"📒 Мои сделки\n\nОткрыто: {len(open_trades)} · Закрыто: {len(closed)}"
+    )
+    for trade in open_trades:
+        change = (trade["max_price"] / trade["entry_price"] - 1) * 100
+        await message.answer(
+            f"🟢 #{trade['id']} {trade['symbol']} · открыта\n"
+            f"Вход: ${_price(trade['entry_price'])}\n"
+            f"Максимум: ${_price(trade['max_price'])} ({change:+.2f}%)\n"
+            f"TP: ${_price(trade['tp1'])} / ${_price(trade['tp2'])} / "
+            f"${_price(trade['tp3'])} / ${_price(trade['tp4'])}\n"
+            f"Stop: ${_price(trade['stop_loss'])}\n"
+            f"Открыта: {trade['opened_at']} UTC",
+            reply_markup=_trade_keyboard(trade["id"]),
+        )
+    if closed:
+        lines = ["Последние закрытые:"]
+        for trade in closed[:10]:
+            result = (
+                (trade["close_price"] / trade["entry_price"] - 1) * 100
+                if trade["close_price"] else 0
+            )
+            lines.append(
+                f"#{trade['id']} {trade['symbol']} · {result:+.2f}% · "
+                f"{trade.get('close_reason') or 'закрыта'}"
+            )
+        await message.answer("\n".join(lines))
+
+
+@router.callback_query(F.data.startswith("trade_close:"))
+async def trade_close(query: types.CallbackQuery):
+    try:
+        trade_id = int(query.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await query.answer("Некорректная сделка", show_alert=True)
+        return
+    trades = Database().get_manual_trades(query.message.chat.id, status="open")
+    trade = next((item for item in trades if item["id"] == trade_id), None)
+    if not trade:
+        await query.answer("Сделка уже закрыта", show_alert=True)
+        return
+    async with BinanceClient() as client:
+        ticker = await client.get_ticker(trade["symbol"])
+    if not ticker:
+        await query.answer("Не удалось получить цену Binance", show_alert=True)
+        return
+    price = float(ticker["price"])
+    Database().close_manual_trade(trade_id, query.message.chat.id, price)
+    result = (price / trade["entry_price"] - 1) * 100
+    await query.answer("Сделка закрыта и сохранена", show_alert=True)
+    await query.message.answer(
+        f"🔴 {trade['symbol']} закрыта\nЦена: ${_price(price)}\n"
+        f"Результат: {result:+.2f}%"
+    )
+
+
+@router.message(Command("export"))
+async def cmd_export(message: types.Message):
+    trades = Database().get_manual_trades(message.chat.id)
+    if not trades:
+        await message.answer("Журнал сделок пока пуст.")
+        return
+    content = build_trades_xlsx(trades)
+    filename = f"TradingAI_trades_{datetime.now(MOSCOW_TZ):%Y-%m-%d}.xlsx"
+    await message.answer_document(
+        BufferedInputFile(content, filename=filename),
+        caption="📊 Ваш журнал сделок TradingAI",
     )
 
 

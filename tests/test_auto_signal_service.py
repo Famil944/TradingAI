@@ -55,7 +55,7 @@ class AutoSignalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TESTUSDT", text)
         self.assertIn("ПОКУПКА", text)
         self.assertEqual(
-            keyboard.inline_keyboard[0][0].callback_data, "auto_watch:7"
+            keyboard.inline_keyboard[0][0].callback_data, "auto_take:7"
         )
 
 

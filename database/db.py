@@ -149,7 +149,113 @@ class Database:
                 )
             """)
 
+            # Сделки, которые пользователь действительно открыл вручную на Binance.
+            # Они не имеют срока действия и переживают любые перезапуски бота.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS manual_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    signal_id INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    score INTEGER NOT NULL,
+                    entry_price REAL NOT NULL,
+                    tp1 REAL NOT NULL,
+                    tp2 REAL NOT NULL,
+                    tp3 REAL NOT NULL,
+                    tp4 REAL NOT NULL,
+                    stop_loss REAL NOT NULL,
+                    max_price REAL NOT NULL,
+                    min_price REAL NOT NULL,
+                    tp1_hit INTEGER DEFAULT 0,
+                    tp2_hit INTEGER DEFAULT 0,
+                    tp3_hit INTEGER DEFAULT 0,
+                    tp4_hit INTEGER DEFAULT 0,
+                    status TEXT DEFAULT 'open',
+                    close_price REAL,
+                    close_reason TEXT,
+                    opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    closed_at TIMESTAMP,
+                    last_checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (signal_id) REFERENCES signals(id)
+                )
+            """)
+
             conn.commit()
+
+    def open_manual_trade(self, user_id: int, signal_id: int, entry_price: float):
+        """Записать фактически выбранную пользователем сделку."""
+        with self.connect() as conn:
+            existing = conn.execute(
+                """SELECT id FROM manual_trades
+                   WHERE user_id = ? AND symbol = (
+                       SELECT symbol FROM signals WHERE id = ?
+                   ) AND status = 'open'""",
+                (int(user_id), int(signal_id)),
+            ).fetchone()
+            if existing:
+                return None
+            signal = conn.execute(
+                """SELECT symbol, score, tp1, tp2, tp3, tp4, stop_loss
+                   FROM signals WHERE id = ?""",
+                (int(signal_id),),
+            ).fetchone()
+            if not signal:
+                return False
+            cursor = conn.execute(
+                """INSERT INTO manual_trades (
+                       user_id, signal_id, symbol, score, entry_price,
+                       tp1, tp2, tp3, tp4, stop_loss, max_price, min_price
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    int(user_id), int(signal_id), signal[0], signal[1],
+                    float(entry_price), signal[2], signal[3], signal[4],
+                    signal[5], signal[6], float(entry_price), float(entry_price),
+                ),
+            )
+            return cursor.lastrowid
+
+    def get_manual_trades(self, user_id: int = None, status: str = None):
+        query = "SELECT * FROM manual_trades WHERE 1 = 1"
+        params = []
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(int(user_id))
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY opened_at DESC"
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(row) for row in conn.execute(query, params).fetchall()]
+
+    def update_manual_trade(self, trade_id: int, **fields):
+        allowed = {
+            "max_price", "min_price", "tp1_hit", "tp2_hit", "tp3_hit",
+            "tp4_hit", "status", "close_price", "close_reason",
+            "closed_at", "last_checked_at",
+        }
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        if not updates:
+            return
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE manual_trades SET {assignments} WHERE id = ?",
+                (*updates.values(), int(trade_id)),
+            )
+
+    def close_manual_trade(self, trade_id: int, user_id: int, price: float,
+                           reason: str = "manual") -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE manual_trades
+                   SET status = 'closed', close_price = ?, close_reason = ?,
+                       closed_at = CURRENT_TIMESTAMP,
+                       last_checked_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND user_id = ? AND status = 'open'""",
+                (float(price), reason, int(trade_id), int(user_id)),
+            )
+            return cursor.rowcount > 0
     
     def save_signal(self, signal_data: dict) -> int:
         """Сохранить сигнал в БД. Возвращает ID сигнала."""
