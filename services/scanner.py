@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 from exchange.binance_client import BinanceClient
 from config.models import MarketData
 from analysis.signal_scorer import SignalScorer
-from analysis.indicators import IndicatorCalculator
 from database.db import Database
 from config.settings import settings
 
@@ -28,6 +27,19 @@ class MarketScanner:
         self._symbol_diagnostics[symbol] = {
             "symbol": symbol, "status": status, "reason": reason, **metrics,
         }
+
+    @staticmethod
+    def _relative_volume_ratio(candles, recent_count=3, baseline_count=20):
+        """Средний объём последних свечей к предшествующему базовому периоду."""
+        if len(candles) < recent_count + baseline_count:
+            return None
+        recent = candles[-recent_count:]
+        baseline = candles[-recent_count - baseline_count:-recent_count]
+        baseline_average = sum(item.volume for item in baseline) / len(baseline)
+        if baseline_average <= 0:
+            return None
+        recent_average = sum(item.volume for item in recent) / len(recent)
+        return recent_average / baseline_average
 
     async def _analyze_symbol(self, client, symbol: str):
         candles_5m, candles_15m, candles_1h, candles_4h, daily, ticker, tick_size = await asyncio.gather(
@@ -70,10 +82,9 @@ class MarketScanner:
             self._diagnose(symbol, "rejected", "wide_spread", quote_volume_usdt=quote_volume, spread_percent=spread)
             return None
 
-        volume_sma = IndicatorCalculator.calculate_volume_sma(
-            [item.volume for item in candles_5m[:-1]], 20
-        )
-        volume_ratio = candles_5m[-1].volume / volume_sma if volume_sma else None
+        # Одна 5m-свеча слишком шумная. Берём средний объём последних трёх
+        # закрытых свечей и сравниваем с предыдущими двадцатью.
+        volume_ratio = self._relative_volume_ratio(candles_5m)
         if volume_ratio is not None and volume_ratio < settings.min_volume_ratio:
             self._diagnose(symbol, "rejected", "weak_volume", quote_volume_usdt=quote_volume, spread_percent=spread, volume_ratio=volume_ratio)
             return None
