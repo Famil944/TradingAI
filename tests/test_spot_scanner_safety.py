@@ -51,6 +51,14 @@ class SpotScannerSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_price(0.006965, 0.00001), "0.00696")
         self.assertEqual(_price(0.007021, 0.00001), "0.00702")
 
+    def test_relative_volume_uses_three_closed_candles(self):
+        series = candles(20)
+        series.extend([
+            CandleData(timestamp=21 + index, open=1, high=1, low=1, close=1, volume=800_000)
+            for index in range(3)
+        ])
+        self.assertAlmostEqual(MarketScanner._relative_volume_ratio(series), 0.8)
+
     async def test_open_candle_is_removed_from_every_timeframe(self):
         scanner = MarketScanner()
         with patch(
