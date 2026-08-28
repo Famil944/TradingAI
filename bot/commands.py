@@ -19,6 +19,7 @@ import logging
 from services.scanner import MarketScanner
 from exchange.binance_client import BinanceClient
 from services.trade_export_service import build_trades_xlsx
+from services.diagnostic_export_service import build_diagnostic_json
 from services.screenshot_ocr_service import (
     find_tesseract, recognize_binance_screenshot,
 )
@@ -206,7 +207,7 @@ async def _run_scan(message: types.Message):
         f"{_scan_summary(signals)}\n\n"
         f"Фильтры стратегии не прошли: "
         f"{manual_scanner.last_scan_diagnostics.get('strategy_filtered', 0)} "
-        f"(просадка, разворот, Score, ликвидность или R/R)."
+        f"(ликвидность, спред, объём, тренд, памп, сопротивление или Score)."
     )
     await message.answer(summary, reply_markup=_scan_keyboard(signals))
 
@@ -216,7 +217,8 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="/scan"), KeyboardButton(text="/trades")],
-            [KeyboardButton(text="/export"), KeyboardButton(text="/stats")],
+            [KeyboardButton(text="/export"), KeyboardButton(text="/diagnostics")],
+            [KeyboardButton(text="/stats")],
             [KeyboardButton(text="/settings"), KeyboardButton(text="/help")]
         ],
         resize_keyboard=True
@@ -260,6 +262,7 @@ async def cmd_help(message: types.Message):
 /scan - Принудительный скан рынка
 /trades - Мои открытые и закрытые сделки
 /export - Скачать журнал сделок Excel
+/diagnostics - Скачать отчёт для улучшения стратегии
 /history - История ваших сделок
 /edit_trade ID ЦЕНА СУММА - Уточнить вход и сумму USDT
 /stats - Статистика эффективности
@@ -833,6 +836,20 @@ async def cmd_export(message: types.Message):
     await message.answer_document(
         BufferedInputFile(content, filename=filename),
         caption="📊 Ваш журнал сделок TradingAI",
+    )
+
+
+@router.message(Command("diagnostics"))
+async def cmd_diagnostics(message: types.Message):
+    trades = Database().get_manual_trades(message.chat.id)
+    content = build_diagnostic_json(manual_scanner.last_scan_diagnostics, trades)
+    filename = f"TradingAI_diagnostics_{datetime.now(MOSCOW_TZ):%Y-%m-%d_%H-%M}.json"
+    await message.answer_document(
+        BufferedInputFile(content, filename=filename),
+        caption=(
+            "🧪 Диагностический отчёт готов. Пришлите этот файл мне — "
+            "по нему можно улучшать фильтры и Score. Секретные ключи в файл не входят."
+        ),
     )
 
 

@@ -139,7 +139,9 @@ class BinanceClient:
                 "volume": float(data.get("volume", 0)),
                 "quote_asset_volume": float(
                     data.get("quoteVolume", data.get("quoteAssetVolume", 0))
-                )
+                ),
+                "bid_price": float(data.get("bidPrice", 0)),
+                "ask_price": float(data.get("askPrice", 0)),
             }
         except (ValueError, TypeError, KeyError) as e:
             logger.error(f"Ошибка парсинга ticker для {symbol}: {e}")
