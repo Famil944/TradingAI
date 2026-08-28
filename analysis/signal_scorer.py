@@ -19,6 +19,26 @@ class SignalScorer:
     PRICE_SUPPORT_THRESHOLD_PERCENT = 1.0  # На сколько % от цены считается "рядом с поддержкой"
     BB_RETURN_THRESHOLD = 0.05  # На сколько % цена должна вернуться в Bollinger Bands
     VOLUME_THRESHOLD_INCREASE = 30  # На сколько % должен вырасти объём
+
+    @staticmethod
+    def ema_slope_percent(candles: List[CandleData], period: int = 20, lookback: int = 4) -> Optional[float]:
+        """Наклон EMA за несколько закрытых свечей в процентах."""
+        if len(candles) < period + lookback:
+            return None
+        closes = [item.close for item in candles]
+        previous = IndicatorCalculator.calculate_ema(closes[:-lookback], period)
+        current = IndicatorCalculator.calculate_ema(closes, period)
+        if not previous or current is None:
+            return None
+        return (current - previous) / previous * 100
+
+    @staticmethod
+    def short_move_percent(candles: List[CandleData], lookback: int = 4) -> Optional[float]:
+        """Изменение цены за последние закрытые свечи."""
+        if len(candles) <= lookback or candles[-lookback - 1].close <= 0:
+            return None
+        start = candles[-lookback - 1].close
+        return (candles[-1].close - start) / start * 100
     
     @staticmethod
     def calculate_score(
@@ -215,6 +235,7 @@ class SignalScorer:
         candles_4h: Optional[List[CandleData]] = None,
         min_drawdown_percent: float = 3.0,
         max_drawdown_percent: float = 45.0,
+        min_resistance_room_percent: float = 3.3,
     ) -> Optional[TradeSignal]:
         """
         Генерация торгового сигнала на основе анализа рынка.
@@ -266,6 +287,14 @@ class SignalScorer:
             logger.debug(f"{symbol}: сопротивление не найдено, используем {resistance:.2f}")
         else:
             resistance = resistance_level.level
+
+        # Цель +3% должна помещаться до ближайшего сопротивления с запасом.
+        if resistance > market_data.current_price:
+            resistance_room = (
+                (resistance - market_data.current_price) / market_data.current_price * 100
+            )
+            if resistance_room < min_resistance_room_percent:
+                return None
         
         # Расчёт Score
         score, reasons, warnings = SignalScorer.calculate_score(

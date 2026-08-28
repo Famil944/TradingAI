@@ -49,6 +49,7 @@ async def main():
         BotCommand(command="history", description="История сделок"),
         BotCommand(command="edit_trade", description="Уточнить вход и сумму"),
         BotCommand(command="export", description="Скачать журнал Excel"),
+        BotCommand(command="diagnostics", description="Отчёт для улучшения стратегии"),
         BotCommand(command="stats", description="Статистика"),
         BotCommand(command="settings", description="Настройки"),
         BotCommand(command="help", description="Справка"),

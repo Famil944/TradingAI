@@ -10,10 +10,10 @@ def candles(count):
     return [
         CandleData(
             timestamp=index,
-            open=100,
-            high=102,
-            low=99,
-            close=101,
+            open=100 + index * 0.05,
+            high=101 + index * 0.05,
+            low=99 + index * 0.05,
+            close=100.5 + index * 0.05,
             volume=1_000_000,
         )
         for index in range(count)
@@ -21,8 +21,11 @@ def candles(count):
 
 
 class FakeClient:
-    def __init__(self, daily_count):
+    def __init__(self, daily_count, quote_volume=10_000_000, bid=99.95, ask=100.05):
         self.daily_count = daily_count
+        self.quote_volume = quote_volume
+        self.bid = bid
+        self.ask = ask
 
     async def get_klines(self, symbol, interval, limit=100):
         if interval == "1d":
@@ -34,7 +37,9 @@ class FakeClient:
             "price": 100,
             "price_change": -5,
             "price_change_percent": -5,
-            "quote_asset_volume": 10_000_000,
+            "quote_asset_volume": self.quote_volume,
+            "bid_price": self.bid,
+            "ask_price": self.ask,
         }
 
     async def get_tick_size(self, symbol):
@@ -67,6 +72,26 @@ class SpotScannerSafetyTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIsNone(result)
+        generate.assert_not_called()
+
+    async def test_low_liquidity_is_rejected_before_scoring(self):
+        scanner = MarketScanner()
+        with patch("services.scanner.SignalScorer.generate_signal") as generate:
+            result = await scanner._analyze_symbol(
+                FakeClient(daily_count=61, quote_volume=9_999_999), "LOWUSDT"
+            )
+        self.assertIsNone(result)
+        self.assertEqual(scanner._symbol_diagnostics["LOWUSDT"]["reason"], "low_liquidity")
+        generate.assert_not_called()
+
+    async def test_wide_spread_is_rejected_before_scoring(self):
+        scanner = MarketScanner()
+        with patch("services.scanner.SignalScorer.generate_signal") as generate:
+            result = await scanner._analyze_symbol(
+                FakeClient(daily_count=61, bid=99.0, ask=101.0), "WIDEUSDT"
+            )
+        self.assertIsNone(result)
+        self.assertEqual(scanner._symbol_diagnostics["WIDEUSDT"]["reason"], "wide_spread")
         generate.assert_not_called()
 
 

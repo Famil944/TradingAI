@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from exchange.binance_client import BinanceClient
 from config.models import MarketData
 from analysis.signal_scorer import SignalScorer
+from analysis.indicators import IndicatorCalculator
 from database.db import Database
 from config.settings import settings
 
@@ -21,6 +22,12 @@ class MarketScanner:
         self._stop_event = asyncio.Event()
         self.signal_callback = signal_callback
         self.last_scan_diagnostics = {}
+        self._symbol_diagnostics = {}
+
+    def _diagnose(self, symbol, status, reason, **metrics):
+        self._symbol_diagnostics[symbol] = {
+            "symbol": symbol, "status": status, "reason": reason, **metrics,
+        }
 
     async def _analyze_symbol(self, client, symbol: str):
         candles_5m, candles_15m, candles_1h, candles_4h, daily, ticker, tick_size = await asyncio.gather(
@@ -35,6 +42,7 @@ class MarketScanner:
         if not ticker or any(not series for series in (
             candles_5m, candles_15m, candles_1h, candles_4h, daily
         )):
+            self._diagnose(symbol, "rejected", "market_data_unavailable")
             return None
         # Binance включает текущую, ещё формирующуюся свечу. Она исключается,
         # чтобы сигнал не менялся после закрытия интервала.
@@ -48,8 +56,38 @@ class MarketScanner:
                 "%s исключён: история %s дней меньше %s",
                 symbol, len(closed_daily), settings.min_listing_days,
             )
+            self._diagnose(symbol, "rejected", "listing_too_new", listing_days=len(closed_daily))
             return None
-        if ticker.get("quote_asset_volume", 0) < settings.min_quote_volume_usdt:
+
+        quote_volume = ticker.get("quote_asset_volume", 0)
+        if quote_volume < settings.min_quote_volume_usdt:
+            self._diagnose(symbol, "rejected", "low_liquidity", quote_volume_usdt=quote_volume)
+            return None
+
+        bid, ask = ticker.get("bid_price", 0), ticker.get("ask_price", 0)
+        spread = ((ask - bid) / ((ask + bid) / 2) * 100) if bid > 0 and ask >= bid else None
+        if spread is not None and spread > settings.max_spread_percent:
+            self._diagnose(symbol, "rejected", "wide_spread", quote_volume_usdt=quote_volume, spread_percent=spread)
+            return None
+
+        volume_sma = IndicatorCalculator.calculate_volume_sma(
+            [item.volume for item in candles_5m[:-1]], 20
+        )
+        volume_ratio = candles_5m[-1].volume / volume_sma if volume_sma else None
+        if volume_ratio is not None and volume_ratio < settings.min_volume_ratio:
+            self._diagnose(symbol, "rejected", "weak_volume", quote_volume_usdt=quote_volume, spread_percent=spread, volume_ratio=volume_ratio)
+            return None
+
+        slope_15m = SignalScorer.ema_slope_percent(candles_15m)
+        slope_1h = SignalScorer.ema_slope_percent(candles_1h)
+        usable_slopes = [value for value in (slope_15m, slope_1h) if value is not None]
+        if usable_slopes and max(usable_slopes) < settings.min_ema20_slope_percent:
+            self._diagnose(symbol, "rejected", "weak_trend", quote_volume_usdt=quote_volume, spread_percent=spread, volume_ratio=volume_ratio, ema20_slope_15m=slope_15m, ema20_slope_1h=slope_1h)
+            return None
+
+        short_move = SignalScorer.short_move_percent(candles_15m)
+        if short_move is not None and short_move > settings.max_short_pump_percent:
+            self._diagnose(symbol, "rejected", "recent_pump", quote_volume_usdt=quote_volume, spread_percent=spread, volume_ratio=volume_ratio, short_move_percent=short_move)
             return None
 
         market_data = MarketData(
@@ -68,7 +106,21 @@ class MarketScanner:
             candles_4h=candles_4h,
             min_drawdown_percent=settings.min_drawdown_percent,
             max_drawdown_percent=settings.max_drawdown_percent,
+            min_resistance_room_percent=settings.min_resistance_room_percent,
         )
+        metrics = {
+            "quote_volume_usdt": quote_volume,
+            "spread_percent": spread,
+            "volume_ratio": volume_ratio,
+            "ema20_slope_15m": slope_15m,
+            "ema20_slope_1h": slope_1h,
+            "short_move_percent": short_move,
+        }
+        if signal is None:
+            self._diagnose(symbol, "rejected", "strategy_score_or_setup", **metrics)
+        else:
+            resistance_room = ((signal.resistance - signal.current_price) / signal.current_price * 100)
+            self._diagnose(symbol, "accepted", "signal", score=signal.score, resistance_room_percent=resistance_room, **metrics)
         if signal:
             if tick_size:
                 tick = Decimal(str(tick_size))
@@ -115,6 +167,7 @@ class MarketScanner:
         top_limit = top_limit or settings.scanner_top_limit
         logger.info(f"Начало сканирования TOP-{top_limit} пар...")
         signals_found = []
+        self._symbol_diagnostics = {}
         
         # Популярные пары для тестирования
         test_symbols = [
@@ -146,6 +199,10 @@ class MarketScanner:
                             return symbol, await self._analyze_symbol(client, symbol)
                         except Exception as error:
                             logger.error(f"Ошибка при анализе {symbol}: {error}")
+                            self._diagnose(
+                                symbol, "error", "analysis_error",
+                                error_type=type(error).__name__,
+                            )
                             return symbol, None
 
                 tasks = [asyncio.create_task(analyze(symbol)) for symbol in symbols]
@@ -211,6 +268,10 @@ class MarketScanner:
                     "accepted": len(signals_found),
                     "strategy_filtered": len(symbols) - sum(
                         signal is not None for _, signal in analyzed
+                    ),
+                    "symbols": sorted(
+                        self._symbol_diagnostics.values(),
+                        key=lambda item: item["symbol"],
                     ),
                 }
             
