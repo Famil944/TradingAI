@@ -23,7 +23,11 @@ class Settings(BaseModel):
         "1", "true", "yes", "on"
     )
     auto_notify_min_score: int = int(os.getenv("AUTO_NOTIFY_MIN_SCORE", "75"))
-    auto_priority_top_limit: int = int(os.getenv("AUTO_PRIORITY_TOP_LIMIT", "20"))
+    # Старые .env содержали TOP-20. Автономный режим теперь гарантированно
+    # проверяет не меньше TOP-100 даже после обычного git pull на телефоне.
+    auto_priority_top_limit: int = max(
+        100, int(os.getenv("AUTO_PRIORITY_TOP_LIMIT", "100"))
+    )
     cryptopanic_auth_token: str = os.getenv("CRYPTOPANIC_AUTH_TOKEN", "")
     cryptopanic_api_plan: str = os.getenv("CRYPTOPANIC_API_PLAN", "developer")
     news_enabled: bool = os.getenv("NEWS_ENABLED", "false").lower() in (

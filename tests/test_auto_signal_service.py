@@ -21,7 +21,11 @@ class FakeDatabase:
 
 
 class FakeScanner:
+    def __init__(self):
+        self.calls = []
+
     async def scan_market(self, top_limit, respect_cooldown):
+        self.calls.append((top_limit, respect_cooldown))
         signal = SimpleNamespace(
             symbol="TESTUSDT",
             score=82,
@@ -55,8 +59,9 @@ class AutoSignalServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_strong_signal_is_sent_with_watch_button(self):
         bot = FakeBot()
+        scanner = FakeScanner()
         service = AutoSignalService(
-            bot, FakeScanner(), asyncio.Lock(), FakeNewsService()
+            bot, scanner, asyncio.Lock(), FakeNewsService()
         )
         service.db = FakeDatabase()
 
@@ -70,6 +75,7 @@ class AutoSignalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             keyboard.inline_keyboard[0][0].callback_data, "auto_take:7"
         )
+        self.assertEqual(scanner.calls, [(100, True)])
 
 
 if __name__ == "__main__":
