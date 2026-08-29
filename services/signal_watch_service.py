@@ -150,17 +150,10 @@ class SignalWatchService:
             )
             return
 
-        pnl_percent = (price / float(trade["entry_price"]) - 1) * 100
-        is_critical = pnl_percent <= -2
-        if is_critical and not trade.get("critical_alerted"):
-            updates["critical_alerted"] = 1
-            await self.bot.send_message(
-                trade["user_id"],
-                f"🚨 КРИТИЧЕСКАЯ ЗОНА\n\n{trade['symbol']}\n"
-                f"Цена: ${price:g} · результат: {pnl_percent:+.2f}%\n"
-                "Проверьте позицию в Binance.",
-            )
-        elif not is_critical and trade.get("critical_alerted"):
+        # Просадка отображается только по запросу пользователя в /trades.
+        # Фоновый мониторинг продолжает обновлять цену, но не тревожит
+        # уведомлениями о критической зоне.
+        if trade.get("critical_alerted"):
             updates["critical_alerted"] = 0
 
         self.db.update_manual_trade(trade["id"], **updates)

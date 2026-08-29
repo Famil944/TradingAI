@@ -82,6 +82,18 @@ class SignalWatchServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(service.db.updates[-1][1]["pending_reason"], "TP +3%")
 
+    async def test_critical_loss_is_updated_without_notification(self):
+        now = datetime.now(timezone.utc)
+        bot = FakeBot()
+        service = SignalWatchService(bot)
+        service.db = FakeDatabase()
+        await service._check_manual_trade(
+            FakeClient([], price=97),
+            trade((now - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        self.assertEqual(bot.messages, [])
+        self.assertEqual(service.db.updates[-1][1]["current_price"], 97)
+
 
 if __name__ == "__main__":
     unittest.main()
