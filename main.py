@@ -8,11 +8,13 @@ from bot.commands import (
     router as commands_router,
     manual_scanner,
     scan_lock,
+    configure_pump_service,
 )
 from core.single_instance import SingleInstance
 from services.signal_watch_service import SignalWatchService
 from services.auto_signal_service import AutoSignalService
 from services.news_sentiment_service import NewsSentimentService
+from services.pump_service import PumpService
 
 # Настройка логирования
 logging.basicConfig(
@@ -51,6 +53,7 @@ async def main():
         BotCommand(command="export", description="Скачать журнал Excel"),
         BotCommand(command="diagnostics", description="Отчёт для улучшения стратегии"),
         BotCommand(command="stats", description="Статистика"),
+        BotCommand(command="pump", description="Экспериментальный Pump-анализ"),
         BotCommand(command="settings", description="Настройки"),
         BotCommand(command="help", description="Справка"),
     ]
@@ -62,6 +65,9 @@ async def main():
     
     logger.info("✅ Бот создан и настроен")
     news_service = NewsSentimentService()
+    pump_service = PumpService(bot, news_service)
+    configure_pump_service(pump_service)
+    pump_task = asyncio.create_task(pump_service.run())
     watch_service = SignalWatchService(bot, news_service=news_service)
     watch_task = asyncio.create_task(watch_service.run())
     auto_signal_service = AutoSignalService(
@@ -73,7 +79,7 @@ async def main():
     )
     
     # Запуск polling'а бота
-    logger.info("🚀 Бот запущен в ручном режиме! Ожидание /scan...")
+    logger.info("🚀 Бот запущен: основной и экспериментальный мониторинг активны")
     
     try:
         await dp.start_polling(bot)
@@ -84,6 +90,9 @@ async def main():
         auto_signal_service.stop()
         watch_task.cancel()
         tasks = [watch_task]
+        pump_service.stop()
+        pump_task.cancel()
+        tasks.append(pump_task)
         if auto_signal_task:
             auto_signal_task.cancel()
             tasks.append(auto_signal_task)

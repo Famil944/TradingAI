@@ -11,6 +11,8 @@ class CandleData(BaseModel):
     low: float
     close: float
     volume: float
+    trade_count: Optional[int] = None
+    taker_buy_quote_volume: Optional[float] = None
 
 
 class IndicatorValues(BaseModel):

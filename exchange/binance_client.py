@@ -144,7 +144,11 @@ class BinanceClient:
                 high=float(candle[2]),
                 low=float(candle[3]),
                 close=float(candle[4]),
-                volume=float(candle[7])
+                volume=float(candle[7]),
+                trade_count=int(candle[8]) if len(candle) > 8 else None,
+                taker_buy_quote_volume=(
+                    float(candle[10]) if len(candle) > 10 else None
+                ),
             ))
         
         return candles
@@ -211,7 +215,7 @@ class BinanceClient:
         # но не подходят для стратегии роста к цели +3%.
         excluded_quote_like_assets = {
             "USDC", "BUSD", "DAI", "TUSD", "FDUSD", "USDP", "USDD",
-            "USD1", "XUSD", "RLUSD", "EURI", "EUR", "AEUR", "PAXG",
+            "USD1", "XUSD", "RLUSD", "EURI", "EUR", "AEUR", "PAXG", "XAUT",
         }
         
         pairs = []
@@ -246,6 +250,35 @@ class BinanceClient:
         
         logger.info(f"Найдено {len(pairs)} USDT пар, берём TOP-{limit}")
         return [pair[0] for pair in pairs[:limit]]
+
+    async def get_all_usdt_tickers(self) -> List[Dict]:
+        """Все пригодные USDT-пары без ограничения TOP."""
+        data = await self._request("GET", "/api/v3/ticker/24hr", {}, weight=40)
+        if not isinstance(data, list):
+            return []
+        excluded = {
+            "USDC", "BUSD", "DAI", "TUSD", "FDUSD", "USDP", "USDD",
+            "USD1", "XUSD", "RLUSD", "EURI", "EUR", "AEUR", "PAXG", "XAUT",
+        }
+        result = []
+        for item in data:
+            try:
+                symbol = item.get("symbol", "")
+                if (not symbol.endswith("USDT") or symbol[:-4] in excluded or
+                        symbol in settings.excluded_symbols):
+                    continue
+                result.append({
+                    "symbol": symbol,
+                    "price": float(item.get("lastPrice", 0)),
+                    "quote_volume": float(item.get("quoteVolume", 0)),
+                    "price_change_percent": float(item.get("priceChangePercent", 0)),
+                    "bid": float(item.get("bidPrice", 0)),
+                    "ask": float(item.get("askPrice", 0)),
+                    "trade_count": int(item.get("count", 0)),
+                })
+            except (TypeError, ValueError):
+                continue
+        return result
     
     async def batch_get_tickers(self, symbols: List[str]) -> Dict[str, Dict]:
         """Получить данные для нескольких пар сразу."""

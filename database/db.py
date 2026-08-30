@@ -176,6 +176,8 @@ class Database:
                     stop_loss REAL NOT NULL,
                     max_price REAL NOT NULL,
                     min_price REAL NOT NULL,
+                    max_at TIMESTAMP,
+                    min_at TIMESTAMP,
                     tp1_hit INTEGER DEFAULT 0,
                     tp2_hit INTEGER DEFAULT 0,
                     tp3_hit INTEGER DEFAULT 0,
@@ -232,6 +234,49 @@ class Database:
                        tp4 = entry_price * 1.03
                    WHERE status = 'open'"""
             )
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pump_user_settings (
+                    user_id INTEGER PRIMARY KEY,
+                    background_enabled INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pump_predictions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    score INTEGER NOT NULL,
+                    stage TEXT NOT NULL,
+                    start_price REAL NOT NULL,
+                    current_price REAL NOT NULL,
+                    max_price REAL NOT NULL,
+                    min_price REAL NOT NULL,
+                    technical_json TEXT,
+                    news_score INTEGER DEFAULT 0,
+                    news_items INTEGER DEFAULT 0,
+                    news_critical INTEGER DEFAULT 0,
+                    checkpoints_json TEXT DEFAULT '{}',
+                    status TEXT DEFAULT 'observing',
+                    outcome TEXT,
+                    result_notified INTEGER DEFAULT 0,
+                    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    last_checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pump_status ON pump_predictions(status)"
+            )
+            pump_columns = {
+                row[1] for row in cursor.execute("PRAGMA table_info(pump_predictions)")
+            }
+            for column in ("max_at", "min_at"):
+                if column not in pump_columns:
+                    cursor.execute(
+                        f"ALTER TABLE pump_predictions ADD COLUMN {column} TIMESTAMP"
+                    )
 
             conn.commit()
 
@@ -499,6 +544,98 @@ class Database:
                 """,
                 (int(user_id),),
             )
+
+    def set_pump_background(self, user_id: int, enabled: bool):
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO pump_user_settings(user_id, background_enabled, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                     background_enabled=excluded.background_enabled,
+                     updated_at=CURRENT_TIMESTAMP""",
+                (int(user_id), int(enabled)),
+            )
+
+    def get_pump_background(self, user_id: int) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT background_enabled FROM pump_user_settings WHERE user_id=?",
+                (int(user_id),),
+            ).fetchone()
+        return bool(row and row[0])
+
+    def get_pump_background_users(self) -> list[int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT user_id FROM pump_user_settings WHERE background_enabled=1"
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    def save_pump_prediction(self, user_id: int, candidate: dict):
+        import json
+        with self.connect() as conn:
+            existing = conn.execute(
+                """SELECT id FROM pump_predictions
+                   WHERE user_id=? AND symbol=? AND status='observing'""",
+                (int(user_id), candidate["symbol"]),
+            ).fetchone()
+            if existing:
+                return None
+            cursor = conn.execute(
+                """INSERT INTO pump_predictions(
+                     user_id,symbol,score,stage,start_price,current_price,max_price,
+                     min_price,technical_json,news_score,news_items,news_critical)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (int(user_id), candidate["symbol"], int(candidate["score"]),
+                 candidate["stage"], float(candidate["price"]), float(candidate["price"]),
+                 float(candidate["price"]), float(candidate["price"]),
+                 json.dumps(candidate.get("metrics", {}), ensure_ascii=False),
+                 int(candidate.get("news_score", 0)), int(candidate.get("news_items", 0)),
+                 int(candidate.get("news_critical", False))),
+            )
+            return cursor.lastrowid
+
+    def get_pump_predictions(self, user_id=None, status=None, limit=100):
+        query = "SELECT * FROM pump_predictions WHERE 1=1"
+        params = []
+        if user_id is not None:
+            query += " AND user_id=?"
+            params.append(int(user_id))
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        query += " ORDER BY detected_at DESC LIMIT ?"
+        params.append(int(limit))
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(row) for row in conn.execute(query, params)]
+
+    def update_pump_prediction(self, prediction_id: int, **fields):
+        allowed = {
+            "current_price", "max_price", "min_price", "max_at", "min_at", "checkpoints_json",
+            "status", "outcome", "result_notified", "completed_at", "last_checked_at",
+        }
+        values = {key: value for key, value in fields.items() if key in allowed}
+        if not values:
+            return
+        assignments = ",".join(f"{key}=?" for key in values)
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE pump_predictions SET {assignments} WHERE id=?",
+                (*values.values(), int(prediction_id)),
+            )
+
+    def get_pump_statistics(self, user_id: int):
+        rows = self.get_pump_predictions(user_id=user_id, limit=10000)
+        completed = [row for row in rows if row["status"] == "completed"]
+        successful = [row for row in completed if row.get("outcome") == "pump"]
+        return {
+            "total": len(rows),
+            "observing": sum(row["status"] == "observing" for row in rows),
+            "completed": len(completed),
+            "successful": len(successful),
+            "accuracy": len(successful) / len(completed) * 100 if completed else 0,
+        }
 
     def get_notification_user_ids(self) -> list[int]:
         with self.connect() as conn:
