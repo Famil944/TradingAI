@@ -66,6 +66,23 @@ class TestScoringLogic(unittest.TestCase):
             [103.0, 103.0, 103.0, 103.0],
         ):
             self.assertAlmostEqual(actual, expected)
+
+    def test_rejection_diagnostics_explain_invalid_price(self):
+        from analysis.signal_scorer import SignalScorer
+        from config.models import MarketData
+
+        diagnostics = {}
+        result = SignalScorer.generate_signal(
+            "TESTUSDT",
+            MarketData(
+                symbol="TESTUSDT", current_price=0,
+                price_change_24h=0, price_change_percent_24h=0,
+            ),
+            [],
+            diagnostics=diagnostics,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(diagnostics["reason"], "invalid_current_price")
     
     def test_entry_zone_calculation(self):
         """Тест расчёта зоны входа."""
