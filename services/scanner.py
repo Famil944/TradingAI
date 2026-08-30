@@ -107,6 +107,7 @@ class MarketScanner:
             price_change_24h=ticker["price_change"],
             price_change_percent_24h=ticker["price_change_percent"],
         )
+        evaluation = {}
         signal = SignalScorer.generate_signal(
             symbol,
             market_data,
@@ -118,6 +119,7 @@ class MarketScanner:
             min_drawdown_percent=settings.min_drawdown_percent,
             max_drawdown_percent=settings.max_drawdown_percent,
             min_resistance_room_percent=settings.min_resistance_room_percent,
+            diagnostics=evaluation,
         )
         metrics = {
             "quote_volume_usdt": quote_volume,
@@ -128,7 +130,8 @@ class MarketScanner:
             "short_move_percent": short_move,
         }
         if signal is None:
-            self._diagnose(symbol, "rejected", "strategy_score_or_setup", **metrics)
+            reason = evaluation.pop("reason", "strategy_setup_rejected")
+            self._diagnose(symbol, "rejected", reason, **metrics, **evaluation)
         else:
             resistance_room = ((signal.resistance - signal.current_price) / signal.current_price * 100)
             self._diagnose(symbol, "accepted", "signal", score=signal.score, resistance_room_percent=resistance_room, **metrics)

@@ -45,9 +45,12 @@ class BinanceClient:
         "https://api4.binance.com",
     )
     RATE_LIMITER = RateLimiter()
+    _blocked_base_urls = set()
+    _preferred_base_url = None
     
     def __init__(self):
         self.session: Optional[aiohttp.ClientSession] = None
+        self._endpoint_probe_lock = asyncio.Lock()
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -57,35 +60,63 @@ class BinanceClient:
         if self.session:
             await self.session.close()
     
-    async def _request(self, method: str, endpoint: str, params: Dict = None, weight: int = 1) -> Dict:
-        """Выполнить запрос с контролем лимита."""
-        await self.RATE_LIMITER.acquire(weight)
-        
-        bases = list(dict.fromkeys((self.BASE_URL, *self.PUBLIC_BASE_URLS)))
-        for index, base_url in enumerate(bases):
-            url = f"{base_url.rstrip('/')}{endpoint}"
-            try:
-                async with self.session.request(
-                    method, url, params=params, timeout=aiohttp.ClientTimeout(total=15)
-                ) as resp:
-                    if resp.status == 200:
-                        if index:
-                            logger.info("Binance fallback endpoint активен: %s", base_url)
-                        return await resp.json()
-                    if resp.status == 451:
-                        # Географическое ограничение конкретного endpoint не
-                        # означает, что публичные market-data endpoints Binance
-                        # недоступны. Пробуем следующий адрес из списка.
+    async def _request_from_base(self, method, base_url, endpoint, params):
+        url = f"{base_url.rstrip('/')}{endpoint}"
+        try:
+            async with self.session.request(
+                method, url, params=params, timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                if resp.status == 200:
+                    return "success", await resp.json()
+                if resp.status == 451:
+                    first_block = base_url not in type(self)._blocked_base_urls
+                    type(self)._blocked_base_urls.add(base_url)
+                    if type(self)._preferred_base_url == base_url:
+                        type(self)._preferred_base_url = None
+                    if first_block:
                         logger.warning(
-                            "Binance endpoint %s вернул 451; пробую резервный",
+                            "Binance endpoint %s вернул 451 и исключён из повторных запросов",
                             base_url,
                         )
+                    return "blocked", None
+                if 400 <= resp.status < 500:
+                    logger.error("Binance API error %s: %s", resp.status, await resp.text())
+                    return "terminal", None
+        except (asyncio.TimeoutError, aiohttp.ClientError) as error:
+            logger.warning("Binance endpoint %s недоступен: %s", base_url, error)
+        return "unavailable", None
+
+    async def _request(self, method: str, endpoint: str, params: Dict = None, weight: int = 1) -> Dict:
+        """Выполнить запрос; endpoint с HTTP 451 повторно не опрашивается."""
+        await self.RATE_LIMITER.acquire(weight)
+
+        preferred = type(self)._preferred_base_url
+        bases = list(dict.fromkeys((preferred, self.BASE_URL, *self.PUBLIC_BASE_URLS)))
+        for base_url in (base for base in bases if base):
+            if base_url in type(self)._blocked_base_urls:
+                continue
+            if base_url != type(self)._preferred_base_url:
+                async with self._endpoint_probe_lock:
+                    if base_url in type(self)._blocked_base_urls:
                         continue
-                    if 400 <= resp.status < 500:
-                        logger.error("Binance API error %s: %s", resp.status, await resp.text())
-                        return None
-            except (asyncio.TimeoutError, aiohttp.ClientError) as error:
-                logger.warning("Binance endpoint %s недоступен: %s", base_url, error)
+                    if (type(self)._preferred_base_url and
+                            base_url != type(self)._preferred_base_url):
+                        continue
+                    status, data = await self._request_from_base(
+                        method, base_url, endpoint, params
+                    )
+            else:
+                status, data = await self._request_from_base(
+                    method, base_url, endpoint, params
+                )
+            if status == "success":
+                if type(self)._preferred_base_url != base_url:
+                    type(self)._preferred_base_url = base_url
+                    if base_url != self.BASE_URL:
+                        logger.info("Binance fallback endpoint активен: %s", base_url)
+                return data
+            if status == "terminal":
+                return None
         logger.error("Все публичные Binance Spot endpoints недоступны для %s", endpoint)
         return None
     
@@ -176,8 +207,12 @@ class BinanceClient:
         if not data:
             return []
         
-        # Фильтруем только USDT пары, исключаем стейблкоины и бесперспективные
-        stablecoin_keywords = ["USDC", "BUSD", "DAI", "TUSD", "PAXG"]
+        # Эти активы фактически дублируют доллар/фиат и занимают места в TOP,
+        # но не подходят для стратегии роста к цели +3%.
+        excluded_quote_like_assets = {
+            "USDC", "BUSD", "DAI", "TUSD", "FDUSD", "USDP", "USDD",
+            "USD1", "XUSD", "RLUSD", "EURI", "EUR", "AEUR", "PAXG",
+        }
         
         pairs = []
         for item in data:
@@ -194,7 +229,7 @@ class BinanceClient:
                     logger.info("%s исключён локальным риск-фильтром", symbol)
                     continue
                 
-                if any(kw in symbol for kw in stablecoin_keywords):
+                if symbol[:-4] in excluded_quote_like_assets:
                     continue
                 
                 quote_volume = float(

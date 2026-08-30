@@ -236,6 +236,7 @@ class SignalScorer:
         min_drawdown_percent: float = 3.0,
         max_drawdown_percent: float = 45.0,
         min_resistance_room_percent: float = 3.3,
+        diagnostics: Optional[dict] = None,
     ) -> Optional[TradeSignal]:
         """
         Генерация торгового сигнала на основе анализа рынка.
@@ -243,8 +244,16 @@ class SignalScorer:
         Returns:
             TradeSignal или None если score < min_score
         """
-        if not market_data.current_price:
+        def reject(reason: str, **details):
+            if diagnostics is not None:
+                diagnostics.clear()
+                diagnostics.update(reason=reason, **details)
             return None
+
+        if not market_data.current_price:
+            return reject("invalid_current_price")
+        if not candles:
+            return reject("candles_unavailable")
         
         candles_15m = candles_15m or candles
         candles_1h = candles_1h or candles
@@ -256,10 +265,18 @@ class SignalScorer:
 
         period_high = max((item.high for item in candles_4h), default=0)
         if period_high <= 0:
-            return None
+            return reject("invalid_period_high")
         drawdown = (period_high - market_data.current_price) / period_high * 100
-        if drawdown < min_drawdown_percent or drawdown > max_drawdown_percent:
-            return None
+        if drawdown < min_drawdown_percent:
+            return reject(
+                "drawdown_too_small", drawdown_percent=drawdown,
+                required_percent=min_drawdown_percent,
+            )
+        if drawdown > max_drawdown_percent:
+            return reject(
+                "drawdown_too_large", drawdown_percent=drawdown,
+                maximum_percent=max_drawdown_percent,
+            )
 
         # Не ловим свободное падение: последняя закрытая свеча должна показать
         # откуп либо цена должна уже вернуть EMA20 на 5m.
@@ -267,7 +284,7 @@ class SignalScorer:
         bullish_rejection = last.close > last.open and last.close > (last.low + (last.high - last.low) * 0.55)
         ema_reclaim = indicators.ema20 is not None and last.close >= indicators.ema20
         if not (bullish_rejection or ema_reclaim):
-            return None
+            return reject("reversal_not_confirmed", drawdown_percent=drawdown)
         
         # Поддержка/сопротивление
         support_level, resistance_level = SupportResistanceCalculator.get_nearest_support_resistance(
@@ -294,7 +311,11 @@ class SignalScorer:
                 (resistance - market_data.current_price) / market_data.current_price * 100
             )
             if resistance_room < min_resistance_room_percent:
-                return None
+                return reject(
+                    "resistance_too_close",
+                    resistance_room_percent=resistance_room,
+                    required_percent=min_resistance_room_percent,
+                )
         
         # Расчёт Score
         score, reasons, warnings = SignalScorer.calculate_score(
@@ -321,7 +342,10 @@ class SignalScorer:
         
         if score < min_score:
             logger.debug(f"{symbol}: Score {score} < {min_score}, сигнал не создан")
-            return None
+            return reject(
+                "score_below_minimum", score=score, minimum_score=min_score,
+                drawdown_percent=drawdown,
+            )
         
         # Расчёт зоны входа
         entry_min, entry_max = SignalScorer.calculate_entry_zone(support, market_data.current_price)
@@ -336,7 +360,10 @@ class SignalScorer:
             market_data.current_price, stop_loss, targets.tp1
         )
         if risk_reward < 1.2:
-            return None
+            return reject(
+                "risk_reward_too_low", risk_reward=risk_reward,
+                minimum_risk_reward=1.2,
+            )
         
         # Создаём сигнал
         signal = TradeSignal(
