@@ -47,6 +47,11 @@ class Settings(BaseModel):
     scanner_concurrency: int = int(os.getenv("SCANNER_CONCURRENCY", "8"))
     min_listing_days: int = int(os.getenv("MIN_LISTING_DAYS", "60"))
     signal_validity_minutes: int = int(os.getenv("SIGNAL_VALIDITY_MINUTES", "30"))
+    pump_min_quote_volume_usdt: float = float(os.getenv("PUMP_MIN_QUOTE_VOLUME_USDT", "1000000"))
+    pump_min_score: int = int(os.getenv("PUMP_MIN_SCORE", "60"))
+    pump_scan_interval_minutes: int = int(os.getenv("PUMP_SCAN_INTERVAL_MINUTES", "15"))
+    pump_success_percent: float = float(os.getenv("PUMP_SUCCESS_PERCENT", "5"))
+    pump_observation_hours: int = int(os.getenv("PUMP_OBSERVATION_HOURS", "24"))
     excluded_symbols_csv: str = os.getenv("EXCLUDED_SYMBOLS", "TLMUSDT")
 
     @property

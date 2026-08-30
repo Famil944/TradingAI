@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,7 @@ from services.screenshot_ocr_service import (
 router = Router()
 logger = logging.getLogger(__name__)
 manual_scanner = MarketScanner()
+pump_service = None
 scan_lock = asyncio.Lock()
 scan_results = {}
 scan_signal_ids = {}
@@ -44,6 +46,11 @@ class TradeSetup(StatesGroup):
     waiting_amount = State()
     waiting_screenshot = State()
     confirming = State()
+
+
+def configure_pump_service(service):
+    global pump_service
+    pump_service = service
 
 
 def _price(value: float, tick_size: float = None) -> str:
@@ -219,6 +226,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="/scan"), KeyboardButton(text="/trades")],
             [KeyboardButton(text="/export"), KeyboardButton(text="/diagnostics")],
             [KeyboardButton(text="/stats")],
+            [KeyboardButton(text="/pump")],
             [KeyboardButton(text="/settings"), KeyboardButton(text="/help")]
         ],
         resize_keyboard=True
@@ -263,6 +271,7 @@ async def cmd_help(message: types.Message):
 /trades - Мои открытые и закрытые сделки
 /export - Скачать журнал сделок Excel
 /diagnostics - Скачать отчёт для улучшения стратегии
+/pump - Экспериментальный поиск возможных импульсов
 /history - История ваших сделок
 /edit_trade ID ЦЕНА СУММА - Уточнить вход и сумму USDT
 /stats - Статистика эффективности
@@ -963,3 +972,145 @@ async def cmd_history(message: types.Message):
         )
     text = "\n".join(lines)
     await message.answer(text)
+
+
+def _pump_keyboard(user_id: int):
+    enabled = Database().get_pump_background(user_id)
+    toggle = (
+        InlineKeyboardButton(text="⏹ Выключить фон", callback_data="pump_bg_off")
+        if enabled else
+        InlineKeyboardButton(text="▶️ Включить фон", callback_data="pump_bg_on")
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔎 Один полный скан", callback_data="pump_scan")],
+        [toggle],
+        [InlineKeyboardButton(text="📊 Результаты", callback_data="pump_results"),
+         InlineKeyboardButton(text="📈 Статистика", callback_data="pump_stats")],
+        [InlineKeyboardButton(text="📥 Скачать данные", callback_data="pump_export")],
+    ])
+
+
+@router.message(Command("pump"))
+async def cmd_pump(message: types.Message):
+    Database().register_user(message.chat.id)
+    enabled = Database().get_pump_background(message.chat.id)
+    await message.answer(
+        "🧪 Экспериментальный Pump-анализ\n\n"
+        "Проверяет все доступные Binance Spot USDT-пары без TOP-ограничения. "
+        "Ничего не покупает и не добавляет в сделки.\n"
+        f"Фоновый режим: {'включён' if enabled else 'выключен'}",
+        reply_markup=_pump_keyboard(message.chat.id),
+    )
+
+
+@router.callback_query(F.data == "pump_scan")
+async def pump_scan_once(query: types.CallbackQuery):
+    await query.answer()
+    if pump_service is None:
+        await query.message.answer("Pump-сервис ещё не запущен.")
+        return
+    if pump_service.lock.locked():
+        await query.message.answer("⏳ Pump-скан уже выполняется. Дождитесь результата.")
+        return
+    progress_message = await query.message.answer("⏳ Получаю полный список USDT-пар…")
+
+    async def progress(done, total, found):
+        try:
+            await progress_message.edit_text(
+                f"⏳ Pump-анализ: {done}/{total}\nКандидатов: {found}"
+            )
+        except Exception:
+            pass
+
+    try:
+        candidates, saved = await pump_service.scan_for_user(
+            query.message.chat.id, progress
+        )
+    except Exception:
+        logger.exception("Manual pump scan failed")
+        await query.message.answer("❌ Pump-скан не завершён. Попробуйте позже.")
+        return
+    diagnostics = pump_service.scanner.last_diagnostics
+    await query.message.answer(
+        f"✅ Проверено пар: {diagnostics.get('checked', 0)}\n"
+        f"Найдено кандидатов: {len(candidates)}\n"
+        f"Добавлено в наблюдение: {len(saved)}"
+    )
+    if not candidates:
+        return
+    for prediction_id, candidate in saved[:5]:
+        await query.message.answer(
+            pump_service.format_candidate(candidate, prediction_id)
+        )
+
+
+@router.callback_query(F.data.in_({"pump_bg_on", "pump_bg_off"}))
+async def pump_background_toggle(query: types.CallbackQuery):
+    enabled = query.data == "pump_bg_on"
+    Database().set_pump_background(query.message.chat.id, enabled)
+    await query.answer("Фоновый Pump-поиск включён" if enabled else "Фоновый Pump-поиск выключен")
+    await query.message.answer(
+        f"{'▶️' if enabled else '⏹'} Фоновый Pump-поиск "
+        f"{'включён' if enabled else 'выключен'}.",
+        reply_markup=_pump_keyboard(query.message.chat.id),
+    )
+
+
+def _pump_results_text(user_id: int):
+    rows = Database().get_pump_predictions(user_id=user_id, limit=20)
+    if not rows:
+        return "Pump-прогнозов пока нет."
+    lines = ["🧪 Последние Pump-прогнозы:", ""]
+    for row in rows:
+        gain = (row["max_price"] / row["start_price"] - 1) * 100
+        drawdown = (row["min_price"] / row["start_price"] - 1) * 100
+        state = "⏳" if row["status"] == "observing" else "✅" if row["outcome"] == "pump" else "❌"
+        lines.append(
+            f"{state} #{row['id']} {row['symbol']} · Score {row['score']} · "
+            f"макс {gain:+.2f}% · мин {drawdown:+.2f}%"
+        )
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data == "pump_results")
+async def pump_results(query: types.CallbackQuery):
+    await query.answer()
+    await query.message.answer(_pump_results_text(query.message.chat.id))
+
+
+@router.callback_query(F.data == "pump_stats")
+async def pump_stats(query: types.CallbackQuery):
+    await query.answer()
+    stats = Database().get_pump_statistics(query.message.chat.id)
+    await query.message.answer(
+        "📈 Pump-статистика\n\n"
+        f"Всего прогнозов: {stats['total']}\nНаблюдаются: {stats['observing']}\n"
+        f"Завершены: {stats['completed']}\nПамп состоялся: {stats['successful']}\n"
+        f"Точность: {stats['accuracy']:.1f}%"
+    )
+
+
+@router.callback_query(F.data == "pump_export")
+async def pump_export(query: types.CallbackQuery):
+    await query.answer()
+    rows = Database().get_pump_predictions(user_id=query.message.chat.id, limit=10000)
+    safe = []
+    for row in rows:
+        item = {key: value for key, value in row.items() if key != "user_id"}
+        for key in ("technical_json", "checkpoints_json"):
+            try:
+                item[key] = json.loads(item.get(key) or "{}")
+            except json.JSONDecodeError:
+                pass
+        safe.append(item)
+    payload = json.dumps(
+        {"version": 1, "predictions": safe}, ensure_ascii=False, indent=2,
+        default=str,
+    ).encode("utf-8")
+    await query.message.answer_document(
+        BufferedInputFile(
+            payload,
+            filename=f"TradingAI_pump_{datetime.now(MOSCOW_TZ):%Y-%m-%d_%H-%M}.json",
+        ),
+        caption="Экспериментальные Pump-прогнозы без персональных данных.",
+    )

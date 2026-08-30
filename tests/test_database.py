@@ -107,6 +107,26 @@ class DatabaseTests(unittest.TestCase):
             self.assertAlmostEqual(trade["tp1"], 1.133)
             self.assertAlmostEqual(trade["quantity"], 10)
 
+    def test_pump_prediction_and_background_setting_survive_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pump.db"
+            database = Database(str(path))
+            database.init_db()
+            database.set_pump_background(123, True)
+            prediction_id = database.save_pump_prediction(123, {
+                "symbol": "TESTUSDT", "score": 75, "stage": "impulse",
+                "price": 1.0, "metrics": {"volume_ratio_1m": 2.0},
+                "news_score": 0, "news_items": 1, "news_critical": False,
+            })
+
+            reopened = Database(str(path))
+            reopened.init_db()
+            rows = reopened.get_pump_predictions(user_id=123)
+            self.assertTrue(reopened.get_pump_background(123))
+            self.assertIsInstance(prediction_id, int)
+            self.assertEqual(rows[0]["symbol"], "TESTUSDT")
+            self.assertEqual(reopened.get_pump_statistics(123)["observing"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
