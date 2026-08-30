@@ -24,12 +24,13 @@ from services.diagnostic_export_service import build_diagnostic_json
 from services.screenshot_ocr_service import (
     find_tesseract, recognize_binance_screenshot,
 )
+from core.scan_coordinator import market_scan_lock
 
 router = Router()
 logger = logging.getLogger(__name__)
 manual_scanner = MarketScanner()
 pump_service = None
-scan_lock = asyncio.Lock()
+scan_lock = market_scan_lock
 scan_results = {}
 scan_signal_ids = {}
 scan_profiles = {}
@@ -1010,7 +1011,10 @@ async def pump_scan_once(query: types.CallbackQuery):
         await query.message.answer("Pump-сервис ещё не запущен.")
         return
     if pump_service.lock.locked():
-        await query.message.answer("⏳ Pump-скан уже выполняется. Дождитесь результата.")
+        await query.message.answer(
+            "⏳ Сейчас уже выполняется другой скан рынка. "
+            "Дождитесь его завершения."
+        )
         return
     progress_message = await query.message.answer("⏳ Получаю полный список USDT-пар…")
 

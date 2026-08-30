@@ -2,7 +2,8 @@ import unittest
 
 from config.models import CandleData
 from services.news_sentiment_service import NewsAssessment
-from services.pump_service import PumpScanner
+from core.scan_coordinator import market_scan_lock
+from services.pump_service import PumpScanner, PumpService
 
 
 def candles():
@@ -29,7 +30,20 @@ class FakeClient:
         return candles()
 
 
+class BrokenBot:
+    async def send_message(self, user_id, text):
+        raise RuntimeError("Telegram unavailable")
+
+
 class PumpServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_pump_and_main_scans_use_shared_lock(self):
+        service = PumpService(bot=None, news_service=FakeNews())
+        self.assertIs(service.lock, market_scan_lock)
+
+    async def test_notification_failure_does_not_escape_service(self):
+        service = PumpService(bot=BrokenBot(), news_service=FakeNews())
+        self.assertFalse(await service._send_message_safe(123, "test"))
+
     def test_relative_activity_ratio(self):
         self.assertGreaterEqual(PumpScanner._ratio(candles()), 2.5)
 
