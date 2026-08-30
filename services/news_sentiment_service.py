@@ -1,7 +1,11 @@
+import asyncio
+import html
 import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from xml.etree import ElementTree
 
 import aiohttp
 
@@ -9,7 +13,10 @@ from config.settings import settings
 
 
 logger = logging.getLogger(__name__)
-
+RSS_FEEDS = (
+    ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+    ("Cointelegraph", "https://cointelegraph.com/rss"),
+)
 CRITICAL_TERMS = {
     "hack", "hacked", "exploit", "breach", "bankrupt", "insolvency",
     "delist", "delisting", "withdrawals suspended", "network halted",
@@ -23,6 +30,18 @@ POSITIVE_TERMS = {
     "approval", "approved", "partnership", "integration", "upgrade",
     "launch", "adoption", "listing", "mainnet", "institutional",
 }
+TICKER_ALIASES = {
+    "BTC": ("bitcoin",), "ETH": ("ethereum",), "SOL": ("solana",),
+    "XRP": ("ripple",), "DOGE": ("dogecoin",), "ADA": ("cardano",),
+    "BNB": ("bnb", "binance coin"), "LINK": ("chainlink",),
+    "AVAX": ("avalanche",), "TRX": ("tron",), "LTC": ("litecoin",),
+    "BCH": ("bitcoin cash",), "DOT": ("polkadot",), "UNI": ("uniswap",),
+    "HBAR": ("hedera",), "TAO": ("bittensor",), "XLM": ("stellar",),
+    "TON": ("toncoin",), "NEAR": ("near protocol",), "SUI": ("sui",),
+    "OP": ("optimism",), "ARB": ("arbitrum",), "INJ": ("injective",),
+    "FIL": ("filecoin",), "ICP": ("internet computer",), "CRV": ("curve",),
+    "STX": ("stacks",), "WLD": ("worldcoin",), "ENA": ("ethena",),
+}
 
 
 @dataclass(frozen=True)
@@ -34,64 +53,121 @@ class NewsAssessment:
 
 
 class NewsSentimentService:
-    """Produces a compact risk score; article content never reaches Telegram."""
+    """Hidden RSS risk filter; article text is never sent to Telegram."""
 
     def __init__(self):
-        self.token = settings.cryptopanic_auth_token
-        self.plan = settings.cryptopanic_api_plan.strip() or "developer"
-        self._cache = {}
+        self._assessment_cache = {}
+        self._feed_cache = None
+        self._feed_lock = asyncio.Lock()
 
     async def assess(self, symbol: str) -> NewsAssessment:
-        if not settings.news_enabled:
+        if not settings.rss_news_enabled:
             return NewsAssessment(available=False)
         ticker = symbol.upper().removesuffix("USDT")
-        cached = self._cache.get(ticker)
         now = datetime.now(timezone.utc)
+        cached = self._assessment_cache.get(ticker)
         if cached and cached[0] > now:
             return cached[1]
-        if not self.token:
-            return NewsAssessment(available=False)
-        assessment = await self._fetch(ticker)
+        posts, available = await self._get_posts()
+        assessment = (
+            self._score_posts([
+                post for post in posts if self._is_relevant(ticker, post)
+            ])
+            if available else NewsAssessment(available=False)
+        )
         expires = now + timedelta(minutes=max(1, settings.news_cache_minutes))
-        self._cache[ticker] = (expires, assessment)
+        self._assessment_cache[ticker] = (expires, assessment)
         return assessment
 
-    async def _fetch(self, ticker: str) -> NewsAssessment:
-        urls = [
-            f"https://cryptopanic.com/api/{self.plan}/v2/posts/",
-            "https://cryptopanic.com/api/v1/posts/",
-        ]
-        params = {
-            "auth_token": self.token,
-            "currencies": ticker,
-            "kind": "news",
-            "public": "true",
-            "size": 30,
-        }
-        try:
-            async with aiohttp.ClientSession() as session:
-                payload = None
-                last_status = None
-                for url in urls:
-                    async with session.get(
-                        url,
-                        params=params,
-                        timeout=aiohttp.ClientTimeout(total=15),
-                    ) as response:
-                        last_status = response.status
-                        if response.status == 200:
-                            payload = await response.json()
-                            break
-                        if response.status not in {404, 410}:
-                            break
-                if payload is None:
-                    logger.warning("News API unavailable: HTTP %s", last_status)
-                    return NewsAssessment(available=False)
-        except (aiohttp.ClientError, TimeoutError, ValueError):
-            logger.exception("News API request failed")
-            return NewsAssessment(available=False)
-        posts = payload.get("results", []) if isinstance(payload, dict) else []
-        return self._score_posts(posts)
+    async def _get_posts(self):
+        now = datetime.now(timezone.utc)
+        if self._feed_cache and self._feed_cache[0] > now:
+            return self._feed_cache[1], self._feed_cache[2]
+        async with self._feed_lock:
+            if self._feed_cache and self._feed_cache[0] > now:
+                return self._feed_cache[1], self._feed_cache[2]
+            posts, available = await self._fetch_feeds()
+            expires = now + timedelta(minutes=max(1, settings.news_cache_minutes))
+            self._feed_cache = (expires, posts, available)
+            return posts, available
+
+    async def _fetch_feeds(self):
+        headers = {"User-Agent": "TradingAI/1.0 RSS risk filter"}
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            results = await asyncio.gather(
+                *(self._fetch_feed(session, source, url) for source, url in RSS_FEEDS),
+                return_exceptions=True,
+            )
+        posts = []
+        available = False
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("RSS source unavailable: %s", type(result).__name__)
+                continue
+            available = True
+            posts.extend(result)
+        deduplicated = {}
+        for post in posts:
+            title = re.sub(
+                r"[^a-z0-9]+", " ", (post.get("title") or "").lower()
+            ).strip()
+            key = title or (post.get("link") or "").strip().lower()
+            if key:
+                deduplicated[key] = post
+        return list(deduplicated.values()), available
+
+    @staticmethod
+    async def _fetch_feed(session, source, url):
+        async with session.get(url) as response:
+            if response.status != 200:
+                raise aiohttp.ClientResponseError(
+                    response.request_info, response.history, status=response.status
+                )
+            return NewsSentimentService._parse_rss(await response.text(), source)
+
+    @staticmethod
+    def _parse_rss(payload: str, source: str):
+        root = ElementTree.fromstring(payload)
+        posts = []
+        for item in root.findall(".//item"):
+            def value(name):
+                node = item.find(name)
+                return (node.text or "").strip() if node is not None else ""
+            published = value("pubDate")
+            if published:
+                try:
+                    published = parsedate_to_datetime(published).astimezone(
+                        timezone.utc
+                    ).isoformat()
+                except (TypeError, ValueError):
+                    published = ""
+            description = re.sub(r"<[^>]+>", " ", value("description"))
+            posts.append({
+                "title": html.unescape(value("title")),
+                "description": html.unescape(description),
+                "link": value("link"),
+                "published_at": published,
+                "source": source,
+            })
+        return posts
+
+    @staticmethod
+    def _is_relevant(ticker: str, post: dict) -> bool:
+        text = " ".join(str(post.get(key, "")) for key in ("title", "description"))
+        normalized = re.sub(r"\s+", " ", text).lower()
+        aliases = TICKER_ALIASES.get(ticker, ())
+        # Короткие неизвестные тикеры (AI, U, RE...) часто являются обычными
+        # словами и дают ложную связь с новостью. Для них нужно известное имя.
+        ticker_terms = (ticker.lower(),) if len(ticker) >= 4 or aliases else ()
+        terms = (*ticker_terms, *aliases)
+        return any(re.search(
+            rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", normalized
+        ) for term in terms)
+
+    @staticmethod
+    def _has_term(text: str, term: str) -> bool:
+        return bool(re.search(rf"(?<![a-z]){re.escape(term)}(?![a-z])", text))
 
     @staticmethod
     def _score_posts(posts) -> NewsAssessment:
@@ -103,23 +179,23 @@ class NewsSentimentService:
             published = post.get("published_at") or post.get("created_at")
             if published:
                 try:
-                    created = datetime.fromisoformat(
-                        str(published).replace("Z", "+00:00")
-                    )
+                    created = datetime.fromisoformat(str(published).replace("Z", "+00:00"))
                     if created < cutoff:
                         continue
                 except ValueError:
                     pass
             relevant += 1
-            text = " ".join(
-                str(post.get(key, "")) for key in ("title", "description")
-            ).lower()
-            normalized = re.sub(r"\s+", " ", text)
-            if any(term in normalized for term in CRITICAL_TERMS):
+            text = " ".join(str(post.get(key, "")) for key in ("title", "description"))
+            normalized = re.sub(r"\s+", " ", text).lower()
+            if any(NewsSentimentService._has_term(normalized, term) for term in CRITICAL_TERMS):
                 total -= 60
                 critical = True
-            total -= 15 * sum(term in normalized for term in NEGATIVE_TERMS)
-            total += 10 * sum(term in normalized for term in POSITIVE_TERMS)
+            total -= 15 * sum(
+                NewsSentimentService._has_term(normalized, term) for term in NEGATIVE_TERMS
+            )
+            total += 10 * sum(
+                NewsSentimentService._has_term(normalized, term) for term in POSITIVE_TERMS
+            )
             votes = post.get("votes") or {}
             total += min(20, int(votes.get("positive", 0)) * 2)
             total -= min(30, int(votes.get("negative", 0)) * 3)

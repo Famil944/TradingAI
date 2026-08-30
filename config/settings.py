@@ -28,9 +28,7 @@ class Settings(BaseModel):
     auto_priority_top_limit: int = max(
         100, int(os.getenv("AUTO_PRIORITY_TOP_LIMIT", "100"))
     )
-    cryptopanic_auth_token: str = os.getenv("CRYPTOPANIC_AUTH_TOKEN", "")
-    cryptopanic_api_plan: str = os.getenv("CRYPTOPANIC_API_PLAN", "developer")
-    news_enabled: bool = os.getenv("NEWS_ENABLED", "false").lower() in (
+    rss_news_enabled: bool = os.getenv("RSS_NEWS_ENABLED", "true").lower() in (
         "1", "true", "yes", "on"
     )
     news_cache_minutes: int = int(os.getenv("NEWS_CACHE_MINUTES", "5"))
