@@ -20,6 +20,7 @@ import logging
 from services.scanner import MarketScanner
 from exchange.binance_client import BinanceClient
 from services.trade_export_service import build_trades_xlsx
+from services.pump_export_service import build_pump_xlsx
 from services.diagnostic_export_service import build_diagnostic_json
 from services.screenshot_ocr_service import (
     find_tesseract, recognize_binance_screenshot,
@@ -987,7 +988,8 @@ def _pump_keyboard(user_id: int):
         [toggle],
         [InlineKeyboardButton(text="📊 Результаты", callback_data="pump_results"),
          InlineKeyboardButton(text="📈 Статистика", callback_data="pump_stats")],
-        [InlineKeyboardButton(text="📥 Скачать данные", callback_data="pump_export")],
+        [InlineKeyboardButton(text="📊 Excel-статистика", callback_data="pump_export_xlsx")],
+        [InlineKeyboardButton(text="📥 JSON для анализа", callback_data="pump_export")],
     ])
 
 
@@ -1117,4 +1119,18 @@ async def pump_export(query: types.CallbackQuery):
             filename=f"TradingAI_pump_{datetime.now(MOSCOW_TZ):%Y-%m-%d_%H-%M}.json",
         ),
         caption="Экспериментальные Pump-прогнозы без персональных данных.",
+    )
+
+
+@router.callback_query(F.data == "pump_export_xlsx")
+async def pump_export_xlsx(query: types.CallbackQuery):
+    await query.answer()
+    rows = Database().get_pump_predictions(user_id=query.message.chat.id, limit=10000)
+    content = build_pump_xlsx(rows)
+    await query.message.answer_document(
+        BufferedInputFile(
+            content,
+            filename=f"TradingAI_pump_statistics_{datetime.now(MOSCOW_TZ):%Y-%m-%d_%H-%M}.xlsx",
+        ),
+        caption="Pump-статистика: сводка, все прогнозы и контрольные точки.",
     )
