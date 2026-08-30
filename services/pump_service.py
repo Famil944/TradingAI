@@ -8,6 +8,7 @@ from analysis.signal_scorer import SignalScorer
 from config.settings import settings
 from database.db import Database
 from exchange.binance_client import BinanceClient
+from core.scan_coordinator import market_scan_lock
 
 
 logger = logging.getLogger(__name__)
@@ -177,12 +178,20 @@ class PumpService:
         self.bot = bot
         self.db = Database()
         self.scanner = PumpScanner(news_service)
-        self.lock = asyncio.Lock()
+        self.lock = market_scan_lock
         self._stop = asyncio.Event()
         self._last_background_scan = None
 
     def stop(self):
         self._stop.set()
+
+    async def _send_message_safe(self, user_id, text):
+        try:
+            await self.bot.send_message(user_id, text)
+            return True
+        except Exception:
+            logger.exception("Cannot notify Pump user %s", user_id)
+            return False
 
     async def scan_for_user(self, user_id, progress=None):
         async with self.lock:
@@ -207,12 +216,15 @@ class PumpService:
                         candidates = await self.scanner.scan()
                     self._last_background_scan = now
                     for user_id in users:
-                        for index, candidate in enumerate(candidates):
+                        new_predictions = []
+                        for candidate in candidates:
                             prediction_id = self.db.save_pump_prediction(user_id, candidate)
-                            if prediction_id and index < 5:
-                                await self.bot.send_message(
-                                    user_id, self.format_candidate(candidate, prediction_id)
-                                )
+                            if prediction_id:
+                                new_predictions.append((prediction_id, candidate))
+                        for prediction_id, candidate in new_predictions[:5]:
+                            await self._send_message_safe(
+                                user_id, self.format_candidate(candidate, prediction_id)
+                            )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -273,19 +285,20 @@ class PumpService:
                     "last_checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                 }
                 if success and not row["result_notified"]:
-                    updates["result_notified"] = 1
-                    await self.bot.send_message(
+                    notified = await self._send_message_safe(
                         row["user_id"],
                         f"✅ Pump-прогноз #{row['id']} подтвердился\n"
                         f"{row['symbol']} · максимальный рост {max_gain:+.2f}%"
                     )
+                    if notified:
+                        updates["result_notified"] = 1
                 if expired:
                     updates.update(
                         status="completed", outcome="pump" if success else "no_pump",
                         completed_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                     )
                     if not success:
-                        await self.bot.send_message(
+                        await self._send_message_safe(
                             row["user_id"],
                             f"❌ Pump-прогноз #{row['id']} не подтвердился за "
                             f"{settings.pump_observation_hours} ч.\n{row['symbol']} · максимум {max_gain:+.2f}%"

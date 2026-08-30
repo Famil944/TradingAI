@@ -20,16 +20,18 @@ import logging
 from services.scanner import MarketScanner
 from exchange.binance_client import BinanceClient
 from services.trade_export_service import build_trades_xlsx
+from services.pump_export_service import build_pump_xlsx
 from services.diagnostic_export_service import build_diagnostic_json
 from services.screenshot_ocr_service import (
     find_tesseract, recognize_binance_screenshot,
 )
+from core.scan_coordinator import market_scan_lock
 
 router = Router()
 logger = logging.getLogger(__name__)
 manual_scanner = MarketScanner()
 pump_service = None
-scan_lock = asyncio.Lock()
+scan_lock = market_scan_lock
 scan_results = {}
 scan_signal_ids = {}
 scan_profiles = {}
@@ -986,7 +988,8 @@ def _pump_keyboard(user_id: int):
         [toggle],
         [InlineKeyboardButton(text="📊 Результаты", callback_data="pump_results"),
          InlineKeyboardButton(text="📈 Статистика", callback_data="pump_stats")],
-        [InlineKeyboardButton(text="📥 Скачать данные", callback_data="pump_export")],
+        [InlineKeyboardButton(text="📊 Excel-статистика", callback_data="pump_export_xlsx")],
+        [InlineKeyboardButton(text="📥 JSON для анализа", callback_data="pump_export")],
     ])
 
 
@@ -1010,7 +1013,10 @@ async def pump_scan_once(query: types.CallbackQuery):
         await query.message.answer("Pump-сервис ещё не запущен.")
         return
     if pump_service.lock.locked():
-        await query.message.answer("⏳ Pump-скан уже выполняется. Дождитесь результата.")
+        await query.message.answer(
+            "⏳ Сейчас уже выполняется другой скан рынка. "
+            "Дождитесь его завершения."
+        )
         return
     progress_message = await query.message.answer("⏳ Получаю полный список USDT-пар…")
 
@@ -1113,4 +1119,18 @@ async def pump_export(query: types.CallbackQuery):
             filename=f"TradingAI_pump_{datetime.now(MOSCOW_TZ):%Y-%m-%d_%H-%M}.json",
         ),
         caption="Экспериментальные Pump-прогнозы без персональных данных.",
+    )
+
+
+@router.callback_query(F.data == "pump_export_xlsx")
+async def pump_export_xlsx(query: types.CallbackQuery):
+    await query.answer()
+    rows = Database().get_pump_predictions(user_id=query.message.chat.id, limit=10000)
+    content = build_pump_xlsx(rows)
+    await query.message.answer_document(
+        BufferedInputFile(
+            content,
+            filename=f"TradingAI_pump_statistics_{datetime.now(MOSCOW_TZ):%Y-%m-%d_%H-%M}.xlsx",
+        ),
+        caption="Pump-статистика: сводка, все прогнозы и контрольные точки.",
     )
