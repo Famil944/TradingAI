@@ -292,6 +292,12 @@ class PumpService:
                     )
                     if notified:
                         updates["result_notified"] = 1
+                if success:
+                    updates["outcome"] = "pump"
+                    if not row.get("confirmed_at"):
+                        updates["confirmed_at"] = datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
                 if expired:
                     updates.update(
                         status="completed", outcome="pump" if success else "no_pump",
