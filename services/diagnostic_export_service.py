@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 from config.settings import settings
 
 
-def build_diagnostic_json(scan_diagnostics: dict, trades: list[dict]) -> bytes:
+def build_diagnostic_json(
+    scan_diagnostics: dict, trades: list[dict], database_id="unknown"
+) -> bytes:
     """Создаёт безопасный отчёт без токенов, ключей и переменных окружения."""
     safe_trades = []
     for item in trades:
@@ -21,7 +23,7 @@ def build_diagnostic_json(scan_diagnostics: dict, trades: list[dict]) -> bytes:
             "status": item.get("status"),
             "entry_price": item.get("entry_price"),
             "current_price": item.get("current_price"),
-            "target_price": item.get("target_price"),
+            "target_price": item.get("tp1") or item.get("target_price"),
             "position_usdt": item.get("position_usdt"),
             "opened_at": item.get("opened_at"),
             "closed_at": item.get("closed_at"),
@@ -34,7 +36,8 @@ def build_diagnostic_json(scan_diagnostics: dict, trades: list[dict]) -> bytes:
     symbols = (scan_diagnostics or {}).get("symbols", [])
     reason_counts = Counter(item.get("reason", "unknown") for item in symbols)
     report = {
-        "report_version": 1,
+        "report_version": 2,
+        "database_id": database_id,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "runtime": {"python": platform.python_version(), "system": platform.system()},
         "strategy": {

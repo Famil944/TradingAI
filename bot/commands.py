@@ -852,8 +852,13 @@ async def cmd_export(message: types.Message):
 
 @router.message(Command("diagnostics"))
 async def cmd_diagnostics(message: types.Message):
-    trades = Database().get_manual_trades(message.chat.id)
-    content = build_diagnostic_json(manual_scanner.last_scan_diagnostics, trades)
+    db = Database()
+    trades = db.get_manual_trades(message.chat.id)
+    content = build_diagnostic_json(
+        manual_scanner.last_scan_diagnostics,
+        trades,
+        database_id=db.get_database_id(),
+    )
     filename = f"TradingAI_diagnostics_{datetime.now(MOSCOW_TZ):%Y-%m-%d_%H-%M}.json"
     await message.answer_document(
         BufferedInputFile(content, filename=filename),
@@ -1070,7 +1075,8 @@ def _pump_results_text(user_id: int):
     for row in rows:
         gain = (row["max_price"] / row["start_price"] - 1) * 100
         drawdown = (row["min_price"] / row["start_price"] - 1) * 100
-        state = "⏳" if row["status"] == "observing" else "✅" if row["outcome"] == "pump" else "❌"
+        confirmed = gain >= settings.pump_success_percent or row["outcome"] == "pump"
+        state = "✅" if confirmed else "⏳" if row["status"] == "observing" else "❌"
         lines.append(
             f"{state} #{row['id']} {row['symbol']} · Score {row['score']} · "
             f"макс {gain:+.2f}% · мин {drawdown:+.2f}%"
@@ -1087,12 +1093,18 @@ async def pump_results(query: types.CallbackQuery):
 @router.callback_query(F.data == "pump_stats")
 async def pump_stats(query: types.CallbackQuery):
     await query.answer()
-    stats = Database().get_pump_statistics(query.message.chat.id)
+    db = Database()
+    stats = db.get_pump_statistics(query.message.chat.id)
     await query.message.answer(
         "📈 Pump-статистика\n\n"
-        f"Всего прогнозов: {stats['total']}\nНаблюдаются: {stats['observing']}\n"
-        f"Завершены: {stats['completed']}\nПамп состоялся: {stats['successful']}\n"
-        f"Точность: {stats['accuracy']:.1f}%"
+        f"Источник базы: {db.get_database_id()}\n"
+        f"Всего прогнозов: {stats['total']}\n"
+        f"🟢 Уже достигли +{settings.pump_success_percent:g}%: {stats['successful']}\n"
+        f"⏳ В наблюдении: {stats['observing']} "
+        f"(ждут: {stats['waiting']}, уже подтвердились: {stats['observing_confirmed']})\n"
+        f"✅ Завершены: {stats['completed']}\n"
+        f"❌ Не подтвердились за 24 ч: {stats['failed']}\n"
+        f"Точность среди завершённых: {stats['accuracy']:.1f}%"
     )
 
 
@@ -1126,7 +1138,7 @@ async def pump_export(query: types.CallbackQuery):
 async def pump_export_xlsx(query: types.CallbackQuery):
     await query.answer()
     rows = Database().get_pump_predictions(user_id=query.message.chat.id, limit=10000)
-    content = build_pump_xlsx(rows)
+    content = build_pump_xlsx(rows, database_id=Database().get_database_id())
     await query.message.answer_document(
         BufferedInputFile(
             content,

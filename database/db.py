@@ -1,6 +1,9 @@
 import sqlite3
 import os
+import uuid
 from pathlib import Path
+
+from config.settings import settings
 
 
 class ManagedConnection(sqlite3.Connection):
@@ -243,6 +246,16 @@ class Database:
                 )
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS app_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            cursor.execute(
+                "INSERT OR IGNORE INTO app_metadata(key, value) VALUES('database_id', ?)",
+                (uuid.uuid4().hex[:12],),
+            )
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pump_predictions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
@@ -272,7 +285,7 @@ class Database:
             pump_columns = {
                 row[1] for row in cursor.execute("PRAGMA table_info(pump_predictions)")
             }
-            for column in ("max_at", "min_at"):
+            for column in ("max_at", "min_at", "confirmed_at"):
                 if column not in pump_columns:
                     cursor.execute(
                         f"ALTER TABLE pump_predictions ADD COLUMN {column} TIMESTAMP"
@@ -613,7 +626,8 @@ class Database:
     def update_pump_prediction(self, prediction_id: int, **fields):
         allowed = {
             "current_price", "max_price", "min_price", "max_at", "min_at", "checkpoints_json",
-            "status", "outcome", "result_notified", "completed_at", "last_checked_at",
+            "status", "outcome", "result_notified", "confirmed_at", "completed_at",
+            "last_checked_at",
         }
         values = {key: value for key, value in fields.items() if key in allowed}
         if not values:
@@ -628,14 +642,36 @@ class Database:
     def get_pump_statistics(self, user_id: int):
         rows = self.get_pump_predictions(user_id=user_id, limit=10000)
         completed = [row for row in rows if row["status"] == "completed"]
-        successful = [row for row in completed if row.get("outcome") == "pump"]
+        def confirmed(row):
+            start = float(row.get("start_price") or 0)
+            maximum = float(row.get("max_price") or 0)
+            gain = (maximum / start - 1) * 100 if start else 0
+            return row.get("outcome") == "pump" or gain >= settings.pump_success_percent
+
+        successful = [row for row in rows if confirmed(row)]
+        completed_successful = [row for row in completed if confirmed(row)]
+        observing = [row for row in rows if row["status"] == "observing"]
         return {
             "total": len(rows),
-            "observing": sum(row["status"] == "observing" for row in rows),
+            "observing": len(observing),
+            "observing_confirmed": sum(confirmed(row) for row in observing),
+            "waiting": sum(not confirmed(row) for row in observing),
             "completed": len(completed),
             "successful": len(successful),
-            "accuracy": len(successful) / len(completed) * 100 if completed else 0,
+            "completed_successful": len(completed_successful),
+            "failed": len(completed) - len(completed_successful),
+            "accuracy": (
+                len(completed_successful) / len(completed) * 100 if completed else 0
+            ),
         }
+
+    def get_database_id(self) -> str:
+        self.init_db()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_metadata WHERE key='database_id'"
+            ).fetchone()
+        return str(row[0]) if row else "unknown"
 
     def get_notification_user_ids(self) -> list[int]:
         with self.connect() as conn:

@@ -15,13 +15,15 @@ class PumpExportTests(unittest.TestCase):
             "news_critical": 0, "technical_json": '{"reasons":["volume"]}',
             "checkpoints_json": '{"5":1.5,"60":4.0}',
             "detected_at": "2026-08-30 10:00:00", "completed_at": "2026-08-31 10:00:00",
-        }])
+        }], database_id="source123")
         with ZipFile(BytesIO(content)) as archive:
             self.assertIn("xl/worksheets/sheet3.xml", archive.namelist())
             workbook = archive.read("xl/workbook.xml").decode()
+            summary = archive.read("xl/worksheets/sheet1.xml").decode()
             predictions = archive.read("xl/worksheets/sheet2.xml").decode()
             checkpoints = archive.read("xl/worksheets/sheet3.xml").decode()
             self.assertIn("Сводка", workbook)
+            self.assertIn("source123", summary)
             self.assertIn("TESTUSDT", predictions)
             self.assertIn(">6.0<", predictions)
             self.assertIn(">1.5<", checkpoints)

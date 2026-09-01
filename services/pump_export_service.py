@@ -3,6 +3,8 @@ from io import BytesIO
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from config.settings import settings
+
 
 CHECKPOINTS = ("5", "15", "30", "60", "180", "360", "720", "1440")
 
@@ -52,17 +54,27 @@ def _percent(price, start):
     return round((float(price) / float(start) - 1) * 100, 4) if start else None
 
 
-def build_pump_xlsx(predictions: list[dict]) -> bytes:
+def build_pump_xlsx(predictions: list[dict], database_id="unknown") -> bytes:
     completed = [row for row in predictions if row.get("status") == "completed"]
-    successful = [row for row in completed if row.get("outcome") == "pump"]
+    def confirmed(row):
+        return (
+            row.get("outcome") == "pump"
+            or (_percent(row.get("max_price"), row.get("start_price")) or 0)
+            >= settings.pump_success_percent
+        )
+    successful = [row for row in predictions if confirmed(row)]
+    completed_successful = [row for row in completed if confirmed(row)]
+    observing = [row for row in predictions if row.get("status") == "observing"]
     summary = [
         ("Показатель", "Значение"),
+        ("ID источника базы", database_id),
         ("Всего прогнозов", len(predictions)),
-        ("В наблюдении", sum(row.get("status") == "observing" for row in predictions)),
+        ("В наблюдении", len(observing)),
+        (f"Из них уже достигли +{settings.pump_success_percent:g}%", sum(confirmed(row) for row in observing)),
         ("Завершено", len(completed)),
-        ("Памп подтверждён", len(successful)),
-        ("Не подтвердился", len(completed) - len(successful)),
-        ("Точность, %", round(len(successful) / len(completed) * 100, 2) if completed else 0),
+        (f"Всего достигли +{settings.pump_success_percent:g}%", len(successful)),
+        ("Не подтвердились за 24 ч", len(completed) - len(completed_successful)),
+        ("Точность среди завершённых, %", round(len(completed_successful) / len(completed) * 100, 2) if completed else 0),
     ]
     headers = (
         "ID", "Монета", "Score", "Стадия", "Статус", "Результат",
@@ -84,7 +96,7 @@ def build_pump_xlsx(predictions: list[dict]) -> bytes:
         start = row.get("start_price")
         prediction_rows.append((
             row.get("id"), row.get("symbol"), row.get("score"), row.get("stage"),
-            row.get("status"), row.get("outcome"), start, row.get("current_price"),
+            row.get("status"), "pump" if confirmed(row) else row.get("outcome"), start, row.get("current_price"),
             row.get("max_price"), _percent(row.get("max_price"), start),
             row.get("min_price"), _percent(row.get("min_price"), start),
             row.get("news_score"), row.get("news_items"),

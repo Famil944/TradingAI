@@ -126,6 +126,13 @@ class DatabaseTests(unittest.TestCase):
             self.assertIsInstance(prediction_id, int)
             self.assertEqual(rows[0]["symbol"], "TESTUSDT")
             self.assertEqual(reopened.get_pump_statistics(123)["observing"], 1)
+            self.assertEqual(database.get_database_id(), reopened.get_database_id())
+
+            reopened.update_pump_prediction(prediction_id, max_price=1.06)
+            stats = reopened.get_pump_statistics(123)
+            self.assertEqual(stats["successful"], 1)
+            self.assertEqual(stats["observing_confirmed"], 1)
+            self.assertEqual(stats["waiting"], 0)
 
 
 if __name__ == "__main__":
