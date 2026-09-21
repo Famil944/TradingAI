@@ -44,17 +44,12 @@ async def main():
     # Установка команд в меню бота
     commands = [
         BotCommand(command="start", description="Запуск бота"),
-        BotCommand(command="signals", description="Текущие сигналы"),
-        BotCommand(command="top", description="TOP-10 по Score"),
-        BotCommand(command="scan", description="Запустить скан"),
+        BotCommand(command="scan", description="Найти монеты"),
         BotCommand(command="trades", description="Мои сделки"),
-        BotCommand(command="history", description="История сделок"),
-        BotCommand(command="edit_trade", description="Уточнить вход и сумму"),
-        BotCommand(command="export", description="Скачать журнал Excel"),
-        BotCommand(command="diagnostics", description="Отчёт для улучшения стратегии"),
-        BotCommand(command="stats", description="Статистика"),
-        BotCommand(command="pump", description="Экспериментальный Pump-анализ"),
-        BotCommand(command="settings", description="Настройки"),
+        BotCommand(command="auto", description="Автоскан ВКЛ/ВЫКЛ"),
+        BotCommand(command="stats", description="Результаты"),
+        BotCommand(command="pump", description="Анализ импульсов"),
+        BotCommand(command="diagnostics", description="Диагностика"),
         BotCommand(command="help", description="Справка"),
     ]
     try:
@@ -73,10 +68,7 @@ async def main():
     auto_signal_service = AutoSignalService(
         bot, manual_scanner, scan_lock, news_service
     )
-    auto_signal_task = (
-        asyncio.create_task(auto_signal_service.run())
-        if settings.auto_scan_enabled else None
-    )
+    auto_signal_task = asyncio.create_task(auto_signal_service.run())
     
     # Запуск polling'а бота
     logger.info("🚀 Бот запущен: основной и экспериментальный мониторинг активны")

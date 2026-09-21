@@ -16,8 +16,11 @@ class FakeBot:
 
 
 class FakeDatabase:
+    def __init__(self, users=None):
+        self.users = [123] if users is None else users
+
     def get_notification_user_ids(self):
-        return [123]
+        return self.users
 
 
 class FakeScanner:
@@ -76,6 +79,15 @@ class AutoSignalServiceTests(unittest.IsolatedAsyncioTestCase):
             keyboard.inline_keyboard[0][0].callback_data, "auto_take:7"
         )
         self.assertEqual(scanner.calls, [(100, True)])
+
+    async def test_scan_is_skipped_when_no_user_enabled_it(self):
+        scanner = FakeScanner()
+        service = AutoSignalService(
+            FakeBot(), scanner, asyncio.Lock(), FakeNewsService()
+        )
+        service.db = FakeDatabase(users=[])
+        await service.scan_and_notify()
+        self.assertEqual(scanner.calls, [])
 
 
 if __name__ == "__main__":

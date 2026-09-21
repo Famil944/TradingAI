@@ -26,6 +26,12 @@ class FakeDatabase:
             "pending_price": price, "pending_at": detected_at,
         }))
 
+    def get_active_watches(self):
+        return []
+
+    def get_manual_trades(self, status=None):
+        return []
+
 
 class FakeClient:
     def __init__(self, candles, price=100):
@@ -49,6 +55,24 @@ def trade(last_checked):
 
 
 class SignalWatchServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_trade_is_reminded_once_per_process(self):
+        bot = FakeBot()
+        service = SignalWatchService(bot)
+        pending = {
+            "id": 7, "user_id": 123, "symbol": "SOLUSDT",
+            "pending_reason": "TP +3%",
+        }
+
+        class PendingDatabase(FakeDatabase):
+            def get_manual_trades(self, status=None):
+                return [pending] if status == "pending_close" else []
+
+        service.db = PendingDatabase()
+        await service.check_once()
+        await service.check_once()
+        self.assertEqual(len(bot.messages), 1)
+        self.assertIn("Требуется подтверждение", bot.messages[0][1])
+
     async def test_recovery_uses_first_candle_event_not_period_extremes(self):
         now = datetime.now(timezone.utc)
         candles = [

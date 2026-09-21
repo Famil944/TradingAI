@@ -552,7 +552,7 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO user_settings (user_id, auto_notifications, updated_at)
-                VALUES (?, 1, CURRENT_TIMESTAMP)
+                VALUES (?, 0, CURRENT_TIMESTAMP)
                 ON CONFLICT(user_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
                 """,
                 (int(user_id),),
@@ -679,6 +679,27 @@ class Database:
                 "SELECT user_id FROM user_settings WHERE auto_notifications = 1"
             ).fetchall()
         return [int(row[0]) for row in rows]
+
+    def set_auto_scan(self, user_id: int, enabled: bool):
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_settings(user_id, auto_notifications, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    auto_notifications = excluded.auto_notifications,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (int(user_id), int(enabled)),
+            )
+
+    def get_auto_scan(self, user_id: int) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT auto_notifications FROM user_settings WHERE user_id = ?",
+                (int(user_id),),
+            ).fetchone()
+        return bool(row and row[0])
 
     def get_scan_profile(self, user_id: int) -> str:
         with self.connect() as conn:

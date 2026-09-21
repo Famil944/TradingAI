@@ -283,6 +283,12 @@ class MarketScanner:
                     "strategy_filtered": len(symbols) - sum(
                         signal is not None for _, signal in analyzed
                     ),
+                    "operational_failures": sum(
+                        item.get("reason") in {
+                            "market_data_unavailable", "analysis_error"
+                        }
+                        for item in self._symbol_diagnostics.values()
+                    ),
                     "symbols": sorted(
                         self._symbol_diagnostics.values(),
                         key=lambda item: item["symbol"],

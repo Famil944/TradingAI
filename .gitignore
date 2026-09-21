@@ -13,3 +13,4 @@ database/*.db
 database/*.db-shm
 database/*.db-wal
 .vscode/
+config/disabled_autostart/

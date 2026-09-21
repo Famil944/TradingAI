@@ -226,10 +226,9 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="/scan"), KeyboardButton(text="/trades")],
-            [KeyboardButton(text="/export"), KeyboardButton(text="/diagnostics")],
-            [KeyboardButton(text="/stats")],
-            [KeyboardButton(text="/pump")],
-            [KeyboardButton(text="/settings"), KeyboardButton(text="/help")]
+            [KeyboardButton(text="/auto"), KeyboardButton(text="/pump")],
+            [KeyboardButton(text="/stats"), KeyboardButton(text="/diagnostics")],
+            [KeyboardButton(text="/help")],
         ],
         resize_keyboard=True
     )
@@ -239,24 +238,17 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
 async def cmd_start(message: types.Message):
     """Команда /start - описание бота."""
     Database().register_user(message.chat.id)
-    text = """🤖 Добро пожаловать в Crypto Signal Bot!
+    text = """🤖 TradingAI — помощник для ручной SPOT-торговли
 
-Бот анализирует SPOT-рынок по вашей команде и показывает торговые сигналы.
+1. Нажмите /scan
+2. Откройте монету из списка
+3. Если купили — нажмите «Я вошёл»
+4. Контролируйте результат в /trades
 
-**Главные возможности:**
-- 🎯 Поиск точек входа после снижения цены
-- 📊 Анализ технических индикаторов (RSI, MACD, Bollinger Bands)
-- 💡 Расчёт единственной цели +3%
-- 🕹️ Ручной запуск сканирования командой /scan
-- ⚙️ Персональные настройки
+/pump — отдельный экспериментальный анализ импульсов.
 
-**Источник данных:**
-- Binance Spot Market API (только публичные данные)
-
-**DISCLAIMER:**
-Сигналы являются результатом технического анализа и не являются гарантией роста цены или финансовой рекомендацией. Торгуйте на свой риск!
-
-Нажмите /help для списка команд."""
+Цель основной стратегии: +3%. Бот не покупает и не продаёт сам.
+Сигналы не гарантируют прибыль."""
 
     await message.answer(text, reply_markup=get_main_keyboard())
 
@@ -264,28 +256,62 @@ async def cmd_start(message: types.Message):
 @router.message(Command("help"))
 async def cmd_help(message: types.Message):
     """Команда /help - список команд."""
-    text = """📋 Доступные команды:
+    text = """📋 Основное
 
-/signals - Лучшие текущие сигналы
-/top - TOP-10 монет по Score
-/coin <TICKER> - Подробный анализ пары (напр. /coin BTC)
-/scan - Принудительный скан рынка
-/trades - Мои открытые и закрытые сделки
-/export - Скачать журнал сделок Excel
-/diagnostics - Скачать отчёт для улучшения стратегии
-/pump - Экспериментальный поиск возможных импульсов
-/history - История ваших сделок
-/edit_trade ID ЦЕНА СУММА - Уточнить вход и сумму USDT
-/stats - Статистика эффективности
-/settings - Персональные настройки
-/help - Эта справка
+/scan — найти подходящие монеты
+/trades — активные сделки и подтверждение закрытия
+/auto — включить или выключить непрерывное сканирование
+/stats — результаты торговли
+/pump — анализ возможных импульсов
+/diagnostics — полный технический отчёт
 
-**Примеры использования:**
-`/coin SOL` - подробный анализ пары SOL/USDT
-`/top` - топ-10 лучших сигналов по Score
-`/stats` - как часто сигналы достигают целей"""
+Дополнительно:
+/coin SOL — проверить одну монету
+/history — закрытые сделки
+/export — скачать журнал Excel
+/edit_trade ID ЦЕНА СУММА — исправить сделку
+/settings — описание режимов Score"""
 
     await message.answer(text)
+
+
+def _auto_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    enabled = Database().get_auto_scan(user_id)
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text=("⏹ Выключить автоскан" if enabled else "▶️ Включить автоскан"),
+            callback_data=("auto_scan_off" if enabled else "auto_scan_on"),
+        )
+    ]])
+
+
+@router.message(Command("auto"))
+async def cmd_auto(message: types.Message):
+    db = Database()
+    db.register_user(message.chat.id)
+    enabled = db.get_auto_scan(message.chat.id)
+    await message.answer(
+        "🔁 Автоскан рынка\n\n"
+        f"Состояние: {'включён' if enabled else 'выключен'}\n"
+        f"Интервал: {settings.scan_interval_minutes} мин.\n"
+        "При включении бот проверяет TOP-100 и присылает только сильные действия. "
+        "Ручной /scan доступен всегда.",
+        reply_markup=_auto_keyboard(message.chat.id),
+    )
+
+
+@router.callback_query(F.data.in_({"auto_scan_on", "auto_scan_off"}))
+async def auto_scan_toggle(query: types.CallbackQuery):
+    enabled = query.data == "auto_scan_on"
+    Database().set_auto_scan(query.message.chat.id, enabled)
+    await query.answer(
+        "Автоскан включён" if enabled else "Автоскан выключен",
+        show_alert=True,
+    )
+    await query.message.answer(
+        f"{'▶️' if enabled else '⏹'} Автоскан {'включён' if enabled else 'выключен'}.",
+        reply_markup=_auto_keyboard(query.message.chat.id),
+    )
 
 
 @router.message(Command("signals"))
@@ -858,13 +884,24 @@ async def cmd_diagnostics(message: types.Message):
         manual_scanner.last_scan_diagnostics,
         trades,
         database_id=db.get_database_id(),
+        service_state={
+            "mode": "manual_scan_with_optional_pump",
+            "auto_scan_enabled_for_user": db.get_auto_scan(message.chat.id),
+            "preferred_binance_endpoint": BinanceClient._preferred_base_url,
+            "blocked_binance_endpoints": sorted(BinanceClient._blocked_base_urls),
+            "temporarily_unavailable_endpoint_count": len(
+                BinanceClient._unavailable_until
+            ),
+            "scan_in_progress": scan_lock.locked(),
+            "pump_available": pump_service is not None,
+        },
     )
     filename = f"TradingAI_diagnostics_{datetime.now(MOSCOW_TZ):%Y-%m-%d_%H-%M}.json"
     await message.answer_document(
         BufferedInputFile(content, filename=filename),
         caption=(
-            "🧪 Диагностический отчёт готов. Пришлите этот файл мне — "
-            "по нему можно улучшать фильтры и Score. Секретные ключи в файл не входят."
+            "🧪 Полный отчёт готов: качество данных, причины фильтрации, "
+            "состояние API, сделки и рекомендации. Токены и ключи не включаются."
         ),
     )
 

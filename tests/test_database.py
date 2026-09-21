@@ -90,6 +90,18 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(trade["status"], "closed")
             self.assertEqual(trade["close_reason"], "TP +3%")
 
+    def test_auto_scan_toggle_survives_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "auto.db"
+            database = Database(str(path))
+            database.init_db()
+            database.register_user(123)
+            self.assertFalse(database.get_auto_scan(123))
+            database.set_auto_scan(123, True)
+            self.assertTrue(Database(str(path)).get_auto_scan(123))
+            database.set_auto_scan(123, False)
+            self.assertFalse(database.get_auto_scan(123))
+
     def test_trade_entry_and_position_can_be_corrected(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(str(Path(directory) / "edit.db"))

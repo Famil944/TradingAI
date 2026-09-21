@@ -5,6 +5,7 @@ from datetime import datetime
 from config.models import CandleData
 from config.settings import settings
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +48,17 @@ class BinanceClient:
     RATE_LIMITER = RateLimiter()
     _blocked_base_urls = set()
     _preferred_base_url = None
+    _unavailable_until = {}
+    _endpoint_cooldown_seconds = 20
+    _last_all_unavailable_log = 0.0
+    _exchange_info_cache = None
+    _exchange_info_cached_at = 0.0
+    _exchange_info_ttl_seconds = 3600
     
     def __init__(self):
         self.session: Optional[aiohttp.ClientSession] = None
         self._endpoint_probe_lock = asyncio.Lock()
+        self._exchange_info_lock = asyncio.Lock()
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -87,37 +95,65 @@ class BinanceClient:
         return "unavailable", None
 
     async def _request(self, method: str, endpoint: str, params: Dict = None, weight: int = 1) -> Dict:
-        """Выполнить запрос; endpoint с HTTP 451 повторно не опрашивается."""
+        """Выполнить запрос с failover и временным карантином сбойных адресов."""
         await self.RATE_LIMITER.acquire(weight)
+        cls = type(self)
+        attempted = set()
 
-        preferred = type(self)._preferred_base_url
-        bases = list(dict.fromkeys((preferred, self.BASE_URL, *self.PUBLIC_BASE_URLS)))
-        for base_url in (base for base in bases if base):
-            if base_url in type(self)._blocked_base_urls:
-                continue
-            if base_url != type(self)._preferred_base_url:
-                async with self._endpoint_probe_lock:
-                    if base_url in type(self)._blocked_base_urls:
-                        continue
-                    if (type(self)._preferred_base_url and
-                            base_url != type(self)._preferred_base_url):
-                        continue
-                    status, data = await self._request_from_base(
-                        method, base_url, endpoint, params
-                    )
-            else:
-                status, data = await self._request_from_base(
-                    method, base_url, endpoint, params
+        async def request_base(base_url):
+            attempted.add(base_url)
+            status, data = await self._request_from_base(
+                method, base_url, endpoint, params
+            )
+            if status == "unavailable":
+                cls._unavailable_until[base_url] = (
+                    time.monotonic() + cls._endpoint_cooldown_seconds
                 )
+                if cls._preferred_base_url == base_url:
+                    cls._preferred_base_url = None
+            return status, data
+
+        preferred = cls._preferred_base_url
+        if preferred and preferred not in cls._blocked_base_urls:
+            status, data = await request_base(preferred)
             if status == "success":
-                if type(self)._preferred_base_url != base_url:
-                    type(self)._preferred_base_url = base_url
-                    if base_url != self.BASE_URL:
-                        logger.info("Binance fallback endpoint активен: %s", base_url)
                 return data
             if status == "terminal":
                 return None
-        logger.error("Все публичные Binance Spot endpoints недоступны для %s", endpoint)
+
+        async with self._endpoint_probe_lock:
+            # Пока корутина ожидала lock, другая могла уже выбрать рабочий адрес.
+            preferred = cls._preferred_base_url
+            if (preferred and preferred not in attempted and
+                    preferred not in cls._blocked_base_urls):
+                status, data = await request_base(preferred)
+                if status == "success":
+                    return data
+                if status == "terminal":
+                    return None
+
+            now = time.monotonic()
+            bases = list(dict.fromkeys((self.BASE_URL, *self.PUBLIC_BASE_URLS)))
+            for base_url in (base for base in bases if base):
+                if (base_url in attempted or base_url in cls._blocked_base_urls or
+                        cls._unavailable_until.get(base_url, 0) > now):
+                    continue
+                status, data = await request_base(base_url)
+                if status == "success":
+                    cls._preferred_base_url = base_url
+                    cls._unavailable_until.pop(base_url, None)
+                    if base_url != self.BASE_URL:
+                        logger.info("Binance fallback endpoint активен: %s", base_url)
+                    return data
+                if status == "terminal":
+                    return None
+
+        now = time.monotonic()
+        if now - cls._last_all_unavailable_log >= cls._endpoint_cooldown_seconds:
+            logger.error(
+                "Все публичные Binance Spot endpoints недоступны; запросы временно приостановлены"
+            )
+            cls._last_all_unavailable_log = now
         return None
     
     async def get_klines(self, symbol: str, interval: str, limit: int = 100) -> List[CandleData]:
@@ -184,20 +220,44 @@ class BinanceClient:
 
     async def get_tick_size(self, symbol: str) -> Optional[float]:
         """Получить минимальный шаг цены Binance Spot для пары."""
-        data = await self._request(
-            "GET", "/api/v3/exchangeInfo", {"symbol": symbol}, weight=1
-        )
-        symbols = data.get("symbols", []) if isinstance(data, dict) else []
-        if not symbols:
+        symbols = await self.get_spot_symbol_map()
+        item = symbols.get(symbol)
+        if not item:
             return None
-        for item in symbols[0].get("filters", []):
-            if item.get("filterType") == "PRICE_FILTER":
+        for rule in item.get("filters", []):
+            if rule.get("filterType") == "PRICE_FILTER":
                 try:
-                    tick_size = float(item["tickSize"])
+                    tick_size = float(rule["tickSize"])
                     return tick_size if tick_size > 0 else None
                 except (KeyError, TypeError, ValueError):
                     return None
         return None
+
+    async def get_spot_symbol_map(self) -> Dict[str, Dict]:
+        """Кэш активных Spot-пар и торговых правил на один час."""
+        cls = type(self)
+        now = time.monotonic()
+        if (cls._exchange_info_cache is not None and
+                now - cls._exchange_info_cached_at < cls._exchange_info_ttl_seconds):
+            return cls._exchange_info_cache
+        async with self._exchange_info_lock:
+            now = time.monotonic()
+            if (cls._exchange_info_cache is not None and
+                    now - cls._exchange_info_cached_at < cls._exchange_info_ttl_seconds):
+                return cls._exchange_info_cache
+            data = await self._request("GET", "/api/v3/exchangeInfo", {}, weight=20)
+        if not isinstance(data, dict):
+            return cls._exchange_info_cache or {}
+        result = {}
+        for item in data.get("symbols", []):
+            symbol = item.get("symbol")
+            spot_allowed = item.get("isSpotTradingAllowed", True)
+            if symbol and item.get("status") == "TRADING" and spot_allowed:
+                result[symbol] = item
+        if result:
+            cls._exchange_info_cache = result
+            cls._exchange_info_cached_at = now
+        return result
     
     async def get_top_symbols(self, limit: int = 100) -> List[str]:
         """Получить TOP монет по волюму (USDT пары)."""
@@ -210,6 +270,7 @@ class BinanceClient:
         
         if not data:
             return []
+        active_symbols = await self.get_spot_symbol_map()
         
         # Эти активы фактически дублируют доллар/фиат и занимают места в TOP,
         # но не подходят для стратегии роста к цели +3%.
@@ -231,6 +292,9 @@ class BinanceClient:
 
                 if symbol in settings.excluded_symbols:
                     logger.info("%s исключён локальным риск-фильтром", symbol)
+                    continue
+
+                if active_symbols and symbol not in active_symbols:
                     continue
                 
                 if symbol[:-4] in excluded_quote_like_assets:
@@ -256,6 +320,7 @@ class BinanceClient:
         data = await self._request("GET", "/api/v3/ticker/24hr", {}, weight=40)
         if not isinstance(data, list):
             return []
+        active_symbols = await self.get_spot_symbol_map()
         excluded = {
             "USDC", "BUSD", "DAI", "TUSD", "FDUSD", "USDP", "USDD",
             "USD1", "XUSD", "RLUSD", "EURI", "EUR", "AEUR", "PAXG", "XAUT",
@@ -265,7 +330,8 @@ class BinanceClient:
             try:
                 symbol = item.get("symbol", "")
                 if (not symbol.endswith("USDT") or symbol[:-4] in excluded or
-                        symbol in settings.excluded_symbols):
+                        symbol in settings.excluded_symbols or
+                        (active_symbols and symbol not in active_symbols)):
                     continue
                 result.append({
                     "symbol": symbol,

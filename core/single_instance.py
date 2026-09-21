@@ -11,6 +11,11 @@ class SingleInstance:
     def acquire(self) -> bool:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
+            # На Windows запрещаем повторное использование порта другим процессом.
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                sock.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
+                )
             sock.bind(("127.0.0.1", self.port))
             sock.listen(1)
         except OSError:
@@ -23,4 +28,3 @@ class SingleInstance:
         if self._socket is not None:
             self._socket.close()
             self._socket = None
-

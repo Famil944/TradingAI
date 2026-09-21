@@ -20,6 +20,7 @@ class SignalWatchService:
         self.interval_seconds = interval_seconds
         self.news_service = news_service
         self._news_risk_alerted = set()
+        self._pending_reminded = set()
         self._stop_event = asyncio.Event()
 
     async def run(self):
@@ -45,6 +46,28 @@ class SignalWatchService:
     async def check_once(self):
         watches = self.db.get_active_watches()
         trades = self.db.get_manual_trades(status="open")
+        pending = self.db.get_manual_trades(status="pending_close")
+        for trade in pending:
+            if trade["id"] in self._pending_reminded:
+                continue
+            self._pending_reminded.add(trade["id"])
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="✅ Подтверждаю закрытие",
+                    callback_data=f"trade_confirm_close:{trade['id']}",
+                )],
+                [InlineKeyboardButton(
+                    text="⏳ Сделка ещё открыта",
+                    callback_data=f"trade_keep_open:{trade['id']}",
+                )],
+            ])
+            await self.bot.send_message(
+                trade["user_id"],
+                f"⏳ Требуется подтверждение сделки #{trade['id']}\n\n"
+                f"{trade['symbol']} · {trade.get('pending_reason') or 'достигнут уровень'}\n"
+                "Проверьте фактическое состояние позиции на Binance.",
+                reply_markup=keyboard,
+            )
         if not watches and not trades:
             return
         now = datetime.now(timezone.utc)

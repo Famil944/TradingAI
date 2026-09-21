@@ -47,6 +47,10 @@ class AutoSignalService:
         self._stop_event.set()
 
     async def scan_and_notify(self):
+        users = self.db.get_notification_user_ids()
+        if not users:
+            logger.debug("Automatic scan idle: no users enabled it")
+            return
         if self.scan_lock.locked():
             logger.info("Automatic scan skipped: manual scan is active")
             return
@@ -67,7 +71,6 @@ class AutoSignalService:
         if not decisions:
             logger.info("Automatic TOP-%s scan completed without actions", settings.auto_priority_top_limit)
             return
-        users = self.db.get_notification_user_ids()
         decisions.sort(key=lambda pair: pair[1].priority, reverse=True)
         for item, decision in decisions[:3]:
             signal = item["signal_object"]

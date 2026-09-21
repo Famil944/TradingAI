@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import AsyncMock
 
 from exchange.binance_client import BinanceClient
 
@@ -36,6 +37,10 @@ class BinanceClientTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         BinanceClient._blocked_base_urls = set()
         BinanceClient._preferred_base_url = None
+        BinanceClient._unavailable_until = {}
+        BinanceClient._last_all_unavailable_log = 0.0
+        BinanceClient._exchange_info_cache = None
+        BinanceClient._exchange_info_cached_at = 0.0
 
     async def test_451_endpoint_is_not_requested_again(self):
         client = BinanceClient()
@@ -64,7 +69,28 @@ class BinanceClientTests(unittest.IsolatedAsyncioTestCase):
             ]
 
         client._request = fake_request
+        client.get_spot_symbol_map = AsyncMock(return_value={})
         self.assertEqual(await client.get_top_symbols(10), ["BTCUSDT", "SOLUSDT"])
+
+    async def test_unavailable_preferred_endpoint_falls_back(self):
+        client = BinanceClient()
+        client.BASE_URL = "https://failed.example"
+        client.PUBLIC_BASE_URLS = ("https://working.example",)
+        client.session = FakeSession()
+        BinanceClient._preferred_base_url = "https://failed.example"
+
+        original_request = client._request_from_base
+
+        async def fake_request(method, base_url, endpoint, params):
+            if base_url == "https://failed.example":
+                return "unavailable", None
+            return await original_request(method, base_url, endpoint, params)
+
+        client._request_from_base = fake_request
+        self.assertEqual(await client._request("GET", "/test"), {"ok": True})
+        self.assertEqual(
+            BinanceClient._preferred_base_url, "https://working.example"
+        )
 
 
 if __name__ == "__main__":
