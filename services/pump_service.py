@@ -77,6 +77,21 @@ class PumpScanner:
         ema_15m = SignalScorer.ema_slope_percent(fifteen)
         hour_move = (one[-1].close / one[-61].close - 1) * 100 if len(one) >= 61 else 0
 
+        # Pump-кандидат обязан иметь не один случайный всплеск, а подтверждённый
+        # поток активности и реальный спрос со стороны покупателей.
+        if (volume_1m or 0) < settings.pump_min_volume_ratio_1m:
+            return None, "pump_volume_unconfirmed"
+        activity_confirmed = (
+            (volume_5m or 0) >= settings.pump_min_confirmation_ratio
+            or (trades_ratio or 0) >= settings.pump_min_trade_ratio
+        )
+        if not activity_confirmed:
+            return None, "pump_activity_unconfirmed"
+        if (buy_ratio or 0) < settings.pump_min_buyer_ratio:
+            return None, "pump_buyers_weak"
+        if hour_move >= settings.pump_max_hour_move_percent:
+            return None, "pump_too_late"
+
         score, reasons = 10, []
         if volume_1m and volume_1m >= 1.5:
             score += 20 + (10 if volume_1m >= 2.5 else 0)
@@ -105,11 +120,7 @@ class PumpScanner:
         if ticker["quote_volume"] >= 10_000_000:
             score += 5
 
-        if hour_move >= 8:
-            stage = "late"
-            score -= 30
-            reasons.append(f"уже выросла на {hour_move:.1f}%")
-        elif breakout_percent >= 0 and (volume_1m or 0) >= 1.5:
+        if breakout_percent >= 0 and (volume_1m or 0) >= 1.5:
             stage = "confirmed"
         elif (volume_1m or 0) >= 1.5 or (trades_ratio or 0) >= 1.5:
             stage = "impulse"
@@ -315,7 +326,7 @@ class PumpService:
     def format_candidate(candidate, prediction_id=None):
         stages = {
             "preparation": "🟡 Подготовка", "impulse": "🟠 Начало импульса",
-            "confirmed": "🟢 Пробой подтверждён", "late": "🔴 Движение уже началось",
+            "confirmed": "🟢 Пробой подтверждён",
         }
         reasons = ", ".join(candidate["metrics"].get("reasons", [])[:4]) or "совокупность факторов"
         number = f"#{prediction_id} · " if prediction_id else ""

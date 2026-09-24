@@ -48,7 +48,14 @@ class Settings(BaseModel):
     min_listing_days: int = int(os.getenv("MIN_LISTING_DAYS", "60"))
     signal_validity_minutes: int = int(os.getenv("SIGNAL_VALIDITY_MINUTES", "30"))
     pump_min_quote_volume_usdt: float = float(os.getenv("PUMP_MIN_QUOTE_VOLUME_USDT", "1000000"))
-    pump_min_score: int = int(os.getenv("PUMP_MIN_SCORE", "60"))
+    # Не позволяем старому PUMP_MIN_SCORE=60 из окружения вернуть шумные
+    # сигналы после обычного обновления приложения.
+    pump_min_score: int = max(73, int(os.getenv("PUMP_MIN_SCORE", "73")))
+    pump_min_volume_ratio_1m: float = float(os.getenv("PUMP_MIN_VOLUME_RATIO_1M", "1.50"))
+    pump_min_confirmation_ratio: float = float(os.getenv("PUMP_MIN_CONFIRMATION_RATIO", "1.10"))
+    pump_min_trade_ratio: float = float(os.getenv("PUMP_MIN_TRADE_RATIO", "1.50"))
+    pump_min_buyer_ratio: float = float(os.getenv("PUMP_MIN_BUYER_RATIO", "0.45"))
+    pump_max_hour_move_percent: float = float(os.getenv("PUMP_MAX_HOUR_MOVE_PERCENT", "6.0"))
     pump_scan_interval_minutes: int = int(os.getenv("PUMP_SCAN_INTERVAL_MINUTES", "15"))
     pump_success_percent: float = float(os.getenv("PUMP_SUCCESS_PERCENT", "5"))
     pump_observation_hours: int = int(os.getenv("PUMP_OBSERVATION_HOURS", "24"))
