@@ -1095,7 +1095,7 @@ async def pump_scan_once(query: types.CallbackQuery):
     )
     if not candidates:
         return
-    for prediction_id, candidate in saved[:5]:
+    for prediction_id, candidate in saved:
         await query.message.answer(
             pump_service.format_candidate(candidate, prediction_id)
         )

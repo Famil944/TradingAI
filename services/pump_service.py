@@ -13,6 +13,7 @@ from core.scan_coordinator import market_scan_lock
 
 logger = logging.getLogger(__name__)
 CHECKPOINTS_MINUTES = (5, 15, 30, 60, 180, 360, 720, 1440)
+MAX_TRACKED_CANDIDATES_PER_SCAN = 3
 
 
 class PumpScanner:
@@ -208,7 +209,9 @@ class PumpService:
         async with self.lock:
             candidates = await self.scanner.scan(progress)
         saved = []
-        for candidate in candidates:
+        # Наблюдаем только лучшие показанные пользователю сигналы. Раньше в БД
+        # попадали все кандидаты, хотя Telegram показывал лишь первые пять.
+        for candidate in candidates[:MAX_TRACKED_CANDIDATES_PER_SCAN]:
             prediction_id = self.db.save_pump_prediction(user_id, candidate)
             if prediction_id:
                 saved.append((prediction_id, candidate))
@@ -228,11 +231,11 @@ class PumpService:
                     self._last_background_scan = now
                     for user_id in users:
                         new_predictions = []
-                        for candidate in candidates:
+                        for candidate in candidates[:MAX_TRACKED_CANDIDATES_PER_SCAN]:
                             prediction_id = self.db.save_pump_prediction(user_id, candidate)
                             if prediction_id:
                                 new_predictions.append((prediction_id, candidate))
-                        for prediction_id, candidate in new_predictions[:5]:
+                        for prediction_id, candidate in new_predictions:
                             await self._send_message_safe(
                                 user_id, self.format_candidate(candidate, prediction_id)
                             )
@@ -314,12 +317,6 @@ class PumpService:
                         status="completed", outcome="pump" if success else "no_pump",
                         completed_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                     )
-                    if not success:
-                        await self._send_message_safe(
-                            row["user_id"],
-                            f"❌ Pump-прогноз #{row['id']} не подтвердился за "
-                            f"{settings.pump_observation_hours} ч.\n{row['symbol']} · максимум {max_gain:+.2f}%"
-                        )
                 self.db.update_pump_prediction(row["id"], **updates)
 
     @staticmethod

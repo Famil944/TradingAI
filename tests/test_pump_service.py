@@ -3,7 +3,9 @@ import unittest
 from config.models import CandleData
 from services.news_sentiment_service import NewsAssessment
 from core.scan_coordinator import market_scan_lock
-from services.pump_service import PumpScanner, PumpService
+from services.pump_service import (
+    MAX_TRACKED_CANDIDATES_PER_SCAN, PumpScanner, PumpService,
+)
 
 
 def candles(volume_multiplier=3, buy_ratio=0.60, trade_multiplier=3):
@@ -42,6 +44,23 @@ class FakeClient:
 class BrokenBot:
     async def send_message(self, user_id, text):
         raise RuntimeError("Telegram unavailable")
+
+
+class ManyCandidateScanner:
+    async def scan(self, progress=None):
+        return [
+            {"symbol": f"TEST{index}USDT", "score": 90 - index, "price": 1}
+            for index in range(10)
+        ]
+
+
+class RecordingPumpDatabase:
+    def __init__(self):
+        self.saved = []
+
+    def save_pump_prediction(self, user_id, candidate):
+        self.saved.append(candidate["symbol"])
+        return len(self.saved)
 
 
 class PumpServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -97,6 +116,20 @@ class PumpServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(candidate)
         self.assertEqual(reason, "pump_buyers_weak")
+
+    async def test_only_best_candidates_are_saved_and_monitored(self):
+        service = PumpService(bot=None, news_service=FakeNews())
+        service.scanner = ManyCandidateScanner()
+        service.db = RecordingPumpDatabase()
+
+        candidates, saved = await service.scan_for_user(123)
+
+        self.assertEqual(len(candidates), 10)
+        self.assertEqual(len(saved), MAX_TRACKED_CANDIDATES_PER_SCAN)
+        self.assertEqual(
+            service.db.saved,
+            ["TEST0USDT", "TEST1USDT", "TEST2USDT"],
+        )
 
 
 if __name__ == "__main__":
