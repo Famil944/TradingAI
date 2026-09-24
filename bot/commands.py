@@ -880,6 +880,10 @@ async def cmd_export(message: types.Message):
 async def cmd_diagnostics(message: types.Message):
     db = Database()
     trades = db.get_manual_trades(message.chat.id)
+    pump_diagnostics = (
+        pump_service.scanner.last_diagnostics if pump_service is not None else {}
+    )
+    pump_statistics = db.get_pump_statistics(message.chat.id)
     content = build_diagnostic_json(
         manual_scanner.last_scan_diagnostics,
         trades,
@@ -894,7 +898,12 @@ async def cmd_diagnostics(message: types.Message):
             ),
             "scan_in_progress": scan_lock.locked(),
             "pump_available": pump_service is not None,
+            "pump_background_enabled_for_user": db.get_pump_background(
+                message.chat.id
+            ),
         },
+        pump_diagnostics=pump_diagnostics,
+        pump_statistics=pump_statistics,
     )
     filename = f"TradingAI_diagnostics_{datetime.now(MOSCOW_TZ):%Y-%m-%d_%H-%M}.json"
     await message.answer_document(

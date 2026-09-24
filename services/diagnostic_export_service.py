@@ -8,7 +8,8 @@ from config.settings import settings
 
 def build_diagnostic_json(
     scan_diagnostics: dict, trades: list[dict], database_id="unknown",
-    service_state: dict = None,
+    service_state: dict = None, pump_diagnostics: dict = None,
+    pump_statistics: dict = None,
 ) -> bytes:
     """Создаёт безопасный отчёт без токенов, ключей и переменных окружения."""
     safe_trades = []
@@ -72,8 +73,16 @@ def build_diagnostic_json(
                 "автоматически ослаблять фильтры не рекомендуется."
             ),
         })
+    if (service_state or {}).get("scan_in_progress") and not checked:
+        recommendations.append({
+            "priority": "info", "code": "scan_in_progress",
+            "message": (
+                "Отчёт создан во время сканирования. Повторите /diagnostics "
+                "после завершения, чтобы получить итоговые причины фильтрации."
+            ),
+        })
     report = {
-        "report_version": 3,
+        "report_version": 4,
         "database_id": database_id,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "runtime": {"python": platform.python_version(), "system": platform.system()},
@@ -101,6 +110,20 @@ def build_diagnostic_json(
         },
         "filter_summary": dict(reason_counts),
         "service_state": service_state or {},
+        "pump": {
+            "strategy": {
+                "min_score": settings.pump_min_score,
+                "min_quote_volume_usdt": settings.pump_min_quote_volume_usdt,
+                "min_volume_ratio_1m": settings.pump_min_volume_ratio_1m,
+                "min_confirmation_ratio": settings.pump_min_confirmation_ratio,
+                "min_trade_ratio": settings.pump_min_trade_ratio,
+                "min_buyer_ratio": settings.pump_min_buyer_ratio,
+                "max_hour_move_percent": settings.pump_max_hour_move_percent,
+                "success_percent": settings.pump_success_percent,
+            },
+            "last_scan": pump_diagnostics or {"note": "pump_scan_not_run_since_restart"},
+            "statistics": pump_statistics or {},
+        },
         "recommendations": recommendations,
         "trades": safe_trades,
         "privacy": "No Telegram token, API key, environment variable or chat id is included.",
