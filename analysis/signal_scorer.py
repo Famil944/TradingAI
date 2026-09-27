@@ -233,6 +233,7 @@ class SignalScorer:
         candles_15m: Optional[List[CandleData]] = None,
         candles_1h: Optional[List[CandleData]] = None,
         candles_4h: Optional[List[CandleData]] = None,
+        candles_daily: Optional[List[CandleData]] = None,
         min_drawdown_percent: float = 3.0,
         max_drawdown_percent: float = 45.0,
         min_resistance_room_percent: float = 3.3,
@@ -263,7 +264,13 @@ class SignalScorer:
         indicators_1h = IndicatorCalculator.get_all_indicators(candles_1h)
         indicators_4h = IndicatorCalculator.get_all_indicators(candles_4h)
 
-        period_high = max((item.high for item in candles_4h), default=0)
+        # Для стратегии «купить после сильного падения» используем максимум
+        # последних 30 закрытых дней. Старый расчёт по 4h охватывал лишь ~20 дней.
+        drawdown_candles = (
+            candles_daily[-30:] if candles_daily and len(candles_daily) >= 30
+            else candles_4h
+        )
+        period_high = max((item.high for item in drawdown_candles), default=0)
         if period_high <= 0:
             return reject("invalid_period_high")
         drawdown = (period_high - market_data.current_price) / period_high * 100

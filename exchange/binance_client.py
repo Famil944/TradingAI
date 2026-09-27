@@ -72,7 +72,10 @@ class BinanceClient:
         url = f"{base_url.rstrip('/')}{endpoint}"
         try:
             async with self.session.request(
-                method, url, params=params, timeout=aiohttp.ClientTimeout(total=15)
+                method, url, params=params,
+                timeout=aiohttp.ClientTimeout(
+                    total=settings.binance_request_timeout_seconds
+                ),
             ) as resp:
                 if resp.status == 200:
                     return "success", await resp.json()
@@ -134,10 +137,14 @@ class BinanceClient:
 
             now = time.monotonic()
             bases = list(dict.fromkeys((self.BASE_URL, *self.PUBLIC_BASE_URLS)))
+            attempts = 0
             for base_url in (base for base in bases if base):
                 if (base_url in attempted or base_url in cls._blocked_base_urls or
                         cls._unavailable_until.get(base_url, 0) > now):
                     continue
+                if attempts >= settings.binance_max_failover_attempts:
+                    break
+                attempts += 1
                 status, data = await request_base(base_url)
                 if status == "success":
                     cls._preferred_base_url = base_url

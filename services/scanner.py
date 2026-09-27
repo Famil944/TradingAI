@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import statistics
+import time
 from decimal import Decimal, ROUND_DOWN
 from typing import List
 from datetime import datetime, timedelta
@@ -41,13 +43,67 @@ class MarketScanner:
         recent_average = sum(item.volume for item in recent) / len(recent)
         return recent_average / baseline_average
 
+    @staticmethod
+    def _ema(values, period):
+        if len(values) < period:
+            return None
+        multiplier = 2 / (period + 1)
+        value = sum(values[:period]) / period
+        for item in values[period:]:
+            value = item * multiplier + value * (1 - multiplier)
+        return value
+
+    @classmethod
+    def _listing_downtrend_metrics(cls, candles):
+        """Определяет монету, которая с листинга системно идёт вниз."""
+        if len(candles) < settings.min_listing_days:
+            return None
+        closes = [item.close for item in candles]
+        sample = min(14, max(7, len(closes) // 5))
+        early = statistics.median(closes[:sample])
+        recent = statistics.median(closes[-sample:])
+        if early <= 0:
+            return None
+        decline = (early - recent) / early * 100
+        history_low = min(item.low for item in candles)
+        distance_from_low = (
+            (closes[-1] - history_low) / history_low * 100
+            if history_low > 0 else 999
+        )
+        ema20 = cls._ema(closes, 20)
+        ema50 = cls._ema(closes, 50)
+        third = max(1, len(candles) // 3)
+        sections = (candles[:third], candles[third:third * 2], candles[third * 2:])
+        highs = [max(item.high for item in part) for part in sections if part]
+        lows = [min(item.low for item in part) for part in sections if part]
+        lower_structure = (
+            len(highs) == 3 and highs[0] > highs[1] > highs[2]
+            and len(lows) == 3 and lows[0] > lows[1] > lows[2]
+        )
+        persistent = (
+            decline >= settings.max_listing_downtrend_percent
+            and distance_from_low <= settings.max_distance_from_history_low_percent
+            and ema20 is not None and ema50 is not None and ema20 < ema50
+            and lower_structure
+        )
+        return {
+            "persistent": persistent,
+            "listing_decline_percent": decline,
+            "distance_from_history_low_percent": distance_from_low,
+            "daily_ema20": ema20,
+            "daily_ema50": ema50,
+            "lower_highs_and_lows": lower_structure,
+        }
+
     async def _analyze_symbol(self, client, symbol: str):
         candles_5m, candles_15m, candles_1h, candles_4h, daily, ticker, tick_size = await asyncio.gather(
             client.get_klines(symbol, "5m", limit=121),
             client.get_klines(symbol, "15m", limit=121),
             client.get_klines(symbol, "1h", limit=121),
-            client.get_klines(symbol, "4h", limit=121),
-            client.get_klines(symbol, "1d", limit=settings.min_listing_days + 1),
+            client.get_klines(symbol, "4h", limit=181),
+            client.get_klines(
+                symbol, "1d", limit=min(1000, settings.listing_history_days + 1)
+            ),
             client.get_ticker(symbol),
             client.get_tick_size(symbol),
         )
@@ -69,6 +125,23 @@ class MarketScanner:
                 symbol, len(closed_daily), settings.min_listing_days,
             )
             self._diagnose(symbol, "rejected", "listing_too_new", listing_days=len(closed_daily))
+            return None
+
+        # Если Binance вернул меньше запрошенной истории, мы видим торговлю от
+        # самого листинга. Такой молодой актив исключается, когда вся его
+        # дневная структура остаётся устойчиво нисходящей около исторического дна.
+        history_is_from_listing = len(daily) < min(
+            1000, settings.listing_history_days + 1
+        )
+        listing_trend = self._listing_downtrend_metrics(closed_daily)
+        if (history_is_from_listing and listing_trend
+                and listing_trend["persistent"]):
+            self._diagnose(
+                symbol, "rejected", "persistent_listing_downtrend",
+                listing_days=len(closed_daily),
+                **{key: value for key, value in listing_trend.items()
+                   if key != "persistent"},
+            )
             return None
 
         quote_volume = ticker.get("quote_asset_volume", 0)
@@ -116,6 +189,7 @@ class MarketScanner:
             candles_15m=candles_15m,
             candles_1h=candles_1h,
             candles_4h=candles_4h,
+            candles_daily=closed_daily,
             min_drawdown_percent=settings.min_drawdown_percent,
             max_drawdown_percent=settings.max_drawdown_percent,
             min_resistance_room_percent=settings.min_resistance_room_percent,
@@ -180,6 +254,8 @@ class MarketScanner:
         """
         top_limit = top_limit or settings.scanner_top_limit
         logger.info(f"Начало сканирования TOP-{top_limit} пар...")
+        scan_started_at = datetime.utcnow()
+        scan_started_monotonic = time.monotonic()
         signals_found = []
         self._symbol_diagnostics = {}
         
@@ -210,7 +286,17 @@ class MarketScanner:
                 async def analyze(symbol):
                     async with semaphore:
                         try:
-                            return symbol, await self._analyze_symbol(client, symbol)
+                            return symbol, await asyncio.wait_for(
+                                self._analyze_symbol(client, symbol),
+                                timeout=settings.symbol_analysis_timeout_seconds,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error("Таймаут анализа %s", symbol)
+                            self._diagnose(
+                                symbol, "error", "analysis_timeout",
+                                timeout_seconds=settings.symbol_analysis_timeout_seconds,
+                            )
+                            return symbol, None
                         except Exception as error:
                             logger.error(f"Ошибка при анализе {symbol}: {error}")
                             self._diagnose(
@@ -278,6 +364,11 @@ class MarketScanner:
                 
                 logger.info(f"Скан завершён. Найдено сигналов: {len(signals_found)}")
                 self.last_scan_diagnostics = {
+                    "started_at_utc": scan_started_at.isoformat() + "Z",
+                    "completed_at_utc": datetime.utcnow().isoformat() + "Z",
+                    "duration_ms": round(
+                        (time.monotonic() - scan_started_monotonic) * 1000
+                    ),
                     "checked": len(symbols),
                     "accepted": len(signals_found),
                     "strategy_filtered": len(symbols) - sum(
@@ -285,7 +376,8 @@ class MarketScanner:
                     ),
                     "operational_failures": sum(
                         item.get("reason") in {
-                            "market_data_unavailable", "analysis_error"
+                            "market_data_unavailable", "analysis_error",
+                            "analysis_timeout",
                         }
                         for item in self._symbol_diagnostics.values()
                     ),
@@ -297,7 +389,15 @@ class MarketScanner:
             
             except Exception as e:
                 logger.error(f"Критическая ошибка при сканировании: {e}")
-                self.last_scan_diagnostics = {"error": str(e)}
+                self.last_scan_diagnostics = {
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "started_at_utc": scan_started_at.isoformat() + "Z",
+                    "completed_at_utc": datetime.utcnow().isoformat() + "Z",
+                    "duration_ms": round(
+                        (time.monotonic() - scan_started_monotonic) * 1000
+                    ),
+                }
         
         return signals_found
     

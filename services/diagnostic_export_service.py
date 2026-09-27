@@ -40,7 +40,9 @@ def build_diagnostic_json(
         })
     symbols = (scan_diagnostics or {}).get("symbols", [])
     reason_counts = Counter(item.get("reason", "unknown") for item in symbols)
-    operational_reasons = {"market_data_unavailable", "analysis_error"}
+    operational_reasons = {
+        "market_data_unavailable", "analysis_error", "analysis_timeout",
+    }
     operational_failures = sum(
         count for reason, count in reason_counts.items()
         if reason in operational_reasons

@@ -20,15 +20,32 @@ def candles(count):
     ]
 
 
+def declining_candles(count):
+    result = []
+    for index in range(count):
+        price = 100 - index * 0.65
+        result.append(CandleData(
+            timestamp=index, open=price + 0.5, high=price + 1,
+            low=price - 1, close=price, volume=1_000_000,
+        ))
+    return result
+
+
 class FakeClient:
-    def __init__(self, daily_count, quote_volume=10_000_000, bid=99.95, ask=100.05):
+    def __init__(
+        self, daily_count, quote_volume=10_000_000, bid=99.95, ask=100.05,
+        daily_series=None,
+    ):
         self.daily_count = daily_count
         self.quote_volume = quote_volume
         self.bid = bid
         self.ask = ask
+        self.daily_series = daily_series
 
     async def get_klines(self, symbol, interval, limit=100):
         if interval == "1d":
+            if self.daily_series is not None:
+                return self.daily_series
             return candles(self.daily_count)
         return candles(limit)
 
@@ -70,7 +87,8 @@ class SpotScannerSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(args[2]), 120)
         self.assertEqual(len(generate.call_args.kwargs["candles_15m"]), 120)
         self.assertEqual(len(generate.call_args.kwargs["candles_1h"]), 120)
-        self.assertEqual(len(generate.call_args.kwargs["candles_4h"]), 120)
+        self.assertEqual(len(generate.call_args.kwargs["candles_4h"]), 180)
+        self.assertEqual(len(generate.call_args.kwargs["candles_daily"]), 60)
 
     async def test_new_coin_is_rejected_before_scoring(self):
         scanner = MarketScanner()
@@ -80,6 +98,21 @@ class SpotScannerSafetyTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIsNone(result)
+        generate.assert_not_called()
+
+    async def test_coin_declining_since_listing_is_rejected(self):
+        scanner = MarketScanner()
+        daily = declining_candles(101)
+        with patch("services.scanner.SignalScorer.generate_signal") as generate:
+            result = await scanner._analyze_symbol(
+                FakeClient(daily_count=101, daily_series=daily), "FALLUSDT"
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            scanner._symbol_diagnostics["FALLUSDT"]["reason"],
+            "persistent_listing_downtrend",
+        )
         generate.assert_not_called()
 
     async def test_low_liquidity_is_rejected_before_scoring(self):

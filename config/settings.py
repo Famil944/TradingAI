@@ -46,6 +46,12 @@ class Settings(BaseModel):
     max_drawdown_percent: float = float(os.getenv("MAX_DRAWDOWN_PERCENT", "45"))
     scanner_concurrency: int = int(os.getenv("SCANNER_CONCURRENCY", "8"))
     min_listing_days: int = int(os.getenv("MIN_LISTING_DAYS", "60"))
+    listing_history_days: int = int(os.getenv("LISTING_HISTORY_DAYS", "365"))
+    max_listing_downtrend_percent: float = float(os.getenv("MAX_LISTING_DOWNTREND_PERCENT", "30"))
+    max_distance_from_history_low_percent: float = float(os.getenv("MAX_DISTANCE_FROM_HISTORY_LOW_PERCENT", "12"))
+    binance_request_timeout_seconds: float = float(os.getenv("BINANCE_REQUEST_TIMEOUT_SECONDS", "8"))
+    binance_max_failover_attempts: int = int(os.getenv("BINANCE_MAX_FAILOVER_ATTEMPTS", "3"))
+    symbol_analysis_timeout_seconds: float = float(os.getenv("SYMBOL_ANALYSIS_TIMEOUT_SECONDS", "45"))
     signal_validity_minutes: int = int(os.getenv("SIGNAL_VALIDITY_MINUTES", "30"))
     pump_min_quote_volume_usdt: float = float(os.getenv("PUMP_MIN_QUOTE_VOLUME_USDT", "1000000"))
     # Не позволяем старому PUMP_MIN_SCORE=60 из окружения вернуть шумные
