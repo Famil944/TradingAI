@@ -38,6 +38,10 @@ class FakeScanner:
             targets=SimpleNamespace(tp1=1.03, tp2=1.05),
             stop_loss=0.97,
             risk_reward=1.67,
+            risk_score=18,
+            risk_level="LOW",
+            market_regime="NORMAL",
+            drawdown_30d_percent=9.5,
         )
         return [{"signal_id": 7, "signal_object": signal}]
 

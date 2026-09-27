@@ -23,7 +23,7 @@ class DiagnosticExportTests(unittest.TestCase):
         self.assertAlmostEqual(report["trades"][0]["max_favorable_percent"], 4.0)
         self.assertAlmostEqual(report["trades"][0]["max_adverse_percent"], -2.0)
         self.assertEqual(report["database_id"], "source123")
-        self.assertEqual(report["report_version"], 4)
+        self.assertEqual(report["report_version"], 5)
         self.assertEqual(report["pump"]["last_scan"]["candidates"], 3)
         self.assertEqual(report["pump"]["statistics"]["successful"], 4)
         self.assertEqual(report["scan_quality"]["data_availability_percent"], 100.0)

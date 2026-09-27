@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional, List
 
@@ -103,6 +103,12 @@ class TradeSignal(BaseModel):
     # Risk/Reward
     risk_reward: float
     tick_size: Optional[float] = None
+    risk_score: int = 0
+    risk_level: str = "LOW"
+    risk_reasons: List[str] = Field(default_factory=list)
+    market_regime: str = "NORMAL"
+    drawdown_30d_percent: Optional[float] = None
+    listing_days: Optional[int] = None
     
     # Время создания
     created_at: datetime = None

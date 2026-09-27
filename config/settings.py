@@ -52,6 +52,11 @@ class Settings(BaseModel):
     binance_request_timeout_seconds: float = float(os.getenv("BINANCE_REQUEST_TIMEOUT_SECONDS", "8"))
     binance_max_failover_attempts: int = int(os.getenv("BINANCE_MAX_FAILOVER_ATTEMPTS", "3"))
     symbol_analysis_timeout_seconds: float = float(os.getenv("SYMBOL_ANALYSIS_TIMEOUT_SECONDS", "45"))
+    binance_risk_timeout_seconds: float = float(os.getenv("BINANCE_RISK_TIMEOUT_SECONDS", "12"))
+    binance_risk_cache_minutes: int = int(os.getenv("BINANCE_RISK_CACHE_MINUTES", "30"))
+    max_allowed_risk_score: int = int(os.getenv("MAX_ALLOWED_RISK_SCORE", "69"))
+    caution_min_signal_score: int = int(os.getenv("CAUTION_MIN_SIGNAL_SCORE", "75"))
+    high_risk_min_signal_score: int = int(os.getenv("HIGH_RISK_MIN_SIGNAL_SCORE", "80"))
     signal_validity_minutes: int = int(os.getenv("SIGNAL_VALIDITY_MINUTES", "30"))
     pump_min_quote_volume_usdt: float = float(os.getenv("PUMP_MIN_QUOTE_VOLUME_USDT", "1000000"))
     # Не позволяем старому PUMP_MIN_SCORE=60 из окружения вернуть шумные

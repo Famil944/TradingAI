@@ -87,6 +87,7 @@ def _format_signal(signal) -> str:
         "⚠️ Ранний вход: повышенный риск, используйте меньший объём.\n"
         if signal.score < 75 else ""
     )
+    risk_reasons = ", ".join(signal.risk_reasons[:2]) or "критических факторов нет"
     trade_levels = (
         f"{risk_note}"
         f"Цель: ${_price(signal.targets.tp1, signal.tick_size)} (+3%)\n"
@@ -94,11 +95,16 @@ def _format_signal(signal) -> str:
     )
     text = (
         f"{quality} · {signal.symbol} · {signal.score}/100\n\n"
+        f"Risk Score: {signal.risk_score}/100 · {signal.risk_level}\n"
+        f"Рынок: {signal.market_regime}\n"
+        f"Просадка от 30d max: {signal.drawdown_30d_percent:.1f}%\n"
+        f"Возраст истории: {signal.listing_days} дней\n\n"
         f"Вход: ${_price(signal.entry_zone_min, signal.tick_size)}–"
         f"${_price(signal.entry_zone_max, signal.tick_size)}\n"
         f"Сейчас: ${_price(signal.current_price, signal.tick_size)} · {entry_status}\n\n"
         f"{trade_levels}\n\n"
         f"Почему:\n{reasons}\n\n"
+        f"Риски: {risk_reasons}\n\n"
         f"⏳ До {valid_until:%H:%M} МСК"
     )
     return text + (f"\n\n{warnings}" if warnings else "")
@@ -183,6 +189,13 @@ async def _run_scan(message: types.Message):
                 top_limit=50, respect_cooldown=False,
                 progress_callback=show_progress,
             )
+            if manual_scanner.last_scan_diagnostics.get("paused_reason"):
+                await message.answer(
+                    "⛔ Сигналы временно приостановлены: официальный "
+                    "Binance Risk источник недоступен. Повторите позже — "
+                    "бот не будет выдавать монеты без проверки риска."
+                )
+                return
             selected = select_signals(results)
             expanded = False
             if not selected:
@@ -195,6 +208,12 @@ async def _run_scan(message: types.Message):
                     top_limit=100, respect_cooldown=False,
                     progress_callback=show_progress,
                 )
+                if manual_scanner.last_scan_diagnostics.get("paused_reason"):
+                    await message.answer(
+                        "⛔ Сигналы временно приостановлены: официальный "
+                        "Binance Risk источник недоступен."
+                    )
+                    return
                 selected = select_signals(results)
         except Exception:
             logger.exception("Ошибка ручного сканирования")

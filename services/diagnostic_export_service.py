@@ -42,6 +42,7 @@ def build_diagnostic_json(
     reason_counts = Counter(item.get("reason", "unknown") for item in symbols)
     operational_reasons = {
         "market_data_unavailable", "analysis_error", "analysis_timeout",
+        "critical_risk_data_unavailable",
     }
     operational_failures = sum(
         count for reason, count in reason_counts.items()
@@ -84,7 +85,7 @@ def build_diagnostic_json(
             ),
         })
     report = {
-        "report_version": 4,
+        "report_version": 5,
         "database_id": database_id,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "runtime": {"python": platform.python_version(), "system": platform.system()},
@@ -98,6 +99,9 @@ def build_diagnostic_json(
             "min_resistance_room_percent": settings.min_resistance_room_percent,
             "min_listing_days": settings.min_listing_days,
             "min_signal_score": settings.min_signal_score,
+            "max_allowed_risk_score": settings.max_allowed_risk_score,
+            "caution_min_signal_score": settings.caution_min_signal_score,
+            "high_risk_min_signal_score": settings.high_risk_min_signal_score,
         },
         "last_scan": scan_diagnostics or {"note": "scan_not_run_since_restart"},
         "scan_quality": {

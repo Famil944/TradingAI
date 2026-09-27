@@ -10,6 +10,11 @@ from config.models import MarketData
 from analysis.signal_scorer import SignalScorer
 from database.db import Database
 from config.settings import settings
+from services.binance_risk_service import (
+    BinanceRiskAssessment, BinanceRiskService,
+)
+from services.market_regime_service import MarketRegime, MarketRegimeService
+from services.risk_scoring_service import RiskScoringService
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +29,9 @@ class MarketScanner:
         self.signal_callback = signal_callback
         self.last_scan_diagnostics = {}
         self._symbol_diagnostics = {}
+        self.risk_service = BinanceRiskService()
+        self.market_regime_service = MarketRegimeService()
+        self._last_market_regime = MarketRegime("UNKNOWN")
 
     def _diagnose(self, symbol, status, reason, **metrics):
         self._symbol_diagnostics[symbol] = {
@@ -95,7 +103,26 @@ class MarketScanner:
             "lower_highs_and_lows": lower_structure,
         }
 
-    async def _analyze_symbol(self, client, symbol: str):
+    async def _analyze_symbol(
+        self, client, symbol: str,
+        binance_risk: BinanceRiskAssessment = None,
+        market_regime: MarketRegime = None,
+    ):
+        market_regime = market_regime or MarketRegime("NORMAL")
+        if binance_risk is not None:
+            if not binance_risk.available:
+                self._diagnose(
+                    symbol, "error", "critical_risk_data_unavailable"
+                )
+                return None
+            if binance_risk.blocked:
+                self._diagnose(
+                    symbol, "rejected", "binance_risk_reject",
+                    risk_code=binance_risk.risk_code,
+                    binance_tags=list(binance_risk.tags),
+                    trading_status=binance_risk.status,
+                )
+                return None
         candles_5m, candles_15m, candles_1h, candles_4h, daily, ticker, tick_size = await asyncio.gather(
             client.get_klines(symbol, "5m", limit=121),
             client.get_klines(symbol, "15m", limit=121),
@@ -143,6 +170,11 @@ class MarketScanner:
                    if key != "persistent"},
             )
             return None
+
+        high_30d = max(item.high for item in closed_daily[-30:])
+        drawdown_30d = (
+            (high_30d - ticker["price"]) / high_30d * 100 if high_30d else 0
+        )
 
         quote_volume = ticker.get("quote_asset_volume", 0)
         if quote_volume < settings.min_quote_volume_usdt:
@@ -207,8 +239,48 @@ class MarketScanner:
             reason = evaluation.pop("reason", "strategy_setup_rejected")
             self._diagnose(symbol, "rejected", reason, **metrics, **evaluation)
         else:
+            required_score = settings.min_signal_score
+            if market_regime.name == "CAUTION":
+                required_score = max(required_score, settings.caution_min_signal_score)
+            elif market_regime.name == "HIGH_RISK":
+                required_score = max(required_score, settings.high_risk_min_signal_score)
+            if signal.score < required_score:
+                self._diagnose(
+                    symbol, "rejected", "market_regime_score_too_low",
+                    score=signal.score, required_score=required_score,
+                    market_regime=market_regime.name, **metrics,
+                )
+                return None
+            risk = RiskScoringService.calculate(
+                listing_days=len(closed_daily), quote_volume=quote_volume,
+                spread_percent=spread, trend_metrics=listing_trend,
+                drawdown_30d=drawdown_30d, market_regime=market_regime,
+            )
+            if risk.score > settings.max_allowed_risk_score:
+                self._diagnose(
+                    symbol, "rejected", "risk_score_too_high",
+                    score=signal.score, risk_score=risk.score,
+                    risk_level=risk.level, risk_reasons=list(risk.reasons),
+                    market_regime=market_regime.name, **metrics,
+                )
+                return None
+            signal.risk_score = risk.score
+            signal.risk_level = risk.level
+            signal.risk_reasons = list(risk.reasons)
+            signal.market_regime = market_regime.name
+            signal.drawdown_30d_percent = drawdown_30d
+            signal.listing_days = len(closed_daily)
+            if binance_risk is not None:
+                signal.reasons.append("✅ Binance: критических тегов нет")
             resistance_room = ((signal.resistance - signal.current_price) / signal.current_price * 100)
-            self._diagnose(symbol, "accepted", "signal", score=signal.score, resistance_room_percent=resistance_room, **metrics)
+            self._diagnose(
+                symbol, "accepted", "signal", score=signal.score,
+                risk_score=risk.score, risk_level=risk.level,
+                market_regime=market_regime.name,
+                drawdown_30d_percent=drawdown_30d,
+                listing_days=len(closed_daily),
+                resistance_room_percent=resistance_room, **metrics,
+            )
         if signal:
             if tick_size:
                 tick = Decimal(str(tick_size))
@@ -240,7 +312,12 @@ class MarketScanner:
             logger.info("%s пропущен: локальный риск-стоп-лист", normalized)
             return None
         async with BinanceClient() as client:
-            return await self._analyze_symbol(client, normalized)
+            risk = await self.risk_service.assess(normalized)
+            regime = await self.market_regime_service.assess(client)
+            return await self._analyze_symbol(
+                client, normalized, binance_risk=risk,
+                market_regime=regime,
+            )
     
     async def scan_market(
         self, top_limit: int = None, respect_cooldown: bool = True,
@@ -269,6 +346,21 @@ class MarketScanner:
         
         async with BinanceClient() as client:
             try:
+                risk_available = await self.risk_service.refresh()
+                if not risk_available:
+                    self.last_scan_diagnostics = {
+                        "checked": 0, "accepted": 0,
+                        "paused_reason": "critical_risk_data_unavailable",
+                        "risk_source": self.risk_service.diagnostics(),
+                        "started_at_utc": scan_started_at.isoformat() + "Z",
+                        "completed_at_utc": datetime.utcnow().isoformat() + "Z",
+                        "duration_ms": round(
+                            (time.monotonic() - scan_started_monotonic) * 1000
+                        ),
+                    }
+                    return []
+                market_regime = await self.market_regime_service.assess(client)
+                self._last_market_regime = market_regime
                 # Сначала пробуем получить TOP пары
                 symbols = await client.get_top_symbols(top_limit)
                 
@@ -286,8 +378,13 @@ class MarketScanner:
                 async def analyze(symbol):
                     async with semaphore:
                         try:
+                            binance_risk = await self.risk_service.assess(symbol)
                             return symbol, await asyncio.wait_for(
-                                self._analyze_symbol(client, symbol),
+                                self._analyze_symbol(
+                                    client, symbol,
+                                    binance_risk=binance_risk,
+                                    market_regime=market_regime,
+                                ),
                                 timeout=settings.symbol_analysis_timeout_seconds,
                             )
                         except asyncio.TimeoutError:
@@ -369,6 +466,13 @@ class MarketScanner:
                     "duration_ms": round(
                         (time.monotonic() - scan_started_monotonic) * 1000
                     ),
+                    "market_regime": {
+                        "name": market_regime.name,
+                        "btc_24h_percent": market_regime.btc_24h_percent,
+                        "btc_7d_percent": market_regime.btc_7d_percent,
+                        "reason": market_regime.reason,
+                    },
+                    "risk_source": self.risk_service.diagnostics(),
                     "checked": len(symbols),
                     "accepted": len(signals_found),
                     "strategy_filtered": len(symbols) - sum(
@@ -377,7 +481,7 @@ class MarketScanner:
                     "operational_failures": sum(
                         item.get("reason") in {
                             "market_data_unavailable", "analysis_error",
-                            "analysis_timeout",
+                            "analysis_timeout", "critical_risk_data_unavailable",
                         }
                         for item in self._symbol_diagnostics.values()
                     ),

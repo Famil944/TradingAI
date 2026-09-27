@@ -91,6 +91,9 @@ class AutoSignalService:
             text = (
                 f"{heading}\n\n"
                 f"{signal.symbol} · Score {signal.score}/100\n"
+                f"Risk Score: {signal.risk_score}/100 · {signal.risk_level}\n"
+                f"Рынок: {signal.market_regime}\n"
+                f"Просадка 30d: {signal.drawdown_30d_percent:.1f}%\n"
                 f"Цена: ${signal.current_price:g}\n"
                 f"Вход: ${signal.entry_zone_min:g}–${signal.entry_zone_max:g}\n"
                 f"Цель +3%: ${signal.targets.tp1:g}\n"
