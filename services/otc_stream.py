@@ -15,5 +15,5 @@ async def ticks(symbols):
     while True:
         tick = await asyncio.to_thread(next_tick, source)
         if tick is None:
-            break
+            raise RuntimeError("OTCharts stream ended")
         yield tick
