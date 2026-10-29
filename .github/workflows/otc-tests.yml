@@ -19,3 +19,4 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -r requirements.txt
       - run: python -m unittest tests.test_otc_signals -v
+      - run: python -m compileall -q main.py bot services
