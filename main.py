@@ -4,6 +4,7 @@ from aiogram import Dispatcher, Bot
 from aiogram.types import BotCommand
 from config.settings import settings
 from database.db import Database
+from bot.otc_commands import router as otc_router
 from bot.commands import (
     router as commands_router,
     manual_scanner,
@@ -40,6 +41,7 @@ async def main():
     
     # Регистрация роутера команд
     dp.include_router(commands_router)
+    dp.include_router(otc_router)
     
     # Установка команд в меню бота
     commands = [
@@ -51,6 +53,8 @@ async def main():
         BotCommand(command="pump", description="Анализ импульсов"),
         BotCommand(command="diagnostics", description="Диагностика"),
         BotCommand(command="help", description="Справка"),
+        BotCommand(command="otc", description="Pocket Option OTC-сигналы"),
+        BotCommand(command="otc_status", description="Статус OTC и API"),
     ]
     try:
         await bot.set_my_commands(commands)
