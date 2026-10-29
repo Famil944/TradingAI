@@ -1,0 +1,22 @@
+name: OTC scanner unit tests
+
+on:
+  pull_request:
+    paths:
+      - 'services/otc_*'
+      - 'bot/otc_commands.py'
+      - 'tests/test_otc_signals.py'
+      - 'requirements.txt'
+      - '.github/workflows/otc-tests.yml'
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest tests.test_otc_signals -v
+      - run: python -m compileall -q main.py bot services

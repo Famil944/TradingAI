@@ -1,9 +1,11 @@
 import asyncio
 import logging
+import time
 from aiogram import Dispatcher, Bot
 from aiogram.types import BotCommand
 from config.settings import settings
 from database.db import Database
+from bot.otc_commands import router as otc_router, service as otc_service
 from bot.commands import (
     router as commands_router,
     manual_scanner,
@@ -24,6 +26,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def otc_session_watchdog(bot):
+    while True:
+        await asyncio.sleep(3)
+        if otc_service.running() and otc_service.ends_at and time.time() >= otc_service.ends_at:
+            chat_id = otc_service.chat_id
+            otc_service.stop()
+            await bot.send_message(chat_id, "⏹ Время OTC-сканирования закончилось.")
+
+
 async def main():
     """Главная функция запуска бота."""
     
@@ -40,6 +51,7 @@ async def main():
     
     # Регистрация роутера команд
     dp.include_router(commands_router)
+    dp.include_router(otc_router)
     
     # Установка команд в меню бота
     commands = [
@@ -51,6 +63,8 @@ async def main():
         BotCommand(command="pump", description="Анализ импульсов"),
         BotCommand(command="diagnostics", description="Диагностика"),
         BotCommand(command="help", description="Справка"),
+        BotCommand(command="otc", description="Pocket Option OTC-сигналы"),
+        BotCommand(command="otc_status", description="Статус OTC и API"),
     ]
     try:
         await bot.set_my_commands(commands)
@@ -63,6 +77,7 @@ async def main():
     pump_service = PumpService(bot, news_service)
     configure_pump_service(pump_service)
     pump_task = asyncio.create_task(pump_service.run())
+    otc_watchdog_task = asyncio.create_task(otc_session_watchdog(bot))
     watch_service = SignalWatchService(bot, news_service=news_service)
     watch_task = asyncio.create_task(watch_service.run())
     auto_signal_service = AutoSignalService(
@@ -78,10 +93,12 @@ async def main():
     except KeyboardInterrupt:
         logger.info("Остановка бота...")
     finally:
+        otc_service.stop()
+        otc_watchdog_task.cancel()
         watch_service.stop()
         auto_signal_service.stop()
         watch_task.cancel()
-        tasks = [watch_task]
+        tasks = [watch_task, otc_watchdog_task]
         pump_service.stop()
         pump_task.cancel()
         tasks.append(pump_task)
