@@ -27,7 +27,7 @@ COMMANDS = [
 ]
 
 
-async def main(*, session_minutes=None):
+async def main(*, session_minutes=None, session_end=None):
     if not settings.telegram_bot_token:
         print("Не задан TELEGRAM_BOT_TOKEN. Заполните локальный .env по .env.example.")
         return 1
@@ -59,8 +59,12 @@ async def main(*, session_minutes=None):
             await service.start(
                 bot, settings.admin_chat_id, session_minutes, (60, 300, 900)
             )
+            if session_end is not None:
+                service.ends_at = min(service.ends_at, session_end)
             text = (
-                f"🧪 Условный режим · {session_minutes} мин. Прежние планы отменены."
+                "🧪 Обновлено. Сеанс продолжается до прежнего времени; будущие планы отменены."
+                if session_end is not None
+                else f"🧪 Условный режим · {session_minutes} мин. Прежние планы отменены."
                 if service.conditional_mode
                 else "🧪 Сеанс запущен. Контроль — раз в 2 минуты. /otc_stop — остановить."
             )
@@ -83,7 +87,14 @@ if __name__ == "__main__":
         choices=(0, 30, 60, 120, 240, 480),
         default=None,
     )
+    parser.add_argument("--otc-session-end", type=float, default=None)
     args = parser.parse_args()
+    if args.otc_session_end is not None and (
+        args.otc_session_minutes in (None, 0) or args.otc_session_end <= time.time()
+    ):
+        parser.error(
+            "session end requires a finite active session and a future timestamp"
+        )
     logging.basicConfig(
         level=settings.log_level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -101,7 +112,12 @@ if __name__ == "__main__":
         raise SystemExit(2)
     try:
         try:
-            code = asyncio.run(main(session_minutes=args.otc_session_minutes))
+            code = asyncio.run(
+                main(
+                    session_minutes=args.otc_session_minutes,
+                    session_end=args.otc_session_end,
+                )
+            )
         except KeyboardInterrupt:
             code = 0
         except Exception as exc:

@@ -8,6 +8,7 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config.settings import ROOT, settings
+from services.otc_cycles import format_cycles, read_stats
 from services.otc_evaluation import compact_stats
 from services.otc_market import TIMEFRAMES
 
@@ -135,15 +136,22 @@ async def stats(message: types.Message):
     await message.answer("Выбери экспирацию:", reply_markup=stats_menu(period))
 
 
-def stats_menu(period="all"):
+def stats_menu(period="all", cycles=False):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=f"M{m}", callback_data=f"otc:stats:{m}:{period}"
+                    text=f"M{m}",
+                    callback_data=f"otc:{'cycles' if cycles else 'stats'}:{m}:{period}",
                 )
                 for m in (1, 5, 15)
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Обычные" if cycles else "Циклы · 3 перекрытия",
+                    callback_data=f"otc:{'stats' if cycles else 'cycles'}",
+                )
+            ],
         ]
     )
 
@@ -172,10 +180,13 @@ async def callback(query: types.CallbackQuery):
         return
     action = parts[1]
     chat = query.message.chat.id
-    if action == "stats":
+    if action in ("stats", "cycles"):
+        cycles = action == "cycles"
         if len(parts) == 2:
             await query.answer()
-            await query.message.answer("Выбери экспирацию:", reply_markup=stats_menu())
+            await query.message.answer(
+                "Выбери экспирацию:", reply_markup=stats_menu(cycles=cycles)
+            )
         elif (
             len(parts) == 4
             and parts[2] in ("1", "5", "15")
@@ -189,9 +200,17 @@ async def callback(query: types.CallbackQuery):
             rows = await asyncio.to_thread(
                 service.db.virtual_stats, since, int(parts[2]) * 60
             )
-            text = compact_stats(rows, int(parts[2]))
+            if cycles:
+                cycle_stats = await asyncio.to_thread(
+                    read_stats, service.db, int(parts[2]) * 60, since
+                )
+                text = format_cycles(cycle_stats, int(parts[2]))
+            else:
+                text = compact_stats(rows, int(parts[2]))
             if query.message.text != text:
-                await query.message.edit_text(text, reply_markup=stats_menu(parts[3]))
+                await query.message.edit_text(
+                    text, reply_markup=stats_menu(parts[3], cycles=cycles)
+                )
         else:
             await query.answer("Недопустимый выбор")
         return
