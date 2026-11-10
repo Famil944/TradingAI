@@ -1,0 +1,4 @@
+# Optional offline research only; not required by the running Telegram bot.
+xgboost==3.4.1
+scikit-learn==1.9.1
+numpy==2.5.4
