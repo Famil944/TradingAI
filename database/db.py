@@ -45,7 +45,15 @@ class Database:
             conditional_missing = not conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='otc_conditional_plans'"
             ).fetchone()
-            if old_tables and (not exists or nullable_migration or conditional_missing):
+            assessment_missing = not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='otc_plan_assessments'"
+            ).fetchone()
+            if old_tables and (
+                not exists
+                or nullable_migration
+                or conditional_missing
+                or assessment_missing
+            ):
                 backup = self.db_path.with_name(
                     self.db_path.name + f".backup-{time.time_ns()}"
                 )
@@ -107,6 +115,12 @@ class Database:
               delivery TEXT NOT NULL DEFAULT 'PENDING', lifecycle TEXT NOT NULL DEFAULT 'ACTIVE',
               outcome TEXT NOT NULL DEFAULT 'UNKNOWN',
               UNIQUE(symbol,entry_at,strategy)
+            );
+            CREATE TABLE IF NOT EXISTS otc_plan_assessments (
+              plan_id TEXT PRIMARY KEY, assessed_at REAL NOT NULL,
+              outcome TEXT NOT NULL, condition_result TEXT NOT NULL,
+              entry_price REAL, expiry_price REAL, source TEXT NOT NULL,
+              reason TEXT NOT NULL, evidence TEXT NOT NULL, notified_at REAL
             );
             CREATE TABLE IF NOT EXISTS otc_journal_events (
               id INTEGER PRIMARY KEY, at REAL NOT NULL, symbol TEXT, reason TEXT NOT NULL
@@ -178,13 +192,86 @@ class Database:
         with self.connect() as c:
             if cancel:
                 c.execute(
-                    "UPDATE otc_conditional_plans SET lifecycle='CANCELLED' WHERE lifecycle='ACTIVE'"
+                    "UPDATE otc_conditional_plans SET lifecycle='CANCELLED' WHERE lifecycle='ACTIVE' AND entry_at>?",
+                    (now,),
+                )
+                c.execute(
+                    "UPDATE otc_conditional_plans SET lifecycle='EXPIRED' WHERE lifecycle='ACTIVE' AND expires_at<=?",
+                    (now,),
                 )
             else:
                 c.execute(
                     "UPDATE otc_conditional_plans SET lifecycle='EXPIRED' WHERE lifecycle='ACTIVE' AND expires_at<=?",
                     (now,),
                 )
+
+    def assessment_targets(self, now):
+        with self.connect() as c:
+            return [
+                dict(r)
+                for r in c.execute(
+                    """SELECT p.* FROM otc_conditional_plans p
+              LEFT JOIN otc_plan_assessments a ON a.plan_id=p.id WHERE a.plan_id IS NULL
+              AND (p.lifecycle='CANCELLED' OR p.delivery IN ('FAILED','LATE') OR p.expires_at+65<=?)
+              ORDER BY p.expires_at LIMIT 500""",
+                    (now,),
+                )
+            ]
+
+    def assess_plan(self, identifier, result, now):
+        with self.connect() as c:
+            cursor = c.execute(
+                """INSERT OR IGNORE INTO otc_plan_assessments
+              (plan_id,assessed_at,outcome,condition_result,entry_price,expiry_price,source,reason,evidence)
+              VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    identifier,
+                    now,
+                    result["outcome"],
+                    result["condition"],
+                    result.get("entry_price"),
+                    result.get("expiry_price"),
+                    "otcharts_virtual_v1",
+                    result["reason"],
+                    json.dumps(result.get("evidence", {}), allow_nan=False),
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def assessment_notifications(self, since):
+        with self.connect() as c:
+            return [
+                dict(r)
+                for r in c.execute(
+                    """SELECT a.*,p.symbol,p.entry_at,p.expires_at FROM otc_plan_assessments a
+            JOIN otc_conditional_plans p ON p.id=a.plan_id WHERE a.notified_at IS NULL AND p.expires_at>=?
+            ORDER BY a.assessed_at LIMIT 3""",
+                    (since,),
+                )
+            ]
+
+    def assessment_notified(self, identifiers, now):
+        with self.connect() as c:
+            c.executemany(
+                "UPDATE otc_plan_assessments SET notified_at=? WHERE plan_id=?",
+                [(now, i) for i in identifiers],
+            )
+
+    def virtual_stats(self, since=0):
+        with self.connect() as c:
+            return [
+                dict(r)
+                for r in c.execute(
+                    """SELECT p.strategy,COUNT(*) total,
+              SUM(a.outcome='WIN') wins,SUM(a.outcome='LOSS') losses,SUM(a.outcome='DRAW') draws,
+              SUM(a.outcome='SKIPPED') skipped,SUM(a.outcome='UNKNOWN') unknown,
+              SUM(a.outcome='CANCELLED') cancelled,SUM(a.outcome='NOT_DELIVERED') not_delivered,
+              SUM(a.plan_id IS NULL) pending
+              FROM otc_conditional_plans p LEFT JOIN otc_plan_assessments a ON a.plan_id=p.id
+              WHERE p.created_at>=? GROUP BY p.strategy""",
+                    (since,),
+                )
+            ]
 
     def plan_stats(self, since=0):
         with self.connect() as c:

@@ -8,6 +8,8 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config.settings import ROOT, settings
+from database.db import Database
+from services.otc_evaluation import format_stats as format_virtual_stats
 from services.otc_market import TIMEFRAMES
 from services.otc_statistics import format_stats
 
@@ -150,14 +152,16 @@ async def stats(message: types.Message):
         return
     since = time.time() - durations[period] if durations[period] else 0
     rows = await asyncio.to_thread(service.db.stats, since)
-    await message.answer(format_stats(rows, period))
-    plans = await asyncio.to_thread(service.db.plan_stats, since)
-    if plans["total"]:
-        await message.answer(
-            f"Условные планы отдельно: {plans['total']}; доставлено вовремя {plans['sent'] or 0}; "
-            f"поздно {plans['late'] or 0}; ошибки доставки {plans['failed'] or 0}. "
-            "Факт выполнения условия и ручного входа неизвестен; win rate по этим планам не рассчитывается."
-        )
+    if rows:
+        await message.answer(format_stats(rows, period))
+    virtual = await asyncio.to_thread(service.db.virtual_stats, since)
+    await message.answer(format_virtual_stats(virtual, "Основной бот"))
+    observer_path = ROOT / "data" / "observer.db"
+    if observer_path.exists():
+        observer = Database(observer_path)
+        await asyncio.to_thread(observer.init_db)
+        comparison = await asyncio.to_thread(observer.virtual_stats, since)
+        await message.answer(format_virtual_stats(comparison, "Наблюдатель"))
 
 
 @router.message(Command("otc_diagnostics"))

@@ -9,10 +9,11 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 
 from bot import otc_commands
-from config.settings import settings
+from config.settings import ROOT, settings
 from core.logging import SecretFormatter
 from core.single_instance import SingleInstance
 from database.db import Database
+from services.otc_evaluation import configured as configured_evaluator
 from services.otc_session import OTCSession
 
 COMMANDS = [
@@ -42,6 +43,8 @@ async def main(*, session_minutes=None):
     bot = Bot(token=settings.telegram_bot_token)
     dp = Dispatcher()
     dp.include_router(otc_commands.router)
+    evaluator = configured_evaluator(db, bot, settings, ROOT)
+    evaluation_task = asyncio.create_task(evaluator.run())
     try:
         await bot.set_my_commands(
             [BotCommand(command=c, description=d) for c, d in COMMANDS]
@@ -64,6 +67,8 @@ async def main(*, session_minutes=None):
             await service._notify(bot, text)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        evaluation_task.cancel()
+        await asyncio.gather(evaluation_task, return_exceptions=True)
         await service.stop()
         await service.provider.close()
         await bot.session.close()
