@@ -647,6 +647,11 @@ class OTCSession:
                                 del values[:-1200]
                             asset = active.get(tick.symbol)
                             now = self.clock()
+                            if tick.symbol in getattr(
+                                self.provider, "closed_symbols", set()
+                            ):
+                                await self._event("instrument_closed", tick.symbol)
+                                continue
                             if not asset or not self._eligible(
                                 [asset], now, self.config.payout_max_age
                             ):
@@ -753,6 +758,16 @@ class OTCSession:
             and 0 <= asset.payout <= 100
             else None
         )
+        if context.evidence is not None:
+            context.evidence["market"] = {
+                "source": "otcharts_catalogue",
+                "name": getattr(asset, "name", None),
+                "open": asset.open,
+                "payout": payout,
+                "observed_at": getattr(asset, "observed_at", None),
+                "payout_at": asset.payout_at,
+                "entry_payout_guaranteed": False,
+            }
         identifier = await db_call(
             self.db.prepare_plan,
             plan,
@@ -773,7 +788,10 @@ class OTCSession:
                 min(10, max(0.1, plan.delivery_deadline - self.clock()))
             ):
                 await bot.send_message(
-                    self.chat_id, conditional_message(plan, identifier, payout)
+                    self.chat_id,
+                    conditional_message(
+                        plan, identifier, payout, name=getattr(asset, "name", None)
+                    ),
                 )
         except Exception:
             await db_call(self.db.plan_delivered, identifier, self.clock(), False)

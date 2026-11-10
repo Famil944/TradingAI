@@ -207,7 +207,7 @@ def display_symbol(symbol):
     return names.get(symbol, symbol)
 
 
-def message(plan, identifier, payout=None, *, compact=True):
+def message(plan, identifier, payout=None, *, compact=True, name=None):
     def clock(at):
         return datetime.fromtimestamp(at, MOSCOW).strftime("%H:%M:%S")
 
@@ -228,7 +228,9 @@ def message(plan, identifier, payout=None, *, compact=True):
         sign = ">" if plan.setup.direction == "UP" else "<"
         direction_short = "ВВЕРХ" if plan.setup.direction == "UP" else "ВНИЗ"
         return (
-            f"🧪 {display_symbol(plan.symbol)}\n"
+            f"🧪 {name or display_symbol(plan.symbol)}"
+            + (f" · {payout:g}% сейчас" if payout is not None else " · выплата ?")
+            + "\n"
             f"Вход {direction_short} — {clock(plan.entry_at)} МСК · 1 мин\n"
             f"Если свеча {clock(plan.condition_from)}–{clock(plan.entry_at)} {colour_short}, закрытие {sign} {plan.setup.invalidation:.8g}\n"
             f"Иначе — ПРОПУСК. Получить до {clock(plan.delivery_deadline)}."

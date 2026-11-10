@@ -31,6 +31,8 @@ class Asset:
     open: bool | None
     payout: float | None
     payout_at: float | None
+    name: str | None = None
+    observed_at: float | None = None
 
 
 def eligible(instruments, now, max_age=60, *, research=False):
@@ -38,7 +40,14 @@ def eligible(instruments, now, max_age=60, *, research=False):
         # Unknown metadata is permitted for testing; a confirmed closure is not.
         return sorted(
             (a for a in instruments if a.is_otc is True and a.open is not False),
-            key=lambda a: a.symbol,
+            key=lambda a: (
+                0
+                if a.payout is not None
+                and math.isfinite(a.payout)
+                and 90 <= a.payout <= 100
+                else 1,
+                a.symbol,
+            ),
         )
 
     return sorted(

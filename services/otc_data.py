@@ -2,12 +2,14 @@
 
 SDK source and published metadata verified locally. Pocket Option timestamps are
 venue seconds at UTC+2, explicitly converted here, never inferred by proximity.
-The published Instrument has no payout timestamp and reports open=None for OTC:
-those observations are deliberately ineligible for signals.
+The live catalogue provides names, payouts and opening flags. Receipt time is
+recorded separately: the upstream API does not provide payout timestamps.
 """
 
 import asyncio
 import json
+import math
+import time
 from dataclasses import dataclass
 from importlib.metadata import version
 
@@ -60,6 +62,9 @@ class OTChartsProvider:
         self._owned = session is None
         self.connected = False
         self.payout_evidence = False
+        self.closed_symbols = set()
+        self.catalogue = {}
+        self.usage_snapshot = {}
 
     async def _http(self):
         if not self._key:
@@ -109,6 +114,7 @@ class OTChartsProvider:
 
     async def usage(self):
         d = await self._get("/v1/usage")
+        self.usage_snapshot = d
         req, streams = d.get("requests", {}), d.get("streams", {})
         return Plan(
             str(d.get("planName", "")),
@@ -125,6 +131,7 @@ class OTChartsProvider:
     async def symbols(self):
         d = await self._get("/v1/symbols", {"venue": "otc"})
         # No invented observation timestamp: response receipt is not payout age.
+        observed_at = time.time()
         result = []
         for a in d.get("symbols", []):
             payout = a.get("payout")
@@ -133,6 +140,14 @@ class OTChartsProvider:
                 if isinstance(payout, (float, int)) and not isinstance(payout, bool)
                 else None
             )
+            if payout is not None and (
+                not math.isfinite(payout) or not 0 <= payout <= 100
+            ):
+                payout = None
+            if a.get("open") is False:
+                self.closed_symbols.add(str(a["symbol"]))
+            elif a.get("open") is True:
+                self.closed_symbols.discard(str(a["symbol"]))
             result.append(
                 Asset(
                     str(a["symbol"]),
@@ -140,14 +155,19 @@ class OTChartsProvider:
                     a.get("open") if isinstance(a.get("open"), bool) else None,
                     payout,
                     None,
+                    a.get("name") if isinstance(a.get("name"), str) else None,
+                    observed_at,
                 )
             )
+        self.catalogue = {a.symbol: a for a in result}
         return result
 
     async def candles(self, symbol, now):
         d = await self._get(
             "/v1/candles", {"venue": "otc", "symbol": symbol, "tf": 60, "limit": 1200}
         )
+        if d.get("open") is False:
+            self.closed_symbols.add(symbol)
         rows = []
         for row in d.get("candles", []):
             try:
@@ -167,10 +187,21 @@ class OTChartsProvider:
                 timeout=timeout,
             ) as response:
                 self._check(response)
+                closed = response.headers.get("x-otc-closed", "")
+                self.closed_symbols.update(
+                    x.strip() for x in closed.split(",") if x.strip() in symbols
+                )
+                event = "message"
                 async for raw in response.content:
                     if len(raw) > 65536:
                         raise RetryableFeedError()
                     line = raw.decode("utf-8", "replace").strip()
+                    if not line:
+                        event = "message"
+                        continue
+                    if line.startswith("event:"):
+                        event = line[6:].strip()
+                        continue
                     if not line.startswith("data:"):
                         continue
                     try:
@@ -178,6 +209,10 @@ class OTChartsProvider:
                         symbol = str(
                             d.get("symbol", symbols[0] if len(symbols) == 1 else "")
                         )
+                        if event == "closed":
+                            if symbol in symbols:
+                                self.closed_symbols.add(symbol)
+                            continue
                         price = d.get("price", d.get("close"))
                         tick = Tick(symbol, venue_timestamp(d["time"]), float(price))
                     except (KeyError, ValueError, TypeError):
