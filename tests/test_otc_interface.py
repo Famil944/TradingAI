@@ -64,7 +64,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         commands.choices[1] = (300,)
-        keyboard = commands.menu(1)
+        keyboard = commands.menu(1, conditional=False)
         labels = [
             b.text
             for row in keyboard.inline_keyboard

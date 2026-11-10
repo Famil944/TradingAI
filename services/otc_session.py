@@ -10,6 +10,15 @@ from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from services.otc_conditional import (
+    make_plan,
+)
+from services.otc_conditional import (
+    message as conditional_message,
+)
+from services.otc_conditional import (
+    setup as conditional_setup,
+)
 from services.otc_data import AccessUnavailable, OTChartsProvider, RetryableFeedError
 from services.otc_market import TIMEFRAMES, MinuteBuilder, Tick, eligible, settle
 from services.otc_strategy import candidate, normalize_candles
@@ -56,7 +65,12 @@ class OTCSession:
         self.poll_requests_used = 0
         self.last_signal_at = None
         self.session_signal_count = 0
+        self.session_plan_count = 0
         self._health_counts = Counter()
+
+    @property
+    def conditional_mode(self):
+        return getattr(self.config, "signal_mode", "immediate") == "conditional"
 
     @property
     def test_mode(self):
@@ -86,7 +100,7 @@ class OTCSession:
             if self.running():
                 return False
             self.chat_id = chat_id
-            self.timeframes = tuple(timeframes)
+            self.timeframes = (60,) if self.conditional_mode else tuple(timeframes)
             self.ends_at = self.clock() + minutes * 60 if minutes else None
             self.last_tick = None
             self._quotes.clear()
@@ -95,6 +109,7 @@ class OTCSession:
             self.poll_requests_used = 0
             self.last_signal_at = None
             self.session_signal_count = 0
+            self.session_plan_count = 0
             self._health_counts.clear()
             self.available = 0
             self.phase = "подключение"
@@ -118,6 +133,7 @@ class OTCSession:
                 await self.provider.close()
                 if self.db:
                     await db_call(self.db.recover)
+                    await db_call(self.db.close_plans, self.clock(), cancel=True)
             return True
 
     def status(self):
@@ -145,7 +161,8 @@ class OTCSession:
             else "нет данных"
         )
         return (
-            f"OTC: {phase}\nРежим: {'тестовый — выплата/открытие могут быть неизвестны' if self.test_mode else 'строгий — открытие и выплата ≥90% подтверждены'}"
+            f"OTC: {phase}\nСигналы: {'условные планы: вход через 3 минуты, экспирация M1' if self.conditional_mode else 'обычный режим'}; планов за сеанс {self.session_plan_count}"
+            f"\nРежим: {'тестовый — выплата/открытие могут быть неизвестны' if self.test_mode else 'строгий — открытие и выплата ≥90% подтверждены'}"
             f"\nДанные: { {'snapshot': 'снимки свечей без live-потока', 'live': 'поток', 'pending': 'ещё не определены (проверка доступа)'}.get(self.transport, 'нет данных') }\nЭкспирации: {', '.join(f'M{x // 60}' for x in self.timeframes)}"
             f"\nСигналов за сеанс: {self.session_signal_count}; пауза по паре/экспирации {self.config.cooldown_seconds} с."
             f"\nДо: {end}\nОтслеживается: {monitored} из {self.available}.\n{'С закрытия свечи' if self.transport == 'snapshot' else 'Возраст котировки'}: {age}"
@@ -193,6 +210,12 @@ class OTCSession:
             "late_signal": "запоздалый расчёт",
             "unknown_or_stale_payout": "нет подтверждённой выплаты",
             "stale_snapshot": "старый снимок свечей",
+            "conditional_no_setup": "контекст для условного плана не сформирован",
+            "conditional_pending_or_cooldown": "уже есть план или действует пауза",
+            "conditional_too_late_or_session_ending": "недостаточно запаса времени до входа/конца сеанса",
+            "conditional_stale_data": "устаревшие данные для плана",
+            "conditional_delivery_failed": "ошибка доставки плана",
+            "conditional_delivery_late": "поздняя доставка плана — пропуск",
         }
         lines = []
         for reason, count in counts.most_common(4):
@@ -228,6 +251,8 @@ class OTCSession:
         while True:
             await asyncio.sleep(1)
             if self.db:
+                if self.conditional_mode:
+                    await db_call(self.db.close_plans, self.clock())
                 for row in await db_call(self.db.pending):
                     if (
                         self.clock()
@@ -280,6 +305,7 @@ class OTCSession:
             try:
                 if self.db:
                     await db_call(self.db.recover)
+                    await db_call(self.db.close_plans, self.clock(), cancel=True)
             finally:
                 await self.provider.close()
 
@@ -426,18 +452,21 @@ class OTCSession:
                     elif seen != closed_at:
                         seen = closed_at
                         tick = Tick(asset.symbol, closed_at, bars[-1].close)
-                        for seconds in self.timeframes:
-                            if closed_at % seconds:
-                                continue
-                            result = candidate(bars, seconds, closed_at)
-                            if result:
-                                await self._send(
-                                    bot, tick, asset, seconds, result, closed_at
-                                )
-                            else:
-                                await self._event(
-                                    f"no_candidate_M{seconds // 60}", asset.symbol
-                                )
+                        if self.conditional_mode:
+                            await self._consider_plan(bot, bars, tick, asset, closed_at)
+                        else:
+                            for seconds in self.timeframes:
+                                if closed_at % seconds:
+                                    continue
+                                result = candidate(bars, seconds, closed_at)
+                                if result:
+                                    await self._send(
+                                        bot, tick, asset, seconds, result, closed_at
+                                    )
+                                else:
+                                    await self._event(
+                                        f"no_candidate_M{seconds // 60}", asset.symbol
+                                    )
             except (AccessUnavailable, asyncio.CancelledError):
                 raise
             except Exception as exc:
@@ -545,6 +574,11 @@ class OTCSession:
                             await self._event("unknown_or_stale_payout", tick.symbol)
                             continue
                         closed_at = bar.time + 60
+                        if self.conditional_mode:
+                            await self._consider_plan(
+                                bot, values, tick, asset, closed_at
+                            )
+                            continue
                         if (
                             tick.time - closed_at > 2
                             or now - tick.time > self.config.max_tick_age
@@ -604,6 +638,62 @@ class OTCSession:
                 refreshed = self.clock()
                 for symbol in chosen:
                     history[symbol] = await self.provider.candles(symbol, self.clock())
+
+    async def _consider_plan(self, bot, history, tick, asset, closed_at):
+        now = self.clock()
+        if not 0 <= now - tick.time <= self._price_max_age() or not self._eligible(
+            [asset], now, self.config.payout_max_age
+        ):
+            await self._event("conditional_stale_data", tick.symbol)
+            return
+        context = conditional_setup(history, closed_at)
+        if context is None:
+            await self._event("conditional_no_setup", tick.symbol)
+            return
+        plan = make_plan(tick.symbol, closed_at, context, now, self.ends_at)
+        if plan is None:
+            await self._event("conditional_too_late_or_session_ending", tick.symbol)
+            return
+        payout = (
+            asset.payout
+            if isinstance(asset.payout, (int, float))
+            and not isinstance(asset.payout, bool)
+            and math.isfinite(asset.payout)
+            and 0 <= asset.payout <= 100
+            else None
+        )
+        identifier = await db_call(
+            self.db.prepare_plan,
+            plan,
+            now,
+            payout,
+            asset.payout_at,
+            cooldown=self.config.cooldown_seconds,
+        )
+        if identifier is None:
+            await self._event("conditional_pending_or_cooldown", tick.symbol)
+            return
+        if self.clock() > plan.delivery_deadline:
+            await db_call(self.db.plan_delivered, identifier, self.clock(), False)
+            return
+        try:
+            async with asyncio.timeout(
+                min(10, max(0.1, plan.delivery_deadline - self.clock()))
+            ):
+                await bot.send_message(
+                    self.chat_id, conditional_message(plan, identifier, payout)
+                )
+        except Exception:
+            await db_call(self.db.plan_delivered, identifier, self.clock(), False)
+            await self._event("conditional_delivery_failed", tick.symbol)
+            return
+        sent = self.clock()
+        await db_call(self.db.plan_delivered, identifier, sent, True)
+        if sent <= plan.delivery_deadline:
+            self.session_plan_count += 1
+            self.last_signal_at = sent
+        else:
+            await self._event("conditional_delivery_late", tick.symbol)
 
     async def _send(self, bot, tick, asset, seconds, result, closed_at):
         now = self.clock()

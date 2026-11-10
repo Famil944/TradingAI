@@ -42,7 +42,10 @@ class Database:
             nullable_migration = any(
                 r["name"] in ("payout", "payout_at") and r["notnull"] for r in columns
             )
-            if old_tables and (not exists or nullable_migration):
+            conditional_missing = not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='otc_conditional_plans'"
+            ).fetchone()
+            if old_tables and (not exists or nullable_migration or conditional_missing):
                 backup = self.db_path.with_name(
                     self.db_path.name + f".backup-{time.time_ns()}"
                 )
@@ -95,6 +98,16 @@ class Database:
             );
             UPDATE otc_journal_meta SET version=2;
             CREATE INDEX IF NOT EXISTS otc_pending_idx ON otc_journal_signals(outcome,symbol,expires_at);
+            CREATE TABLE IF NOT EXISTS otc_conditional_plans (
+              id TEXT PRIMARY KEY, symbol TEXT NOT NULL, strategy TEXT NOT NULL,
+              created_at REAL NOT NULL, setup_at REAL NOT NULL, entry_at REAL NOT NULL,
+              expires_at REAL NOT NULL, condition_from REAL NOT NULL, delivery_deadline REAL NOT NULL,
+              direction TEXT NOT NULL, colour TEXT NOT NULL, invalidation REAL NOT NULL,
+              reason TEXT NOT NULL, payout REAL, payout_at REAL, sent_at REAL,
+              delivery TEXT NOT NULL DEFAULT 'PENDING', lifecycle TEXT NOT NULL DEFAULT 'ACTIVE',
+              outcome TEXT NOT NULL DEFAULT 'UNKNOWN',
+              UNIQUE(symbol,entry_at,strategy)
+            );
             CREATE TABLE IF NOT EXISTS otc_journal_events (
               id INTEGER PRIMARY KEY, at REAL NOT NULL, symbol TEXT, reason TEXT NOT NULL
             );
@@ -105,6 +118,77 @@ class Database:
               delay REAL NOT NULL, deviation REAL NOT NULL, evidence TEXT NOT NULL
             );
             """)
+
+    def prepare_plan(self, plan, now, payout=None, payout_at=None, cooldown=120):
+        from services.otc_conditional import STRATEGY
+
+        identifier = str(uuid.uuid4())
+        if now > plan.delivery_deadline:
+            return None
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            active = c.execute(
+                "SELECT 1 FROM otc_conditional_plans WHERE symbol=? AND lifecycle='ACTIVE' AND expires_at>?",
+                (plan.symbol, now),
+            ).fetchone()
+            last = c.execute(
+                "SELECT MAX(created_at) FROM otc_conditional_plans"
+            ).fetchone()[0]
+            if active or (last is not None and now - last < cooldown):
+                return None
+            try:
+                c.execute(
+                    """INSERT INTO otc_conditional_plans
+                (id,symbol,strategy,created_at,setup_at,entry_at,expires_at,condition_from,delivery_deadline,direction,colour,invalidation,reason,payout,payout_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        identifier,
+                        plan.symbol,
+                        STRATEGY,
+                        now,
+                        plan.setup_at,
+                        plan.entry_at,
+                        plan.expires_at,
+                        plan.condition_from,
+                        plan.delivery_deadline,
+                        plan.setup.direction,
+                        plan.setup.colour,
+                        plan.setup.invalidation,
+                        plan.setup.reason,
+                        payout,
+                        payout_at,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                return None
+        return identifier
+
+    def plan_delivered(self, identifier, at, success):
+        with self.connect() as c:
+            c.execute(
+                "UPDATE otc_conditional_plans SET sent_at=?, delivery=CASE WHEN ?=0 THEN 'FAILED' WHEN ?>delivery_deadline THEN 'LATE' ELSE 'SENT' END WHERE id=?",
+                (at, int(success), at, identifier),
+            )
+
+    def close_plans(self, now, cancel=False):
+        with self.connect() as c:
+            if cancel:
+                c.execute(
+                    "UPDATE otc_conditional_plans SET lifecycle='CANCELLED' WHERE lifecycle='ACTIVE'"
+                )
+            else:
+                c.execute(
+                    "UPDATE otc_conditional_plans SET lifecycle='EXPIRED' WHERE lifecycle='ACTIVE' AND expires_at<=?",
+                    (now,),
+                )
+
+    def plan_stats(self, since=0):
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT COUNT(*) total,SUM(delivery='SENT') sent,SUM(delivery='LATE') late,SUM(delivery='FAILED') failed,SUM(lifecycle='ACTIVE') active FROM otc_conditional_plans WHERE created_at>=?",
+                (since,),
+            ).fetchone()
+            return dict(row)
 
     def event(self, reason, symbol=None, at=None):
         with self.connect() as c:

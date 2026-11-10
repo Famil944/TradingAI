@@ -46,7 +46,9 @@ def allowed(chat_id):
     return settings.admin_chat_id > 0 and chat_id == settings.admin_chat_id
 
 
-def menu(chat_id):
+def menu(chat_id, conditional=None):
+    if conditional is None:
+        conditional = getattr(settings, "signal_mode", "immediate") == "conditional"
     chosen = choices.get(chat_id, TIMEFRAMES)
     buttons = []
     for key, label, value in [
@@ -61,7 +63,17 @@ def menu(chat_id):
                 callback_data=f"otc:tf:{key}",
             )
         )
-    rows = [[buttons[0]], buttons[1:]]
+    rows = (
+        [
+            [
+                InlineKeyboardButton(
+                    text="✅ Условный вход · экспирация M1", callback_data="otc:tf:1"
+                )
+            ]
+        ]
+        if conditional
+        else [[buttons[0]], buttons[1:]]
+    )
     for pair in [
         [(30, "30 минут"), (60, "1 час")],
         [(120, "2 часа"), (240, "4 часа")],
@@ -84,6 +96,17 @@ def menu(chat_id):
 
 @router.message(Command("start", "help", "otc"))
 async def show_menu(message: types.Message):
+    if getattr(settings, "signal_mode", "immediate") == "conditional":
+        await message.answer(
+            "УСЛОВНЫЕ ПЛАНЫ · ЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ.\n"
+            "Бот заранее указывает вход примерно через 3 минуты и экспирацию M1. "
+            "Ты сам проверяешь цвет указанной свечи на Pocket Option и уровень отмены. "
+            "Второго подтверждения ждать не нужно. Позднее сообщение или невыполненное условие — пропуск. "
+            "Остановка/перезапуск отменяют прежние планы.\n"
+            "/otc_status — статус; /otc_stop — остановить; /otc_stats — журнал.\nВыбери длительность.",
+            reply_markup=menu(message.chat.id),
+        )
+        return
     await message.answer(
         "Pocket Option OTC · исследовательские сигналы M1/M5/M15.\n"
         "ЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ. Автоматических сделок нет.\n"
@@ -102,7 +125,10 @@ async def status(message: types.Message):
 @router.message(Command("otc_stop"))
 async def stop(message: types.Message):
     stopped = await service.stop()
-    await message.answer("OTC остановлен." if stopped else "OTC уже остановлен.")
+    await message.answer(
+        ("OTC остановлен." if stopped else "OTC уже остановлен.")
+        + " Все прежние условные планы отменены."
+    )
 
 
 @router.message(Command("otc_stats"))
@@ -116,6 +142,13 @@ async def stats(message: types.Message):
     since = time.time() - durations[period] if durations[period] else 0
     rows = await asyncio.to_thread(service.db.stats, since)
     await message.answer(format_stats(rows, period))
+    plans = await asyncio.to_thread(service.db.plan_stats, since)
+    if plans["total"]:
+        await message.answer(
+            f"Условные планы отдельно: {plans['total']}; доставлено вовремя {plans['sent'] or 0}; "
+            f"поздно {plans['late'] or 0}; ошибки доставки {plans['failed'] or 0}. "
+            "Факт выполнения условия и ручного входа неизвестен; win rate по этим планам не рассчитывается."
+        )
 
 
 @router.message(Command("otc_diagnostics"))
@@ -143,6 +176,14 @@ async def callback(query: types.CallbackQuery):
     action = parts[1]
     chat = query.message.chat.id
     if action == "tf" and len(parts) == 3 and parts[2] in ("all", "1", "5", "15"):
+        if (
+            getattr(settings, "signal_mode", "immediate") == "conditional"
+            and parts[2] != "1"
+        ):
+            await query.answer(
+                "Сейчас условный режим с экспирацией M1", show_alert=True
+            )
+            return
         choices[chat] = TIMEFRAMES if parts[2] == "all" else (int(parts[2]) * 60,)
         await query.answer("Экспирации выбраны")
         await query.message.edit_reply_markup(reply_markup=menu(chat))

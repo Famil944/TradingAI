@@ -52,12 +52,21 @@ class Settings:
             0, int(os.getenv("OTC_HEALTH_REPORT_SECONDS", "120"))
         )
     )
+    signal_mode: str = field(
+        default_factory=lambda: (
+            os.getenv("OTC_SIGNAL_MODE", "immediate").strip().lower()
+        )
+    )
     snapshot_max_age: float = 30.0
     max_tick_age: float = 8.0
     max_tick_gap: float = 8.0
     stream_stale_timeout: float = 15.0
     payout_max_age: float = 60.0
     settlement_tolerance: float = 2.0
+
+    def __post_init__(self):
+        if self.signal_mode not in ("immediate", "conditional"):
+            raise ValueError("OTC_SIGNAL_MODE must be immediate or conditional")
 
 
 settings = Settings()

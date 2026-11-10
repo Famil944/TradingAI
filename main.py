@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import logging
+import time
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
@@ -35,6 +36,7 @@ async def main(*, session_minutes=None):
     db = Database()
     await asyncio.to_thread(db.init_db)
     await asyncio.to_thread(db.recover)
+    await asyncio.to_thread(db.close_plans, time.time(), cancel=True)
     service = OTCSession(db=db)
     otc_commands.service = service
     bot = Bot(token=settings.telegram_bot_token)
@@ -54,12 +56,17 @@ async def main(*, session_minutes=None):
             await service.start(
                 bot, settings.admin_chat_id, session_minutes, (60, 300, 900)
             )
-            await service._notify(
-                bot,
-                "Тестовый сеанс запущен: M1/M5/M15, до 5 инструментов в пределах тарифа. "
+            text = (
+                "Условный режим запущен на 30 минут. Прежние планы отменены. "
+                "План заранее: точное время входа примерно через 3 минуты, экспирация M1, цвет контрольной свечи и уровень отмены. "
+                "Условие проверяешь сам на платформе; второго подтверждения не будет. Поздний вход — пропуск. "
+                "Планы экспериментальные, сделок бот не открывает. /otc_stop — остановить."
+                if service.conditional_mode
+                else "Тестовый сеанс запущен: M1/M5/M15, до 5 инструментов в пределах тарифа. "
                 "Пауза по паре/экспирации 2 минуты. Если сигнала нет, контроль работы приходит раз в 2 минуты. "
-                "Сигнал по расписанию не гарантируется. /otc_stop — остановить.",
+                "Сигнал по расписанию не гарантируется. /otc_stop — остановить."
             )
+            await service._notify(bot, text)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
         await service.stop()
