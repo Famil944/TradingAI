@@ -57,6 +57,7 @@ class Settings:
             os.getenv("OTC_SIGNAL_MODE", "immediate").strip().lower()
         )
     )
+    require_paid_metadata: bool = True
     snapshot_max_age: float = 30.0
     max_tick_age: float = 8.0
     max_tick_gap: float = 8.0

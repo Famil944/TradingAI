@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from database.db import Database
 from services.otc_conditional import (
@@ -240,7 +240,16 @@ class ConditionalSessionTests(unittest.IsolatedAsyncioTestCase):
 
         provider.ticks = stream
         try:
-            await self.session.start(self.bot, 1, 30, (300, 900))
+            with patch(
+                "services.otc_session.conditional_setup",
+                return_value=Setup("UP", "red", 0.5, "transport fixture"),
+            ):
+                await self.session.start(self.bot, 1, 30, (300, 900))
+                await asyncio.wait_for(sent.wait(), 10)
+                for _ in range(100):
+                    if self.db.plan_stats()["sent"] == 2:
+                        break
+                    await asyncio.sleep(0.02)
             await asyncio.wait_for(sent.wait(), 10)
             self.assertEqual(self.session.timeframes, (300, 900))
             self.assertIn("Если свеча", self.bot.send_message.call_args.args[1])
@@ -314,7 +323,7 @@ class ConditionalSessionTests(unittest.IsolatedAsyncioTestCase):
         await self.session._poll(self.bot, await self.provider.usage())
         self.session._wait_poll.assert_awaited_once()
         self.assertEqual(self.provider.candles.await_count, 2)
-        self.assertEqual(self.db.plan_stats()["total"], 3)
+        self.assertEqual(self.db.plan_stats()["total"], 1)
 
 
 if __name__ == "__main__":

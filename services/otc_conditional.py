@@ -89,14 +89,66 @@ def setup(minutes, closed_at):
     return None
 
 
-def context_setup(minutes, closed_at):
+def context_setup(minutes, closed_at, seconds=60):
     """Choose a hypothesis from observed context, never guess the future colour."""
     from services.otc_ml.features import FEATURE_NAMES, indicators
 
-    base = setup(minutes, closed_at)
+    if seconds not in (60, 300, 900):
+        raise ValueError("Unsupported timeframe")
+    minutes = [b for b in minutes if b.time + 60 <= closed_at]
+    if seconds == 60:
+        base = setup(minutes, closed_at)
+        bars = minutes
+    else:
+        bars = [b for b in aggregate(minutes, seconds) if b.time + seconds <= closed_at]
+        if len(bars) < 60 or not 0 <= closed_at - bars[-1].time - seconds < seconds:
+            return None
+        if any(b.time - a.time != seconds for a, b in zip(bars[-60:], bars[-59:])):
+            return None
+        prices = [b.close for b in bars]
+        fast, slow, prior = ema(prices, 20), ema(prices, 50), ema(prices[:-3], 20)
+        strength, oscillator = atr(bars), rsi(prices)
+        if (
+            not strength
+            or abs(fast - slow) < 0.10 * strength
+            or bars[-1].high - bars[-1].low > 2.5 * strength
+        ):
+            return None
+        # M1 only refines entry alignment; it cannot replace the higher-frame trend.
+        minute_prices = [b.close for b in minutes]
+        if len(minute_prices) < 50:
+            return None
+        micro_fast, micro_slow = ema(minute_prices, 20), ema(minute_prices, 50)
+        if (
+            fast > slow
+            and fast - prior >= 0.05 * strength
+            and prices[-1] > slow
+            and 42 <= oscillator <= 70
+            and micro_fast > micro_slow
+        ):
+            base = Setup(
+                "UP",
+                "red",
+                min(slow, min(b.low for b in bars[-5:])) - 0.25 * strength,
+                f"Тренд M{seconds // 60}, согласование M1",
+            )
+        elif (
+            fast < slow
+            and prior - fast >= 0.05 * strength
+            and prices[-1] < slow
+            and 30 <= oscillator <= 58
+            and micro_fast < micro_slow
+        ):
+            base = Setup(
+                "DOWN",
+                "green",
+                max(slow, max(b.high for b in bars[-5:])) + 0.25 * strength,
+                f"Тренд M{seconds // 60}, согласование M1",
+            )
+        else:
+            return None
     if base is None:
         return None
-    bars = [b for b in minutes if b.time + 60 <= closed_at]
     feature_values = indicators(bars[-250:])
     if feature_values is None:
         return None
@@ -154,10 +206,12 @@ def context_setup(minutes, closed_at):
         base.direction,
         colour,
         base.invalidation,
-        f"{description}; RSI {100 * f['rsi14']:.1f}, ADX {100 * f['adx14']:.1f}. Гипотеза, преимущество не доказано.",
-        f"{CONTEXT_STRATEGY}:{kind}:{base.direction}:{colour}",
+        f"{description if seconds == 60 else description.replace('M1/M5', f'M{seconds // 60}')}; RSI {100 * f['rsi14']:.1f}, ADX {100 * f['adx14']:.1f}. Гипотеза, преимущество не доказано.",
+        f"{CONTEXT_STRATEGY if seconds == 60 else 'conditional-timeframe-v3'}:{kind}:{base.direction}:{colour}",
         {
             "known_asof": closed_at,
+            "analysis_timeframe": seconds,
+            "condition_timeframe": seconds,
             "last_closed_candle": asdict(last),
             "previous_closed_candle": asdict(previous),
             "features": f,
@@ -173,9 +227,13 @@ def make_plan(symbol, closed_at, context, now, session_end=None, *, seconds=60):
         raise ValueError("Unsupported expiration")
     if closed_at % 60 or not 0 <= now - closed_at <= 30:
         return None
-    entry = closed_at + 180
+    entry = (
+        ((closed_at + 180 + seconds - 1) // seconds) * seconds
+        if seconds > 60
+        else closed_at + 180
+    )
     plan = Plan(
-        symbol, closed_at, entry, entry + seconds, entry - 60, entry - 120, context
+        symbol, closed_at, entry, entry + seconds, entry - seconds, entry - 120, context
     )
     if now > plan.delivery_deadline or (
         session_end is not None and plan.expires_at > session_end
@@ -236,13 +294,13 @@ def message(plan, identifier, payout=None, *, compact=True, name=None):
             + (f" · {payout:g}% сейчас" if payout is not None else " · выплата ?")
             + "\n"
             f"Вход {direction_short} — {clock(plan.entry_at)} МСК · {(plan.expires_at - plan.entry_at) // 60} мин\n"
-            f"Если свеча {clock(plan.condition_from)}–{clock(plan.entry_at)} {colour_short}, закрытие {sign} {plan.setup.invalidation:.8g}\n"
+            f"Если свеча M{(plan.entry_at - plan.condition_from) // 60} {clock(plan.condition_from)}–{clock(plan.entry_at)} {colour_short}, закрытие {sign} {plan.setup.invalidation:.8g}\n"
             f"Иначе — ПРОПУСК. Получить до {clock(plan.delivery_deadline)}."
         )
     return (
         f"УСЛОВНЫЙ ПЛАН · ЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ\n{plan.symbol}\n"
         f"Вход: {datetime.fromtimestamp(plan.entry_at, MOSCOW):%d.%m} {clock(plan.entry_at)} МСК · {direction}\nЭкспирация: {(plan.expires_at - plan.entry_at) // 60} мин, до {clock(plan.expires_at)} МСК\n"
-        f"Проверь на Pocket Option свечу M1 {clock(plan.condition_from)}–{clock(plan.entry_at)}:\n"
+        f"Проверь на Pocket Option свечу M{(plan.entry_at - plan.condition_from) // 60} {clock(plan.condition_from)}–{clock(plan.entry_at)}:\n"
         f"если закрылась {colour} и закрытие {level} {plan.setup.invalidation:.8g} — условие выполнено.\n"
         "Другой цвет, доджи, нарушение уровня, отсутствие котировок или опоздание ко входу — ПРОПУСК.\n"
         f"Получено позже {clock(plan.delivery_deadline)} МСК — ПРОПУСК. Проверь совпадение часов и инструмента.\n"

@@ -12,7 +12,7 @@ from database.db import Database
 from services.otc_conditional import Plan, Setup, condition_met, display_symbol
 from services.otc_data import OTChartsProvider
 from services.otc_session import db_call
-from services.otc_strategy import normalize_candles
+from services.otc_strategy import aggregate, normalize_candles
 
 logger = logging.getLogger(__name__)
 LABELS = {
@@ -40,7 +40,17 @@ def assess(row, bars, now):
         return answer("UNKNOWN", "UNKNOWN", "endpoint_bar_not_closed")
     valid = normalize_candles([asdict(b) for b in bars], int(now))
     by_time = {b.time: b for b in valid}
-    condition = by_time.get(int(row["condition_from"]))
+    condition_seconds = int(row["entry_at"] - row["condition_from"])
+    if condition_seconds not in (60, 300, 900):
+        return answer("UNKNOWN", "UNKNOWN", "invalid_condition_period")
+    condition = next(
+        (
+            b
+            for b in aggregate(valid, condition_seconds)
+            if b.time == int(row["condition_from"])
+        ),
+        None,
+    )
     if condition is None:
         return answer("UNKNOWN", "UNKNOWN", "missing_condition_candle")
     plan = Plan(
@@ -124,9 +134,15 @@ class Evaluator:
         self.clock = clock
         self.cache = {}
         self.last_fetch = {}
+        self.last_quality_report = float("-inf")
 
     async def tick(self):
         now = self.clock()
+        if now - self.last_quality_report >= 60:
+            from services.otc_quality_report import write_report
+
+            await db_call(write_report, self.db, now)
+            self.last_quality_report = now
         journals = [(self.db, "Бот")]
         if self.observer_path is not None and self.observer_path.exists():
             if self.observer_db is None:

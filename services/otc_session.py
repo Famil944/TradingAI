@@ -79,6 +79,17 @@ class OTCSession:
         return bool(getattr(self.config, "test_mode", False))
 
     def _eligible(self, instruments, now, max_age):
+        if getattr(self.config, "require_paid_metadata", False):
+            instruments = [
+                a
+                for a in instruments
+                if a.open is True
+                and a.payout is not None
+                and math.isfinite(a.payout)
+                and 90 <= a.payout <= 100
+                and getattr(a, "observed_at", None) is not None
+                and 0 <= now - a.observed_at <= max_age
+            ]
         return eligible(instruments, now, max_age, research=self.test_mode)
 
     def _price_max_age(self):
@@ -165,8 +176,8 @@ class OTCSession:
             else "нет данных"
         )
         return (
-            f"OTC: {phase}\nСигналы: {'условные планы: вход через 3 минуты' if self.conditional_mode else 'обычный режим'}; планов за сеанс {self.session_plan_count}"
-            f"\nРежим: {'тестовый — выплата/открытие могут быть неизвестны' if self.test_mode else 'строгий — открытие и выплата ≥90% подтверждены'}"
+            f"OTC: {phase}\nСигналы: {'условные планы: вход по времени закрытия свечи' if self.conditional_mode else 'обычный режим'}; планов за сеанс {self.session_plan_count}"
+            f"\nРежим: {'тестовый · текущая выплата ≥90% при включённом отборе' if self.test_mode else 'строгий — открытие и выплата ≥90% подтверждены'}"
             f"\nДанные: { {'snapshot': 'снимки свечей без live-потока', 'live': 'поток', 'pending': 'ещё не определены (проверка доступа)'}.get(self.transport, 'нет данных') }\nЭкспирации: {', '.join(f'M{x // 60}' for x in self.timeframes)}"
             f"\nСигналов за сеанс: {self.session_signal_count}; пауза по паре/экспирации {self.config.cooldown_seconds} с."
             f"\nДо: {end}\nОтслеживается: {monitored} из {self.available}.\n{'С закрытия свечи' if self.transport == 'snapshot' else 'Возраст котировки'}: {age}"
@@ -746,7 +757,11 @@ class OTCSession:
         ):
             await self._event("conditional_stale_data", tick.symbol)
             return
-        context = conditional_setup(history, closed_at)
+        context = (
+            conditional_setup(history, closed_at)
+            if seconds == 60
+            else conditional_setup(history, closed_at, seconds)
+        )
         if context is None:
             await self._event("conditional_no_setup", tick.symbol)
             return
