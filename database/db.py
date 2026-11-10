@@ -119,8 +119,12 @@ class Database:
             );
             """)
 
-    def prepare_plan(self, plan, now, payout=None, payout_at=None, cooldown=120):
+    def prepare_plan(
+        self, plan, now, payout=None, payout_at=None, cooldown=120, strategy=None
+    ):
         from services.otc_conditional import STRATEGY
+
+        strategy = strategy or STRATEGY
 
         identifier = str(uuid.uuid4())
         if now > plan.delivery_deadline:
@@ -144,7 +148,7 @@ class Database:
                     (
                         identifier,
                         plan.symbol,
-                        STRATEGY,
+                        strategy,
                         now,
                         plan.setup_at,
                         plan.entry_at,

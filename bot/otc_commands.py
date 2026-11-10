@@ -7,7 +7,7 @@ from aiogram import BaseMiddleware, F, Router, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from config.settings import settings
+from config.settings import ROOT, settings
 from services.otc_market import TIMEFRAMES
 from services.otc_statistics import format_stats
 
@@ -91,6 +91,13 @@ def menu(chat_id, conditional=None):
             InlineKeyboardButton(text="Статус", callback_data="otc:status"),
         ]
     )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="Стоп наблюдатель", callback_data="otc:observer_stop"
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -124,6 +131,8 @@ async def status(message: types.Message):
 
 @router.message(Command("otc_stop"))
 async def stop(message: types.Message):
+    (ROOT / "data" / "observer.stop").parent.mkdir(parents=True, exist_ok=True)
+    (ROOT / "data" / "observer.stop").touch()
     stopped = await service.stop()
     await message.answer(
         ("OTC остановлен." if stopped else "OTC уже остановлен.")
@@ -196,7 +205,13 @@ async def callback(query: types.CallbackQuery):
             query.bot, chat, int(parts[2]), choices.get(chat, TIMEFRAMES)
         )
         await query.answer("Проверяю доступ" if started else "Сеанс уже запущен")
+    elif action == "observer_stop" and len(parts) == 2:
+        (ROOT / "data" / "observer.stop").parent.mkdir(parents=True, exist_ok=True)
+        (ROOT / "data" / "observer.stop").touch()
+        await query.answer("Наблюдатель останавливается")
     elif action == "stop" and len(parts) == 2:
+        (ROOT / "data" / "observer.stop").parent.mkdir(parents=True, exist_ok=True)
+        (ROOT / "data" / "observer.stop").touch()
         stopped = await service.stop()
         await query.answer("Остановлено" if stopped else "Уже остановлен")
     elif action == "status" and len(parts) == 2:

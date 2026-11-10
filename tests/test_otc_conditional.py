@@ -61,7 +61,7 @@ class ConditionalRuleTests(unittest.TestCase):
         plan = make_plan(
             "A", 1800000000, Setup("DOWN", "green", 2, "fixture"), 1800000000
         )
-        text = message(plan, "example", None)
+        text = message(plan, "example", None, compact=False)
         self.assertIn("ЗЕЛЁНОЙ", text)
         self.assertIn("ВНИЗ / PUT", text)
         self.assertIn("второго подтверждения не будет", text)
@@ -226,7 +226,7 @@ class ConditionalSessionTests(unittest.IsolatedAsyncioTestCase):
             await self.session.start(self.bot, 1, 30, (300, 900))
             await asyncio.wait_for(sent.wait(), 10)
             self.assertEqual(self.session.timeframes, (60,))
-            self.assertIn("УСЛОВНЫЙ ПЛАН", self.bot.send_message.call_args.args[1])
+            self.assertIn("Если свеча", self.bot.send_message.call_args.args[1])
             self.assertEqual(self.db.plan_stats()["total"], 1)
             self.assertEqual(self.db.stats(), [])
         finally:

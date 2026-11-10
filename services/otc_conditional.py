@@ -101,12 +101,31 @@ def make_plan(symbol, closed_at, context, now, session_end=None):
 def condition_met(plan, candle):
     if candle.time != plan.condition_from:
         return False
-    if plan.setup.colour == "red":
-        return candle.close < candle.open and candle.close > plan.setup.invalidation
-    return candle.close > candle.open and candle.close < plan.setup.invalidation
+    colour_ok = (
+        candle.close < candle.open
+        if plan.setup.colour == "red"
+        else candle.close > candle.open
+    )
+    level_ok = (
+        candle.close > plan.setup.invalidation
+        if plan.setup.direction == "UP"
+        else candle.close < plan.setup.invalidation
+    )
+    return colour_ok and level_ok
 
 
-def message(plan, identifier, payout=None):
+def display_symbol(symbol):
+    names = {
+        "#FB_otc": "Facebook OTC",
+        "#AAPL_otc": "Apple OTC",
+        "#AXP_otc": "American Express OTC",
+        "#CSCO_otc": "Cisco OTC",
+        "#INTC_otc": "Intel OTC",
+    }
+    return names.get(symbol, symbol)
+
+
+def message(plan, identifier, payout=None, *, compact=True):
     def clock(at):
         return datetime.fromtimestamp(at, MOSCOW).strftime("%H:%M:%S")
 
@@ -122,6 +141,16 @@ def message(plan, identifier, payout=None):
         if payout is None
         else f"{payout:g}% (значение сейчас; перед входом проверь сам)"
     )
+    if compact:
+        colour_short = "КРАСНАЯ" if plan.setup.colour == "red" else "ЗЕЛЁНАЯ"
+        sign = ">" if plan.setup.direction == "UP" else "<"
+        direction_short = "ВВЕРХ" if plan.setup.direction == "UP" else "ВНИЗ"
+        return (
+            f"🧪 {display_symbol(plan.symbol)}\n"
+            f"Вход {direction_short} — {clock(plan.entry_at)} МСК · 1 мин\n"
+            f"Если свеча {clock(plan.condition_from)}–{clock(plan.entry_at)} {colour_short}, закрытие {sign} {plan.setup.invalidation:.8g}\n"
+            f"Иначе — ПРОПУСК. Получить до {clock(plan.delivery_deadline)}."
+        )
     return (
         f"УСЛОВНЫЙ ПЛАН · ЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ\n{plan.symbol}\n"
         f"Вход: {datetime.fromtimestamp(plan.entry_at, MOSCOW):%d.%m} {clock(plan.entry_at)} МСК · {direction}\nЭкспирация: 1 минута, до {clock(plan.expires_at)} МСК\n"
