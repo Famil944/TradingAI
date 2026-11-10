@@ -60,7 +60,7 @@ async def main(*, session_minutes=None):
                 bot, settings.admin_chat_id, session_minutes, (60, 300, 900)
             )
             text = (
-                "🧪 Условный режим · 30 мин. Прежние планы отменены."
+                f"🧪 Условный режим · {session_minutes} мин. Прежние планы отменены."
                 if service.conditional_mode
                 else "🧪 Сеанс запущен. Контроль — раз в 2 минуты. /otc_stop — остановить."
             )
