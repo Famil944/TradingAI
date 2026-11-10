@@ -33,7 +33,14 @@ class Asset:
     payout_at: float | None
 
 
-def eligible(instruments, now, max_age=60):
+def eligible(instruments, now, max_age=60, *, research=False):
+    if research:
+        # Unknown metadata is permitted for testing; a confirmed closure is not.
+        return sorted(
+            (a for a in instruments if a.is_otc is True and a.open is not False),
+            key=lambda a: a.symbol,
+        )
+
     return sorted(
         (
             a

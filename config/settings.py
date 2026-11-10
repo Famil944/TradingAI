@@ -36,6 +36,18 @@ class Settings:
     cooldown_seconds: int = field(
         default_factory=lambda: max(60, int(os.getenv("OTC_COOLDOWN_SECONDS", "900")))
     )
+    test_mode: bool = field(
+        default_factory=lambda: (
+            os.getenv("OTC_TEST_MODE", "false").lower() in ("1", "true", "yes", "on")
+        )
+    )
+    poll_seconds: int = field(
+        default_factory=lambda: max(60, int(os.getenv("OTC_POLL_SECONDS", "300")))
+    )
+    poll_request_budget: int = field(
+        default_factory=lambda: max(2, int(os.getenv("OTC_POLL_REQUEST_BUDGET", "12")))
+    )
+    snapshot_max_age: float = 30.0
     max_tick_age: float = 8.0
     max_tick_gap: float = 8.0
     payout_max_age: float = 60.0

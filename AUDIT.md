@@ -17,3 +17,7 @@ Verified installed otcharts 0.7.0 source and publisher README. The explicit venu
 All three required local configuration values are absent (values were not printed). No authenticated Telegram/provider/platform or Android checks performed. No push, merge or deployment performed. Physical Android dependency installation remains unverified.
 
 Validation: 33 offline unit/integration tests, including a loopback HTTP/SSE server, actual strategy-to-journal path, access controls, SQLite backup preservation, cancellation/restart, missing expiry watchdog, UNKNOWN, replay future isolation and independent quote checks. Additional checks: compilation, dependency consistency, Ruff standard correctness/import rules, Git whitespace, package build/install and CLI smoke checks are recorded in the final report.
+
+## Follow-up: explicitly authorized research metadata policy
+
+The owner requested free-tier testing with signals despite missing payout/open metadata. Added explicit OTC_TEST_MODE and bounded REST snapshots for zero-stream plans; unknown metadata stays NULL and is disclosed in notifications. Strict mode remains available. Journal schema v2 relaxes only payout/payout_at nullability with an online backup and atomic data/index/trigger-preserving migration. Updated validation: 46 passing offline tests. No live credentials used, no push/deploy performed.

@@ -1,6 +1,7 @@
 """Additive SQLite journal. Existing user tables are never dropped."""
 
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -37,12 +38,48 @@ class Database:
             old_tables = conn.execute(
                 "SELECT count(*) FROM sqlite_master WHERE type='table'"
             ).fetchone()[0]
-            if not exists and old_tables:
+            columns = conn.execute("PRAGMA table_info(otc_journal_signals)").fetchall()
+            nullable_migration = any(
+                r["name"] in ("payout", "payout_at") and r["notnull"] for r in columns
+            )
+            if old_tables and (not exists or nullable_migration):
                 backup = self.db_path.with_name(
                     self.db_path.name + f".backup-{time.time_ns()}"
                 )
                 with closing(sqlite3.connect(backup)) as dest:
                     conn.backup(dest)
+            if nullable_migration:
+                # Rebuild only our journal, atomically, with every column/row preserved.
+                ddl = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE name='otc_journal_signals'"
+                ).fetchone()[0]
+                ddl = re.sub(
+                    r"\b(payout|payout_at)\s+REAL\s+NOT\s+NULL",
+                    r"\1 REAL",
+                    ddl,
+                    flags=re.I,
+                )
+                ddl = ddl.replace(
+                    "otc_journal_signals", "otc_journal_signals_nullable", 1
+                )
+                auxiliary = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE tbl_name='otc_journal_signals' AND type IN ('index','trigger') AND sql IS NOT NULL"
+                ).fetchall()
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(ddl)
+                names = ",".join(
+                    '"' + r["name"].replace('"', '""') + '"' for r in columns
+                )
+                conn.execute(
+                    f"INSERT INTO otc_journal_signals_nullable ({names}) SELECT {names} FROM otc_journal_signals"
+                )
+                conn.execute("DROP TABLE otc_journal_signals")
+                conn.execute(
+                    "ALTER TABLE otc_journal_signals_nullable RENAME TO otc_journal_signals"
+                )
+                for statement in auxiliary:
+                    conn.execute(statement[0])
+                conn.commit()
             conn.executescript("""
             CREATE TABLE IF NOT EXISTS otc_journal_meta (version INTEGER NOT NULL);
             INSERT INTO otc_journal_meta SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM otc_journal_meta);
@@ -51,11 +88,12 @@ class Database:
               timeframe INTEGER NOT NULL, strategy TEXT NOT NULL, source TEXT NOT NULL,
               signal_at REAL NOT NULL, sent_at REAL, intended_entry_at REAL NOT NULL,
               actual_entry_at REAL, expires_at REAL NOT NULL, price REAL NOT NULL,
-              entry_price REAL, expiry_price REAL, payout REAL NOT NULL, payout_at REAL NOT NULL,
+              entry_price REAL, expiry_price REAL, payout REAL, payout_at REAL,
               reason TEXT NOT NULL, quality TEXT NOT NULL, synchronized INTEGER NOT NULL,
               outcome TEXT NOT NULL DEFAULT 'PENDING', delivery TEXT NOT NULL DEFAULT 'PENDING',
               UNIQUE(symbol,timeframe,signal_at,strategy)
             );
+            UPDATE otc_journal_meta SET version=2;
             CREATE INDEX IF NOT EXISTS otc_pending_idx ON otc_journal_signals(outcome,symbol,expires_at);
             CREATE TABLE IF NOT EXISTS otc_journal_events (
               id INTEGER PRIMARY KEY, at REAL NOT NULL, symbol TEXT, reason TEXT NOT NULL
