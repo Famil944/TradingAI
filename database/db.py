@@ -51,12 +51,16 @@ class Database:
             context_missing = not conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='otc_plan_context'"
             ).fetchone()
+            entry_check_missing = not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='otc_entry_checks'"
+            ).fetchone()
             if old_tables and (
                 not exists
                 or nullable_migration
                 or conditional_missing
                 or assessment_missing
                 or context_missing
+                or entry_check_missing
             ):
                 backup = self.db_path.with_name(
                     self.db_path.name + f".backup-{time.time_ns()}"
@@ -119,6 +123,10 @@ class Database:
               delivery TEXT NOT NULL DEFAULT 'PENDING', lifecycle TEXT NOT NULL DEFAULT 'ACTIVE',
               outcome TEXT NOT NULL DEFAULT 'UNKNOWN',
               UNIQUE(symbol,entry_at,strategy)
+            );
+            CREATE TABLE IF NOT EXISTS otc_entry_checks (
+              plan_id TEXT PRIMARY KEY, checked_at REAL NOT NULL, decision TEXT NOT NULL,
+              evidence TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS otc_plan_context (
               plan_id TEXT PRIMARY KEY, known_at REAL NOT NULL, source TEXT NOT NULL,
@@ -466,3 +474,34 @@ class Database:
                     (since,),
                 )
             ]
+
+    def entry_check_targets(self, now):
+        with self.connect() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    """
+                SELECT p.* FROM otc_conditional_plans p
+                LEFT JOIN otc_entry_checks e ON e.plan_id=p.id
+                WHERE e.plan_id IS NULL AND p.delivery='SENT'
+                AND p.entry_at BETWEEN ? AND ? ORDER BY p.entry_at LIMIT 20
+            """,
+                    (now - 90, now - 2),
+                )
+            ]
+
+    def claim_entry_check(self, identifier, now, decision, evidence):
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT lifecycle FROM otc_conditional_plans WHERE id=?", (identifier,)
+            ).fetchone()
+            if row is None:
+                return False
+            if row["lifecycle"] == "CANCELLED":
+                decision = "CANCELLED"
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO otc_entry_checks VALUES(?,?,?,?)",
+                (identifier, now, decision, json.dumps(evidence, allow_nan=False)),
+            ).rowcount
+            return decision if inserted else False

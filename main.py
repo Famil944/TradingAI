@@ -13,6 +13,8 @@ from config.settings import ROOT, settings
 from core.logging import SecretFormatter
 from core.single_instance import SingleInstance
 from database.db import Database
+from services.otc_data import OTChartsProvider
+from services.otc_entry_checks import EntryChecks
 from services.otc_evaluation import configured as configured_evaluator
 from services.otc_session import OTCSession
 
@@ -45,6 +47,10 @@ async def main(*, session_minutes=None, session_end=None):
     dp.include_router(otc_commands.router)
     evaluator = configured_evaluator(db, bot, settings, ROOT)
     evaluation_task = asyncio.create_task(evaluator.run())
+    entry_checks = EntryChecks(
+        db, OTChartsProvider(settings.otcharts_api_key), bot, settings.admin_chat_id
+    )
+    entry_task = asyncio.create_task(entry_checks.run())
     try:
         await bot.set_my_commands(
             [BotCommand(command=c, description=d) for c, d in COMMANDS]
@@ -71,6 +77,8 @@ async def main(*, session_minutes=None, session_end=None):
             await service._notify(bot, text)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        entry_task.cancel()
+        await asyncio.gather(entry_task, return_exceptions=True)
         evaluation_task.cancel()
         await asyncio.gather(evaluation_task, return_exceptions=True)
         await service.stop()
