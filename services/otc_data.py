@@ -6,6 +6,7 @@ The published Instrument has no payout timestamp and reports open=None for OTC:
 those observations are deliberately ineligible for signals.
 """
 
+import asyncio
 import json
 from dataclasses import dataclass
 from importlib.metadata import version
@@ -25,6 +26,9 @@ class AccessUnavailable(RuntimeError):
 
 class RetryableFeedError(RuntimeError):
     def __init__(self, retry_after=0):
+        super().__init__(
+            "OTCharts временно недоступен: сетевая ошибка или ответ сервера."
+        )
         self.retry_after = retry_after
 
 
@@ -73,8 +77,15 @@ class OTChartsProvider:
 
     @staticmethod
     def _check(response):
-        if response.status in (401, 402, 403, 404, 429):
-            raise AccessUnavailable("Нет доступа к данным или исчерпан лимит OTCharts.")
+        messages = {
+            401: "OTCharts отклонил API-ключ (HTTP 401). Проверьте OTCHARTS_API_KEY в локальном .env.",
+            402: "OTCharts: тариф не разрешает доступ к данным (HTTP 402).",
+            403: "OTCharts запретил запрос (HTTP 403): ограничения доступа или тарифа.",
+            404: "Запрошенные данные OTCharts не найдены (HTTP 404).",
+            429: "OTCharts: исчерпан лимит запросов или соединений (HTTP 429).",
+        }
+        if response.status in messages:
+            raise AccessUnavailable(messages[response.status])
         if response.status == 503:
             try:
                 delay = max(1, min(300, int(response.headers.get("Retry-After", "30"))))
@@ -86,11 +97,15 @@ class OTChartsProvider:
 
     async def _get(self, path, params=None):
         session = await self._http()
-        async with session.get(
-            "https://otcharts.com" + path, params=params
-        ) as response:
-            self._check(response)
-            return await response.json()
+        try:
+            async with session.get(
+                "https://otcharts.com" + path, params=params
+            ) as response:
+                self._check(response)
+                return await response.json()
+        except (asyncio.TimeoutError, aiohttp.ClientError):
+            # Never expose request headers, URLs or exception bodies containing keys.
+            raise RetryableFeedError() from None
 
     async def usage(self):
         d = await self._get("/v1/usage")

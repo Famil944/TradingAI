@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from services.otc_data import AccessUnavailable, OTChartsProvider
+from services.otc_data import AccessUnavailable, OTChartsProvider, RetryableFeedError
 from services.otc_market import TIMEFRAMES, MinuteBuilder, Tick, eligible, settle
 from services.otc_strategy import candidate, normalize_candles
 from services.otc_stream import reconnect_delay
@@ -87,7 +87,7 @@ class OTCSession:
             self.last_tick = None
             self._quotes.clear()
             self.last_error = None
-            self.transport = "live"
+            self.transport = "pending"
             self.poll_requests_used = 0
             self.available = 0
             self.phase = "подключение"
@@ -139,7 +139,7 @@ class OTCSession:
         )
         return (
             f"OTC: {phase}\nРежим: {'тестовый — выплата/открытие могут быть неизвестны' if self.test_mode else 'строгий — открытие и выплата ≥90% подтверждены'}"
-            f"\nДанные: {'снимки свечей без live-потока' if self.transport == 'snapshot' else 'поток'}\nЭкспирации: {', '.join(f'M{x // 60}' for x in self.timeframes)}"
+            f"\nДанные: { {'snapshot': 'снимки свечей без live-потока', 'live': 'поток', 'pending': 'ещё не определены (проверка доступа)'}.get(self.transport, 'нет данных') }\nЭкспирации: {', '.join(f'M{x // 60}' for x in self.timeframes)}"
             f"\nДо: {end}\nОтслеживается: {monitored} из {self.available}.\n{'С закрытия свечи' if self.transport == 'snapshot' else 'Возраст котировки'}: {age}"
             "\nЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ. Совпадение с платформой не подтверждено."
             + (
@@ -174,14 +174,24 @@ class OTCSession:
 
     async def _timed_run(self, bot):
         watchdog = asyncio.create_task(self._expiry_watchdog())
+        deadline = None
         try:
             if self.ends_at is None:
                 await self._run(bot)
             else:
-                async with asyncio.timeout(max(0, self.ends_at - self.clock())):
+                async with asyncio.timeout(
+                    max(0, self.ends_at - self.clock())
+                ) as deadline:
                     await self._run(bot)
         except TimeoutError:
-            await self._notify(bot, "Время OTC-сеанса закончилось.")
+            if deadline is not None and deadline.expired():
+                await self._notify(bot, "Время OTC-сеанса закончилось.")
+            else:
+                self.last_error = "OTCharts не ответил вовремя. Это сетевой тайм-аут, а не окончание времени сеанса. Попробуйте запустить снова."
+                await self._notify(bot, self.last_error)
+        except RetryableFeedError:
+            self.last_error = "Не удалось подключиться к OTCharts после повторных попыток. Данные недоступны; сеанс остановлен. Попробуйте запустить снова."
+            await self._notify(bot, self.last_error)
         except AccessUnavailable as exc:
             # Exception text originates solely in our sanitized adapter.
             self.last_error = str(exc)
@@ -208,12 +218,28 @@ class OTCSession:
             finally:
                 await self.provider.close()
 
+    async def _usage_with_retry(self):
+        # Usage checks are free under the verified contract; retries spend no data quota.
+        for attempt in range(3):
+            try:
+                return await self.provider.usage()
+            except (RetryableFeedError, TimeoutError, ConnectionError) as exc:
+                if attempt == 2:
+                    raise RetryableFeedError() from None
+                if self.transport == "pending":
+                    self.phase = f"повтор подключения к OTCharts ({attempt + 2}/3)"
+                await self._event("usage_connection_retry")
+                await asyncio.sleep(
+                    reconnect_delay(attempt, getattr(exc, "retry_after", 0))
+                )
+
     async def _run(self, bot):
-        plan = await self.provider.usage()
+        plan = await self._usage_with_retry()
         self.plan = plan
         if self.test_mode and plan.streams_limit <= 0:
             await self._poll(bot, plan)
             return
+        self.transport = "live"
         if plan.streams_limit <= plan.streams_open:
             raise AccessUnavailable(
                 "Нет доступа к потоковым котировкам/выплатам или нет свободного потока."
@@ -281,7 +307,9 @@ class OTCSession:
         )
         seen = None
         while self.poll_requests_used < budget:
-            self.plan = await self.provider.usage()  # Documented as a free quota check.
+            self.plan = (
+                await self._usage_with_retry()
+            )  # Documented as a free quota check.
             if self.plan.remaining <= 1:
                 raise AccessUnavailable(
                     "Лимит OTCharts почти исчерпан; тест остановлен с резервом одного запроса."
@@ -375,7 +403,7 @@ class OTCSession:
                         if self.db:
                             await self._results(tick)
                         if now - refreshed >= 30:
-                            current = await self.provider.usage()
+                            current = await self._usage_with_retry()
                             self.plan = current
                             if current.remaining <= 1:
                                 raise AccessUnavailable(
@@ -444,7 +472,7 @@ class OTCSession:
                 delay = reconnect_delay(attempt, getattr(exc, "retry_after", 0))
                 attempt += 1
                 await asyncio.sleep(delay)
-                plan = await self.provider.usage()
+                plan = await self._usage_with_retry()
                 if plan.remaining < len(chosen) + 2:
                     raise AccessUnavailable(
                         "Недостаточно запросов для восстановления истории."
