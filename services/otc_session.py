@@ -102,7 +102,7 @@ class OTCSession:
             if self.running():
                 return False
             self.chat_id = chat_id
-            self.timeframes = (60,) if self.conditional_mode else tuple(timeframes)
+            self.timeframes = tuple(timeframes)
             self.ends_at = self.clock() + minutes * 60 if minutes else None
             self.last_tick = None
             self._quotes.clear()
@@ -165,7 +165,7 @@ class OTCSession:
             else "нет данных"
         )
         return (
-            f"OTC: {phase}\nСигналы: {'условные планы: вход через 3 минуты, экспирация M1' if self.conditional_mode else 'обычный режим'}; планов за сеанс {self.session_plan_count}"
+            f"OTC: {phase}\nСигналы: {'условные планы: вход через 3 минуты' if self.conditional_mode else 'обычный режим'}; планов за сеанс {self.session_plan_count}"
             f"\nРежим: {'тестовый — выплата/открытие могут быть неизвестны' if self.test_mode else 'строгий — открытие и выплата ≥90% подтверждены'}"
             f"\nДанные: { {'snapshot': 'снимки свечей без live-потока', 'live': 'поток', 'pending': 'ещё не определены (проверка доступа)'}.get(self.transport, 'нет данных') }\nЭкспирации: {', '.join(f'M{x // 60}' for x in self.timeframes)}"
             f"\nСигналов за сеанс: {self.session_signal_count}; пауза по паре/экспирации {self.config.cooldown_seconds} с."
@@ -460,7 +460,10 @@ class OTCSession:
                         seen = closed_at
                         tick = Tick(asset.symbol, closed_at, bars[-1].close)
                         if self.conditional_mode:
-                            await self._consider_plan(bot, bars, tick, asset, closed_at)
+                            for seconds in self.timeframes:
+                                await self._consider_plan(
+                                    bot, bars, tick, asset, closed_at, seconds
+                                )
                         else:
                             for seconds in self.timeframes:
                                 if closed_at % seconds:
@@ -661,9 +664,10 @@ class OTCSession:
                                 continue
                             closed_at = bar.time + 60
                             if self.conditional_mode:
-                                await self._consider_plan(
-                                    bot, values, tick, asset, closed_at
-                                )
+                                for seconds in self.timeframes:
+                                    await self._consider_plan(
+                                        bot, values, tick, asset, closed_at, seconds
+                                    )
                                 continue
                             if (
                                 tick.time - closed_at > 2
@@ -735,7 +739,7 @@ class OTCSession:
                 for symbol in chosen:
                     history[symbol] = await self.provider.candles(symbol, self.clock())
 
-    async def _consider_plan(self, bot, history, tick, asset, closed_at):
+    async def _consider_plan(self, bot, history, tick, asset, closed_at, seconds=60):
         now = self.clock()
         if not 0 <= now - tick.time <= self._price_max_age() or not self._eligible(
             [asset], now, self.config.payout_max_age
@@ -746,7 +750,9 @@ class OTCSession:
         if context is None:
             await self._event("conditional_no_setup", tick.symbol)
             return
-        plan = make_plan(tick.symbol, closed_at, context, now, self.ends_at)
+        plan = make_plan(
+            tick.symbol, closed_at, context, now, self.ends_at, seconds=seconds
+        )
         if plan is None:
             await self._event("conditional_too_late_or_session_ending", tick.symbol)
             return

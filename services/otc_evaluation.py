@@ -175,7 +175,7 @@ class Evaluator:
                         + datetime.fromtimestamp(
                             r["entry_at"], ZoneInfo("Europe/Moscow")
                         ).strftime("%H:%M")
-                        + ": "
+                        + f" · M{int(r['expires_at'] - r['entry_at']) // 60}: "
                         + LABELS[r["outcome"]]
                         for r in notifications
                     )
@@ -212,3 +212,27 @@ def configured(db, bot, settings, root):
         settings.admin_chat_id,
         root / "data" / "observer.db",
     )
+
+
+def compact_stats(rows, minutes):
+    def count(key):
+        return sum(r.get(key, 0) or 0 for r in rows)
+
+    wins, losses = count("wins"), count("losses")
+    rate = f"{100 * wins / (wins + losses):.1f}%" if wins + losses else "—"
+    lines = [
+        f"M{minutes} · виртуально OTCharts",
+        f"Вин {wins}",
+        f"Проигрыш {losses}",
+        f"Пропуск {count('skipped')}",
+        f"Отмена {count('cancelled')}",
+    ]
+    for label, amount in (
+        ("Ничья", count("draws")),
+        ("Нет данных", count("unknown") + count("not_delivered")),
+        ("Ожидают", count("pending")),
+    ):
+        if amount:
+            lines.append(f"{label} {amount}")
+    lines.append(f"Винрейт {rate}")
+    return "\n".join(lines)

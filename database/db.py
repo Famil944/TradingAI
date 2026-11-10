@@ -147,6 +147,9 @@ class Database:
         from services.otc_conditional import STRATEGY
 
         strategy = strategy or STRATEGY
+        seconds = plan.expires_at - plan.entry_at
+        if seconds != 60:
+            strategy = f"{strategy}:M{int(seconds) // 60}"
 
         identifier = str(uuid.uuid4())
         if now > plan.delivery_deadline:
@@ -154,11 +157,12 @@ class Database:
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             active = c.execute(
-                "SELECT 1 FROM otc_conditional_plans WHERE symbol=? AND lifecycle='ACTIVE' AND expires_at>?",
-                (plan.symbol, now),
+                "SELECT 1 FROM otc_conditional_plans WHERE symbol=? AND lifecycle='ACTIVE' AND expires_at>? AND expires_at-entry_at=?",
+                (plan.symbol, now, plan.expires_at - plan.entry_at),
             ).fetchone()
             last = c.execute(
-                "SELECT MAX(created_at) FROM otc_conditional_plans"
+                "SELECT MAX(created_at) FROM otc_conditional_plans WHERE expires_at-entry_at=?",
+                (plan.expires_at - plan.entry_at,),
             ).fetchone()[0]
             if active or (last is not None and now - last < cooldown):
                 return None
@@ -276,7 +280,7 @@ class Database:
                 [(now, i) for i in identifiers],
             )
 
-    def virtual_stats(self, since=0):
+    def virtual_stats(self, since=0, timeframe=None):
         with self.connect() as c:
             return [
                 dict(r)
@@ -287,8 +291,8 @@ class Database:
               SUM(a.outcome='CANCELLED') cancelled,SUM(a.outcome='NOT_DELIVERED') not_delivered,
               SUM(a.plan_id IS NULL) pending
               FROM otc_conditional_plans p LEFT JOIN otc_plan_assessments a ON a.plan_id=p.id
-              WHERE p.created_at>=? GROUP BY p.strategy,p.direction,p.colour""",
-                    (since,),
+              WHERE p.created_at>=? AND (? IS NULL OR p.expires_at-p.entry_at=?) GROUP BY p.strategy,p.direction,p.colour""",
+                    (since, timeframe, timeframe),
                 )
             ]
 

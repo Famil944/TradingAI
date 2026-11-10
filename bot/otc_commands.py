@@ -8,10 +8,8 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config.settings import ROOT, settings
-from database.db import Database
-from services.otc_evaluation import format_stats as format_virtual_stats
+from services.otc_evaluation import compact_stats
 from services.otc_market import TIMEFRAMES
-from services.otc_statistics import format_stats
 
 router = Router()
 service = None
@@ -65,17 +63,7 @@ def menu(chat_id, conditional=None):
                 callback_data=f"otc:tf:{key}",
             )
         )
-    rows = (
-        [
-            [
-                InlineKeyboardButton(
-                    text="✅ Условный вход · экспирация M1", callback_data="otc:tf:1"
-                )
-            ]
-        ]
-        if conditional
-        else [[buttons[0]], buttons[1:]]
-    )
+    rows = [[buttons[0]], buttons[1:]]
     for pair in [
         [(30, "30 минут"), (60, "1 час")],
         [(120, "2 часа"), (240, "4 часа")],
@@ -93,13 +81,7 @@ def menu(chat_id, conditional=None):
             InlineKeyboardButton(text="Статус", callback_data="otc:status"),
         ]
     )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="Стоп наблюдатель", callback_data="otc:observer_stop"
-            )
-        ]
-    )
+    rows.append([InlineKeyboardButton(text="Статистика", callback_data="otc:stats")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -108,7 +90,7 @@ async def show_menu(message: types.Message):
     if getattr(settings, "signal_mode", "immediate") == "conditional":
         await message.answer(
             "УСЛОВНЫЕ ПЛАНЫ · ЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ.\n"
-            "Бот заранее указывает вход примерно через 3 минуты и экспирацию M1. "
+            "Бот заранее указывает вход примерно через 3 минуты и экспирацию M1/M5/M15. "
             "Ты сам проверяешь цвет указанной свечи на Pocket Option и уровень отмены. "
             "Второго подтверждения ждать не нужно. Позднее сообщение или невыполненное условие — пропуск. "
             "Остановка/перезапуск отменяют прежние планы.\n"
@@ -150,18 +132,20 @@ async def stats(message: types.Message):
     if period not in durations:
         await message.answer("Используйте /otc_stats [24h|7d|30d|all]")
         return
-    since = time.time() - durations[period] if durations[period] else 0
-    rows = await asyncio.to_thread(service.db.stats, since)
-    if rows:
-        await message.answer(format_stats(rows, period))
-    virtual = await asyncio.to_thread(service.db.virtual_stats, since)
-    await message.answer(format_virtual_stats(virtual, "Основной бот"))
-    observer_path = ROOT / "data" / "observer.db"
-    if observer_path.exists():
-        observer = Database(observer_path)
-        await asyncio.to_thread(observer.init_db)
-        comparison = await asyncio.to_thread(observer.virtual_stats, since)
-        await message.answer(format_virtual_stats(comparison, "Наблюдатель"))
+    await message.answer("Выбери экспирацию:", reply_markup=stats_menu(period))
+
+
+def stats_menu(period="all"):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"M{m}", callback_data=f"otc:stats:{m}:{period}"
+                )
+                for m in (1, 5, 15)
+            ]
+        ]
+    )
 
 
 @router.message(Command("otc_diagnostics"))
@@ -188,15 +172,30 @@ async def callback(query: types.CallbackQuery):
         return
     action = parts[1]
     chat = query.message.chat.id
-    if action == "tf" and len(parts) == 3 and parts[2] in ("all", "1", "5", "15"):
-        if (
-            getattr(settings, "signal_mode", "immediate") == "conditional"
-            and parts[2] != "1"
+    if action == "stats":
+        if len(parts) == 2:
+            await query.answer()
+            await query.message.answer("Выбери экспирацию:", reply_markup=stats_menu())
+        elif (
+            len(parts) == 4
+            and parts[2] in ("1", "5", "15")
+            and parts[3] in ("24h", "7d", "30d", "all")
         ):
-            await query.answer(
-                "Сейчас условный режим с экспирацией M1", show_alert=True
+            await query.answer()
+            duration = {"24h": 86400, "7d": 604800, "30d": 2592000, "all": None}[
+                parts[3]
+            ]
+            since = time.time() - duration if duration else 0
+            rows = await asyncio.to_thread(
+                service.db.virtual_stats, since, int(parts[2]) * 60
             )
-            return
+            text = compact_stats(rows, int(parts[2]))
+            if query.message.text != text:
+                await query.message.edit_text(text, reply_markup=stats_menu(parts[3]))
+        else:
+            await query.answer("Недопустимый выбор")
+        return
+    if action == "tf" and len(parts) == 3 and parts[2] in ("all", "1", "5", "15"):
         choices[chat] = TIMEFRAMES if parts[2] == "all" else (int(parts[2]) * 60,)
         await query.answer("Экспирации выбраны")
         await query.message.edit_reply_markup(reply_markup=menu(chat))

@@ -444,7 +444,9 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         )
         task = asyncio.create_task(self.session._expiry_watchdog())
         try:
-            await asyncio.sleep(1.05)
+            async with asyncio.timeout(5):
+                while self.db.stats()[0]["unknown"] != 1:
+                    await asyncio.sleep(0.02)
             self.assertEqual(self.db.stats()[0]["unknown"], 1)
         finally:
             task.cancel()

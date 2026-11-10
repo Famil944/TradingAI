@@ -168,11 +168,15 @@ def context_setup(minutes, closed_at):
     )
 
 
-def make_plan(symbol, closed_at, context, now, session_end=None):
+def make_plan(symbol, closed_at, context, now, session_end=None, *, seconds=60):
+    if seconds not in (60, 300, 900):
+        raise ValueError("Unsupported expiration")
     if closed_at % 60 or not 0 <= now - closed_at <= 30:
         return None
     entry = closed_at + 180
-    plan = Plan(symbol, closed_at, entry, entry + 60, entry - 60, entry - 120, context)
+    plan = Plan(
+        symbol, closed_at, entry, entry + seconds, entry - 60, entry - 120, context
+    )
     if now > plan.delivery_deadline or (
         session_end is not None and plan.expires_at > session_end
     ):
@@ -231,13 +235,13 @@ def message(plan, identifier, payout=None, *, compact=True, name=None):
             f"🧪 {name or display_symbol(plan.symbol)}"
             + (f" · {payout:g}% сейчас" if payout is not None else " · выплата ?")
             + "\n"
-            f"Вход {direction_short} — {clock(plan.entry_at)} МСК · 1 мин\n"
+            f"Вход {direction_short} — {clock(plan.entry_at)} МСК · {(plan.expires_at - plan.entry_at) // 60} мин\n"
             f"Если свеча {clock(plan.condition_from)}–{clock(plan.entry_at)} {colour_short}, закрытие {sign} {plan.setup.invalidation:.8g}\n"
             f"Иначе — ПРОПУСК. Получить до {clock(plan.delivery_deadline)}."
         )
     return (
         f"УСЛОВНЫЙ ПЛАН · ЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ\n{plan.symbol}\n"
-        f"Вход: {datetime.fromtimestamp(plan.entry_at, MOSCOW):%d.%m} {clock(plan.entry_at)} МСК · {direction}\nЭкспирация: 1 минута, до {clock(plan.expires_at)} МСК\n"
+        f"Вход: {datetime.fromtimestamp(plan.entry_at, MOSCOW):%d.%m} {clock(plan.entry_at)} МСК · {direction}\nЭкспирация: {(plan.expires_at - plan.entry_at) // 60} мин, до {clock(plan.expires_at)} МСК\n"
         f"Проверь на Pocket Option свечу M1 {clock(plan.condition_from)}–{clock(plan.entry_at)}:\n"
         f"если закрылась {colour} и закрытие {level} {plan.setup.invalidation:.8g} — условие выполнено.\n"
         "Другой цвет, доджи, нарушение уровня, отсутствие котировок или опоздание ко входу — ПРОПУСК.\n"

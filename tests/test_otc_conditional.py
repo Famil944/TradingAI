@@ -84,14 +84,16 @@ class ConditionalRuleTests(unittest.TestCase):
         self.assertIn("неизвестна", text)
         self.assertIn("отменяются", text)
 
-    def test_conditional_menu_offers_only_one_minute_expiry(self):
+    def test_conditional_menu_offers_all_expiries(self):
         from bot.otc_commands import menu
 
         buttons = [b for row in menu(1, conditional=True).inline_keyboard for b in row]
         timeframes = [
             b.callback_data for b in buttons if b.callback_data.startswith("otc:tf:")
         ]
-        self.assertEqual(timeframes, ["otc:tf:1"])
+        self.assertEqual(
+            timeframes, ["otc:tf:all", "otc:tf:1", "otc:tf:5", "otc:tf:15"]
+        )
 
     def test_replay_uses_future_colour_only_for_evaluation_not_scheduling(self):
         bars = history()
@@ -240,9 +242,21 @@ class ConditionalSessionTests(unittest.IsolatedAsyncioTestCase):
         try:
             await self.session.start(self.bot, 1, 30, (300, 900))
             await asyncio.wait_for(sent.wait(), 10)
-            self.assertEqual(self.session.timeframes, (60,))
+            self.assertEqual(self.session.timeframes, (300, 900))
             self.assertIn("Если свеча", self.bot.send_message.call_args.args[1])
-            self.assertEqual(self.db.plan_stats()["total"], 1)
+            for _ in range(100):
+                if self.db.plan_stats()["sent"] == 2:
+                    break
+                await asyncio.sleep(0.02)
+            self.assertEqual(self.db.plan_stats()["total"], 2)
+            with self.db.connect() as connection:
+                expirations = [
+                    r[0]
+                    for r in connection.execute(
+                        "SELECT expires_at-entry_at FROM otc_conditional_plans ORDER BY expires_at"
+                    )
+                ]
+            self.assertEqual(expirations, [300, 900])
             self.assertEqual(self.db.stats(), [])
         finally:
             await self.session.stop()
@@ -300,7 +314,7 @@ class ConditionalSessionTests(unittest.IsolatedAsyncioTestCase):
         await self.session._poll(self.bot, await self.provider.usage())
         self.session._wait_poll.assert_awaited_once()
         self.assertEqual(self.provider.candles.await_count, 2)
-        self.assertEqual(self.db.plan_stats()["total"], 1)
+        self.assertEqual(self.db.plan_stats()["total"], 3)
 
 
 if __name__ == "__main__":

@@ -170,3 +170,41 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExpirationStatisticsTests(unittest.TestCase):
+    def test_separate_expirations_and_skip_not_a_win(self):
+        from services.otc_evaluation import compact_stats
+
+        with tempfile.TemporaryDirectory() as folder:
+            db = Database(Path(folder) / "stats.db")
+            db.init_db()
+            at = 1800000000
+            for seconds, outcome in ((60, "LOSS"), (300, "WIN"), (900, "SKIPPED")):
+                plan = make_plan(
+                    "A", at, Setup("UP", "red", 0.5, "fixture"), at, seconds=seconds
+                )
+                self.assertEqual(plan.expires_at - plan.entry_at, seconds)
+                identifier = db.prepare_plan(plan, at)
+                self.assertIsNotNone(identifier)
+                self.assertIsNone(db.prepare_plan(plan, at))
+                with db.connect() as connection:
+                    connection.execute(
+                        "INSERT INTO otc_plan_assessments(plan_id,assessed_at,outcome,condition_result,source,reason,evidence) VALUES(?,?,?,?,?,?,?)",
+                        (
+                            identifier,
+                            at + 2000,
+                            outcome,
+                            "MET",
+                            "fixture",
+                            "fixture",
+                            "{}",
+                        ),
+                    )
+            for seconds, key in ((60, "losses"), (300, "wins"), (900, "skipped")):
+                rows = db.virtual_stats(0, seconds)
+                self.assertEqual(sum(r["total"] for r in rows), 1)
+                self.assertEqual(sum(r[key] or 0 for r in rows), 1)
+            self.assertIn("Винрейт 100.0%", compact_stats(db.virtual_stats(0, 300), 5))
+            self.assertIn("Винрейт —", compact_stats(db.virtual_stats(0, 900), 15))
+            self.assertIn("Винрейт —", compact_stats([], 5))
