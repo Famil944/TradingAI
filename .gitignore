@@ -14,3 +14,12 @@ database/*.db-shm
 database/*.db-wal
 .vscode/
 config/disabled_autostart/
+
+*.db
+*.db-wal
+*.db-shm
+*.db.backup-*
+*.sqlite*
+*.egg-info/
+build/
+dist/

@@ -1,93 +1,45 @@
-from pydantic import BaseModel
-from pathlib import Path
-from typing import Optional
+"""Local configuration; secrets are never serialized or logged."""
+
 import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-# Загружаем .env файл
-load_dotenv()
+ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT / ".env", override=False)
 
 
-class Settings(BaseModel):
-    """Основные настройки приложения."""
-    
-    # Telegram
-    telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    
-    # Binance
-    binance_base_url: str = os.getenv("BINANCE_BASE_URL", "https://api.binance.com")
-    
-    # Scanner
-    scan_interval_minutes: int = int(os.getenv("SCAN_INTERVAL_MINUTES", "5"))
-    auto_scan_enabled: bool = os.getenv("AUTO_SCAN_ENABLED", "true").lower() in (
-        "1", "true", "yes", "on"
+@dataclass(frozen=True)
+class Settings:
+    telegram_bot_token: str = field(
+        default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""), repr=False
     )
-    auto_notify_min_score: int = int(os.getenv("AUTO_NOTIFY_MIN_SCORE", "75"))
-    # Старые .env содержали TOP-20. Автономный режим теперь гарантированно
-    # проверяет не меньше TOP-100 даже после обычного git pull на телефоне.
-    auto_priority_top_limit: int = max(
-        100, int(os.getenv("AUTO_PRIORITY_TOP_LIMIT", "100"))
+    otcharts_api_key: str = field(
+        default_factory=lambda: os.getenv("OTCHARTS_API_KEY", ""), repr=False
     )
-    rss_news_enabled: bool = os.getenv("RSS_NEWS_ENABLED", "true").lower() in (
-        "1", "true", "yes", "on"
+    admin_chat_id: int = field(
+        default_factory=lambda: int(os.getenv("OTC_ADMIN_CHAT_ID", "0") or "0")
     )
-    news_cache_minutes: int = int(os.getenv("NEWS_CACHE_MINUTES", "5"))
-    min_signal_score: int = int(os.getenv("MIN_SIGNAL_SCORE", "75"))
-    signal_cooldown_minutes: int = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "45"))
-    signal_score_change_threshold: int = int(os.getenv("SIGNAL_SCORE_CHANGE_THRESHOLD", "10"))
-    scanner_top_limit: int = int(os.getenv("SCANNER_TOP_LIMIT", "50"))
-    min_quote_volume_usdt: float = float(os.getenv("MIN_QUOTE_VOLUME_USDT", "10000000"))
-    max_spread_percent: float = float(os.getenv("MAX_SPREAD_PERCENT", "0.20"))
-    min_volume_ratio: float = float(os.getenv("MIN_VOLUME_RATIO", "0.80"))
-    min_ema20_slope_percent: float = float(os.getenv("MIN_EMA20_SLOPE_PERCENT", "0.02"))
-    max_short_pump_percent: float = float(os.getenv("MAX_SHORT_PUMP_PERCENT", "6.0"))
-    min_resistance_room_percent: float = float(os.getenv("MIN_RESISTANCE_ROOM_PERCENT", "3.3"))
-    min_drawdown_percent: float = float(os.getenv("MIN_DRAWDOWN_PERCENT", "3"))
-    max_drawdown_percent: float = float(os.getenv("MAX_DRAWDOWN_PERCENT", "45"))
-    scanner_concurrency: int = int(os.getenv("SCANNER_CONCURRENCY", "8"))
-    min_listing_days: int = int(os.getenv("MIN_LISTING_DAYS", "60"))
-    listing_history_days: int = int(os.getenv("LISTING_HISTORY_DAYS", "365"))
-    max_listing_downtrend_percent: float = float(os.getenv("MAX_LISTING_DOWNTREND_PERCENT", "30"))
-    max_distance_from_history_low_percent: float = float(os.getenv("MAX_DISTANCE_FROM_HISTORY_LOW_PERCENT", "12"))
-    binance_request_timeout_seconds: float = float(os.getenv("BINANCE_REQUEST_TIMEOUT_SECONDS", "8"))
-    binance_max_failover_attempts: int = int(os.getenv("BINANCE_MAX_FAILOVER_ATTEMPTS", "3"))
-    symbol_analysis_timeout_seconds: float = float(os.getenv("SYMBOL_ANALYSIS_TIMEOUT_SECONDS", "45"))
-    binance_risk_timeout_seconds: float = float(os.getenv("BINANCE_RISK_TIMEOUT_SECONDS", "12"))
-    binance_risk_cache_minutes: int = int(os.getenv("BINANCE_RISK_CACHE_MINUTES", "30"))
-    max_allowed_risk_score: int = int(os.getenv("MAX_ALLOWED_RISK_SCORE", "69"))
-    caution_min_signal_score: int = int(os.getenv("CAUTION_MIN_SIGNAL_SCORE", "75"))
-    high_risk_min_signal_score: int = int(os.getenv("HIGH_RISK_MIN_SIGNAL_SCORE", "80"))
-    signal_validity_minutes: int = int(os.getenv("SIGNAL_VALIDITY_MINUTES", "30"))
-    pump_min_quote_volume_usdt: float = float(os.getenv("PUMP_MIN_QUOTE_VOLUME_USDT", "1000000"))
-    # Не позволяем старому PUMP_MIN_SCORE=60 из окружения вернуть шумные
-    # сигналы после обычного обновления приложения.
-    pump_min_score: int = max(73, int(os.getenv("PUMP_MIN_SCORE", "73")))
-    pump_min_volume_ratio_1m: float = float(os.getenv("PUMP_MIN_VOLUME_RATIO_1M", "1.50"))
-    pump_min_confirmation_ratio: float = float(os.getenv("PUMP_MIN_CONFIRMATION_RATIO", "1.10"))
-    pump_min_trade_ratio: float = float(os.getenv("PUMP_MIN_TRADE_RATIO", "1.50"))
-    pump_min_buyer_ratio: float = float(os.getenv("PUMP_MIN_BUYER_RATIO", "0.45"))
-    pump_max_hour_move_percent: float = float(os.getenv("PUMP_MAX_HOUR_MOVE_PERCENT", "6.0"))
-    pump_scan_interval_minutes: int = int(os.getenv("PUMP_SCAN_INTERVAL_MINUTES", "15"))
-    pump_success_percent: float = float(os.getenv("PUMP_SUCCESS_PERCENT", "5"))
-    pump_observation_hours: int = int(os.getenv("PUMP_OBSERVATION_HOURS", "24"))
-    excluded_symbols_csv: str = os.getenv("EXCLUDED_SYMBOLS", "TLMUSDT")
-
-    @property
-    def excluded_symbols(self) -> set[str]:
-        return {
-            item.strip().upper().replace("/", "")
-            for item in self.excluded_symbols_csv.split(",")
-            if item.strip()
-        }
-    
-    # Database
-    database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/bot.db")
-    
-    # Logging
-    log_level: str = os.getenv("LOG_LEVEL", "INFO")
-    
-    class Config:
-        case_sensitive = False
+    database_path: str = field(
+        default_factory=lambda: (
+            os.getenv("TRADING_AI_DB_PATH", "")
+            or os.getenv("DATABASE_URL", "data/bot.db")
+            .removeprefix("sqlite+aiosqlite:///")
+            .removeprefix("sqlite:///")
+        )
+    )
+    log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
+    max_instruments: int = field(
+        default_factory=lambda: max(1, int(os.getenv("OTC_MAX_INSTRUMENTS", "3")))
+    )
+    cooldown_seconds: int = field(
+        default_factory=lambda: max(60, int(os.getenv("OTC_COOLDOWN_SECONDS", "900")))
+    )
+    max_tick_age: float = 8.0
+    max_tick_gap: float = 8.0
+    payout_max_age: float = 60.0
+    settlement_tolerance: float = 2.0
 
 
 settings = Settings()

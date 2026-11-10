@@ -1,6 +1,7 @@
 """Conservative OTC candle filters. These are heuristics, not probability estimates."""
+
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -13,29 +14,40 @@ class Candle:
 
 
 def normalize_candles(raw: Iterable[dict], now: int) -> list[Candle]:
-    """OTCharts Pocket Option historical candle clock may be UTC+2."""
-    items = list(raw)
-    if not items:
-        return []
-    newest = max(int(item["time"]) for item in items)
-    shift = 7200 if abs(newest - 7200 - now) < abs(newest - now) else 0
+    """Accept only UTC seconds/milliseconds; never guess venue offsets."""
+    import math
+
+    from services.otc_market import utc_timestamp
+
     candles = {}
-    for item in items:
-        start = int(item["time"]) - shift
-        values = [float(item[key]) for key in ("open", "high", "low", "close")]
-        if (
-            start % 60 != 0 or start + 60 > now or
-            min(values) <= 0 or
-            values[1] < max(values[0], values[3]) or
-            values[2] > min(values[0], values[3])
-        ):
+    conflicts = set()
+    for item in raw:
+        try:
+            stamp = utc_timestamp(item["time"])
+            start = int(stamp)
+            values = [float(item[key]) for key in ("open", "high", "low", "close")]
+            if (
+                stamp != start
+                or start % 60
+                or start + 60 > now
+                or not all(math.isfinite(v) and v > 0 for v in values)
+                or values[1] < max(values[0], values[2], values[3])
+                or values[2] > min(values[0], values[1], values[3])
+            ):
+                continue
+            bar = Candle(start, *values)
+            if start in candles and candles[start] != bar:
+                conflicts.add(start)
+            candles[start] = bar
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
-        candles[start] = Candle(start, *values)
-    return sorted(candles.values(), key=lambda candle: candle.time)
+    return [candles[k] for k in sorted(candles) if k not in conflicts]
 
 
 def aggregate(candles: list[Candle], period: int) -> list[Candle]:
     """Only complete, uninterrupted groups of minute bars are emitted."""
+    if period not in (60, 300, 900):
+        raise ValueError("Unsupported timeframe")
     if period == 60:
         return list(candles)
     count = period // 60
@@ -50,10 +62,15 @@ def aggregate(candles: list[Candle], period: int) -> list[Candle]:
             c.time != start + i * 60 for i, c in enumerate(group)
         ):
             continue
-        result.append(Candle(
-            start, group[0].open, max(c.high for c in group),
-            min(c.low for c in group), group[-1].close,
-        ))
+        result.append(
+            Candle(
+                start,
+                group[0].open,
+                max(c.high for c in group),
+                min(c.low for c in group),
+                group[-1].close,
+            )
+        )
     return result
 
 
@@ -85,7 +102,7 @@ def rsi(values: list[float], period: int = 14) -> float | None:
 def atr(candles: list[Candle], period: int = 14) -> float | None:
     if len(candles) < period + 1:
         return None
-    recent = candles[-period - 1:]
+    recent = candles[-period - 1 :]
     ranges = [
         max(c.high - c.low, abs(c.high - prev.close), abs(c.low - prev.close))
         for prev, c in zip(recent, recent[1:])
@@ -100,11 +117,13 @@ def _continuous(candles: list[Candle], period: int, count: int) -> bool:
     return all(b.time - a.time == period for a, b in zip(sample, sample[1:]))
 
 
-def candidate(minutes: list[Candle], seconds: int, closed_at: int) -> tuple[str, str] | None:
+def candidate(
+    minutes: list[Candle], seconds: int, closed_at: int
+) -> tuple[str, str] | None:
     """Signal only at the close of a *complete* candle, using no future data."""
     if seconds not in (60, 300, 900):
         return None
-    bars = aggregate(minutes, seconds)
+    bars = aggregate([c for c in minutes if c.time + 60 <= closed_at], seconds)
     if not bars or bars[-1].time + seconds != closed_at:
         return None
     if not _continuous(bars, seconds, 55):
@@ -124,15 +143,27 @@ def candidate(minutes: list[Candle], seconds: int, closed_at: int) -> tuple[str,
     # Exclude extraordinary spikes and very flat EMA slopes.
     if candle_range > 2.5 * strength or abs(fast - previous_fast) < 0.08 * strength:
         return None
-    bullish = fast > slow and last.close > fast and 53 <= oscillator <= 68 and last.close > last.open
-    bearish = fast < slow and last.close < fast and 32 <= oscillator <= 47 and last.close < last.open
+    bullish = (
+        fast > slow
+        and last.close > fast
+        and 53 <= oscillator <= 68
+        and last.close > last.open
+    )
+    bearish = (
+        fast < slow
+        and last.close < fast
+        and 32 <= oscillator <= 47
+        and last.close < last.open
+    )
     if not bullish and not bearish:
         return None
     direction = "UP" if bullish else "DOWN"
     # Compare with next higher timeframe using ONLY already closed bars.
     higher = 300 if seconds == 60 else 900 if seconds == 300 else 900
     if higher != seconds:
-        higher_bars = [c for c in aggregate(minutes, higher) if c.time + higher <= closed_at]
+        higher_bars = [
+            c for c in aggregate(minutes, higher) if c.time + higher <= closed_at
+        ]
         if not _continuous(higher_bars, higher, 50):
             return None
         upper_closes = [c.close for c in higher_bars]

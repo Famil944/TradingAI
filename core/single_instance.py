@@ -13,9 +13,7 @@ class SingleInstance:
         try:
             # На Windows запрещаем повторное использование порта другим процессом.
             if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-                sock.setsockopt(
-                    socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
-                )
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             sock.bind(("127.0.0.1", self.port))
             sock.listen(1)
         except OSError:

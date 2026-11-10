@@ -1,123 +1,83 @@
+"""TradingAI: read-only OTC research bot."""
+
 import asyncio
 import logging
-import time
-from aiogram import Dispatcher, Bot
+
+from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
+
+from bot import otc_commands
 from config.settings import settings
-from database.db import Database
-from bot.otc_commands import router as otc_router, service as otc_service
-from bot.commands import (
-    router as commands_router,
-    manual_scanner,
-    scan_lock,
-    configure_pump_service,
-)
+from core.logging import SecretFormatter
 from core.single_instance import SingleInstance
-from services.signal_watch_service import SignalWatchService
-from services.auto_signal_service import AutoSignalService
-from services.news_sentiment_service import NewsSentimentService
-from services.pump_service import PumpService
+from database.db import Database
+from services.otc_session import OTCSession
 
-# Настройка логирования
-logging.basicConfig(
-    level=settings.log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-
-async def otc_session_watchdog(bot):
-    while True:
-        await asyncio.sleep(3)
-        if otc_service.running() and otc_service.ends_at and time.time() >= otc_service.ends_at:
-            chat_id = otc_service.chat_id
-            otc_service.stop()
-            await bot.send_message(chat_id, "⏹ Время OTC-сканирования закончилось.")
+COMMANDS = [
+    ("start", "Начать"),
+    ("help", "Справка"),
+    ("otc", "OTC меню"),
+    ("otc_status", "Статус OTC"),
+    ("otc_stop", "Остановить OTC"),
+    ("otc_stats", "Виртуальная статистика"),
+    ("otc_diagnostics", "Диагностика OTC"),
+]
 
 
 async def main():
-    """Главная функция запуска бота."""
-    
-    # Инициализация базы данных
-    logger.info("Инициализация базы данных...")
+    if not settings.telegram_bot_token:
+        print("Не задан TELEGRAM_BOT_TOKEN. Заполните локальный .env по .env.example.")
+        return 1
+    if settings.admin_chat_id <= 0:
+        print("Не задан положительный OTC_ADMIN_CHAT_ID личного чата владельца.")
+        return 1
     db = Database()
-    db.init_db()
-    logger.info("✅ База данных инициализирована")
-    
-    # Создание бота
-    logger.info("Создание Telegram бота...")
+    await asyncio.to_thread(db.init_db)
+    await asyncio.to_thread(db.recover)
+    service = OTCSession(db=db)
+    otc_commands.service = service
     bot = Bot(token=settings.telegram_bot_token)
     dp = Dispatcher()
-    
-    # Регистрация роутера команд
-    dp.include_router(commands_router)
-    dp.include_router(otc_router)
-    
-    # Установка команд в меню бота
-    commands = [
-        BotCommand(command="start", description="Запуск бота"),
-        BotCommand(command="scan", description="Найти монеты"),
-        BotCommand(command="trades", description="Мои сделки"),
-        BotCommand(command="auto", description="Автоскан ВКЛ/ВЫКЛ"),
-        BotCommand(command="stats", description="Результаты"),
-        BotCommand(command="pump", description="Анализ импульсов"),
-        BotCommand(command="diagnostics", description="Диагностика"),
-        BotCommand(command="help", description="Справка"),
-        BotCommand(command="otc", description="Pocket Option OTC-сигналы"),
-        BotCommand(command="otc_status", description="Статус OTC и API"),
-    ]
+    dp.include_router(otc_commands.router)
     try:
-        await bot.set_my_commands(commands)
-    except Exception:
-        await bot.session.close()
-        raise
-    
-    logger.info("✅ Бот создан и настроен")
-    news_service = NewsSentimentService()
-    pump_service = PumpService(bot, news_service)
-    configure_pump_service(pump_service)
-    pump_task = asyncio.create_task(pump_service.run())
-    otc_watchdog_task = asyncio.create_task(otc_session_watchdog(bot))
-    watch_service = SignalWatchService(bot, news_service=news_service)
-    watch_task = asyncio.create_task(watch_service.run())
-    auto_signal_service = AutoSignalService(
-        bot, manual_scanner, scan_lock, news_service
-    )
-    auto_signal_task = asyncio.create_task(auto_signal_service.run())
-    
-    # Запуск polling'а бота
-    logger.info("🚀 Бот запущен: основной и экспериментальный мониторинг активны")
-    
-    try:
-        await dp.start_polling(bot)
-    except KeyboardInterrupt:
-        logger.info("Остановка бота...")
+        await bot.set_my_commands(
+            [BotCommand(command=c, description=d) for c, d in COMMANDS]
+        )
+        await dp.start_polling(bot, close_bot_session=False)
     finally:
-        otc_service.stop()
-        otc_watchdog_task.cancel()
-        watch_service.stop()
-        auto_signal_service.stop()
-        watch_task.cancel()
-        tasks = [watch_task, otc_watchdog_task]
-        pump_service.stop()
-        pump_task.cancel()
-        tasks.append(pump_task)
-        if auto_signal_task:
-            auto_signal_task.cancel()
-            tasks.append(auto_signal_task)
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await service.stop()
+        await service.provider.close()
         await bot.session.close()
-        logger.info("✅ Бот остановлен")
+    return 0
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=settings.log_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(
+            SecretFormatter((settings.telegram_bot_token, settings.otcharts_api_key))
+        )
+    # Framework request URLs may include bot credentials; hide transport details.
+    logging.getLogger("aiohttp").setLevel(logging.CRITICAL)
+    logging.getLogger("aiogram").setLevel(logging.CRITICAL)
     instance = SingleInstance()
     if not instance.acquire():
-        logger.error("Бот уже запущен. Второй экземпляр остановлен.")
+        print("Другой экземпляр бота уже запущен.")
         raise SystemExit(2)
     try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
+        try:
+            code = asyncio.run(main())
+        except KeyboardInterrupt:
+            code = 0
+        except Exception as exc:
+            logging.error(
+                "Запуск остановлен: %s. Проверьте конфигурацию и сеть.",
+                type(exc).__name__,
+            )
+            code = 1
     finally:
         instance.close()
+    raise SystemExit(code)

@@ -1,129 +1,163 @@
-"""Telegram controls for a session-based Pocket Option OTC signal scanner."""
-import os
-from aiogram import Router, F, types
+"""Owner-only Telegram menu and callbacks."""
+
+import asyncio
+import time
+
+from aiogram import BaseMiddleware, F, Router, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from services.otc_session import OTCSession, TIMEFRAMES
-from services.otc_data import usage
-
+from config.settings import settings
+from services.otc_market import TIMEFRAMES
+from services.otc_statistics import format_stats
 
 router = Router()
-service = OTCSession()
+service = None
 choices = {}
 
 
-def allowed(chat_id: int) -> bool:
-    value = os.getenv("OTC_ADMIN_CHAT_ID", "")
-    return value.isdigit() and int(value) == chat_id
+class OwnerOnly(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        message = event.message if isinstance(event, types.CallbackQuery) else event
+        user = event.from_user
+        permitted = (
+            isinstance(message, types.Message)
+            and user is not None
+            and message.chat.type == "private"
+            and allowed(message.chat.id)
+            and user.id == settings.admin_chat_id
+        )
+        if not permitted:
+            if isinstance(event, types.CallbackQuery):
+                await event.answer("Нет доступа", show_alert=True)
+            elif isinstance(event, types.Message):
+                await event.answer(
+                    "Нет доступа. Укажите ID владельца в OTC_ADMIN_CHAT_ID локального .env."
+                )
+            return
+        return await handler(event, data)
+
+
+router.message.outer_middleware(OwnerOnly())
+router.callback_query.outer_middleware(OwnerOnly())
+
+
+def allowed(chat_id):
+    return settings.admin_chat_id > 0 and chat_id == settings.admin_chat_id
 
 
 def menu(chat_id):
     chosen = choices.get(chat_id, TIMEFRAMES)
-    timeframes = [
-        InlineKeyboardButton(
-            text=("✅ " if selected == choice else "") + label,
-            callback_data=f"otc:tf:{choice}",
+    buttons = []
+    for key, label, value in [
+        ("all", "Все M1/M5/M15", TIMEFRAMES),
+        ("1", "M1", (60,)),
+        ("5", "M5", (300,)),
+        ("15", "M15", (900,)),
+    ]:
+        buttons.append(
+            InlineKeyboardButton(
+                text=("✅ " if chosen == value else "") + label,
+                callback_data=f"otc:tf:{key}",
+            )
         )
-        for choice, label, selected in (
-            ("all", "Все M1/M5/M15", chosen == TIMEFRAMES),
-            ("1", "M1", chosen == (60,)),
-            ("5", "M5", chosen == (300,)),
-            ("15", "M15", chosen == (900,)),
+    rows = [[buttons[0]], buttons[1:]]
+    for pair in [
+        [(30, "30 минут"), (60, "1 час")],
+        [(120, "2 часа"), (240, "4 часа")],
+        [(480, "8 часов"), (0, "До остановки")],
+    ]:
+        rows.append(
+            [
+                InlineKeyboardButton(text=label, callback_data=f"otc:start:{value}")
+                for value, label in pair
+            ]
         )
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [timeframes[0]],
-        timeframes[1:],
+    rows.append(
         [
-            InlineKeyboardButton(text="30 мин", callback_data="otc:start:30"),
-            InlineKeyboardButton(text="1 час", callback_data="otc:start:60"),
-        ],
-        [
-            InlineKeyboardButton(text="2 часа", callback_data="otc:start:120"),
-            InlineKeyboardButton(text="4 часа", callback_data="otc:start:240"),
-        ],
-        [
-            InlineKeyboardButton(text="8 часов", callback_data="otc:start:480"),
-            InlineKeyboardButton(text="До остановки", callback_data="otc:start:0"),
-        ],
-        [InlineKeyboardButton(text="⏹ Остановить", callback_data="otc:stop")],
-        [InlineKeyboardButton(text="🔎 Статус", callback_data="otc:status")],
-    ])
+            InlineKeyboardButton(text="Остановить", callback_data="otc:stop"),
+            InlineKeyboardButton(text="Статус", callback_data="otc:status"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@router.message(Command("otc_id"))
-async def otc_id(message: types.Message):
-    await message.answer(f"ID этого Telegram-чата: {message.chat.id}")
-
-
-@router.message(Command("otc"))
-async def otc_menu(message: types.Message):
-    if not allowed(message.chat.id):
-        await message.answer(
-            "OTC-сканер доступен владельцу. Узнай ID через /otc_id "
-            "и укажи OTC_ADMIN_CHAT_ID в локальном .env."
-        )
-        return
+@router.message(Command("start", "help", "otc"))
+async def show_menu(message: types.Message):
     await message.answer(
-        "📊 Pocket Option OTC · только 90%+ и свежие данные.\n"
-        "Выбери экспирацию, затем время работы сканера.\n"
-        "Не открывает сделки. Бесплатный OTCharts не поддерживает "
-        "сигналы в реальном времени.",
+        "Pocket Option OTC · исследовательские сигналы M1/M5/M15.\n"
+        "ЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ. Автоматических сделок нет.\n"
+        "Требуются свежие котировки, подтверждённые открытие и выплата ≥90%.\n"
+        "/otc_status — статус; /otc_stop — остановить; /otc_stats [24h|7d|30d|all] — статистика; "
+        "/otc_diagnostics — ограничения источника.\nВыберите экспирацию и длительность.",
         reply_markup=menu(message.chat.id),
     )
 
 
 @router.message(Command("otc_status"))
-async def otc_status(message: types.Message):
-    if not allowed(message.chat.id):
-        await message.answer("Нет доступа. Проверь OTC_ADMIN_CHAT_ID.")
+async def status(message: types.Message):
+    await message.answer(service.status())
+
+
+@router.message(Command("otc_stop"))
+async def stop(message: types.Message):
+    stopped = await service.stop()
+    await message.answer("OTC остановлен." if stopped else "OTC уже остановлен.")
+
+
+@router.message(Command("otc_stats"))
+async def stats(message: types.Message):
+    args = (message.text or "").split()
+    period = args[1] if len(args) > 1 else "all"
+    durations = {"24h": 86400, "7d": 604800, "30d": 2592000, "all": None}
+    if period not in durations:
+        await message.answer("Используйте /otc_stats [24h|7d|30d|all]")
         return
-    lines = [service.status()]
-    try:
-        current = await usage()
-        lines.append(
-            f"\nТариф OTCharts: {current.plan_name}\n"
-            f"Потоки: {current.streams_limit}\n"
-            f"Активов на поток: {current.instruments_per_stream or 'без лимита'}\n"
-            f"API-запросов осталось: {current.remaining}"
-        )
-    except Exception:
-        lines.append("\nНе удалось проверить OTCharts. Проверь OTCHARTS_API_KEY.")
-    await message.answer("\n".join(lines))
+    since = time.time() - durations[period] if durations[period] else 0
+    rows = await asyncio.to_thread(service.db.stats, since)
+    await message.answer(format_stats(rows, period))
+
+
+@router.message(Command("otc_diagnostics"))
+async def diagnostics(message: types.Message):
+    # No API call: inspecting diagnostics must not consume the account quota.
+    await message.answer(
+        service.status()
+        + "\n\nOTCharts SDK 0.7.0; Pocket Option venue otc; время UTC+2 преобразуется в UTC. "
+        "SDK не передаёт timestamp выплаты; статус открытия Pocket Option может быть неизвестен. "
+        "Без этих подтверждений сигналы заблокированы. Ключ и права проверяются при запуске сеанса. "
+        "При отсутствии доступа: «Нет доступа к потоковым котировкам/выплатам». "
+        "Независимых цен платформы нет: совпадение не подтверждено, исход UNKNOWN. "
+        "Просадка и walk-forward доступны в отчёте replay. Секреты не выводятся."
+    )
 
 
 @router.callback_query(F.data.startswith("otc:"))
-async def otc_callback(query: types.CallbackQuery):
-    if not allowed(query.message.chat.id):
-        await query.answer("Нет доступа", show_alert=True)
+async def callback(query: types.CallbackQuery):
+    parts = (query.data or "").split(":")
+    if len(parts) < 2:
+        await query.answer("Неизвестное действие")
         return
-    parts = query.data.split(":")
     action = parts[1]
-    if action == "tf":
-        tf = parts[2]
-        choices[query.message.chat.id] = (
-            TIMEFRAMES if tf == "all" else (int(tf) * 60,)
-        )
+    chat = query.message.chat.id
+    if action == "tf" and len(parts) == 3 and parts[2] in ("all", "1", "5", "15"):
+        choices[chat] = TIMEFRAMES if parts[2] == "all" else (int(parts[2]) * 60,)
         await query.answer("Экспирации выбраны")
-        await query.message.edit_reply_markup(reply_markup=menu(query.message.chat.id))
-    elif action == "start":
-        duration = int(parts[2])
-        if service.start(
-            query.bot, query.message.chat.id,
-            duration, choices.get(query.message.chat.id, TIMEFRAMES),
-        ):
-            await query.answer("Сканирование запускается")
-            await query.message.answer(
-                "⏳ Проверяю тариф и подключаю поток. "
-                "Если поток недоступен, сигналы не отправляются."
-            )
-        else:
-            await query.answer("Сканирование уже идёт", show_alert=True)
-    elif action == "stop":
-        stopped = service.stop()
-        await query.answer("Остановлено" if stopped else "Сканер уже остановлен")
-        await query.message.answer("⏹ Остановка OTC-сканера запрошена.")
-    elif action == "status":
+        await query.message.edit_reply_markup(reply_markup=menu(chat))
+    elif (
+        action == "start"
+        and len(parts) == 3
+        and parts[2] in ("0", "30", "60", "120", "240", "480")
+    ):
+        started = await service.start(
+            query.bot, chat, int(parts[2]), choices.get(chat, TIMEFRAMES)
+        )
+        await query.answer("Проверяю доступ" if started else "Сеанс уже запущен")
+    elif action == "stop" and len(parts) == 2:
+        stopped = await service.stop()
+        await query.answer("Остановлено" if stopped else "Уже остановлен")
+    elif action == "status" and len(parts) == 2:
         await query.answer()
         await query.message.answer(service.status())
+    else:
+        await query.answer("Недопустимый выбор")

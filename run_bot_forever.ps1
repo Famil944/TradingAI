@@ -4,6 +4,7 @@ $pythonPath = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $mainPath = Join-Path $projectRoot "main.py"
 $logPath = Join-Path $projectRoot "logs\bot_supervisor.log"
 
+New-Item -ItemType Directory -Path (Join-Path $projectRoot "logs") -Force | Out-Null
 Set-Location -LiteralPath $projectRoot
 
 while ($true) {
@@ -12,7 +13,7 @@ while ($true) {
     & $pythonPath $mainPath 2>&1 | Out-File -FilePath $logPath -Append
     $exitCode = $LASTEXITCODE
 
-    if ($exitCode -eq 2) {
+    if ($exitCode -in 1, 2) {
         "[$(Get-Date)] Another bot instance is active; supervisor exits" |
             Out-File -FilePath $logPath -Append
         break
