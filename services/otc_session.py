@@ -5,6 +5,7 @@ import contextlib
 import logging
 import math
 import time
+from collections import Counter
 from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -53,6 +54,9 @@ class OTCSession:
         self.plan = None
         self.transport = "live"
         self.poll_requests_used = 0
+        self.last_signal_at = None
+        self.session_signal_count = 0
+        self._health_counts = Counter()
 
     @property
     def test_mode(self):
@@ -89,6 +93,9 @@ class OTCSession:
             self.last_error = None
             self.transport = "pending"
             self.poll_requests_used = 0
+            self.last_signal_at = None
+            self.session_signal_count = 0
+            self._health_counts.clear()
             self.available = 0
             self.phase = "подключение"
             self.task = asyncio.create_task(self._timed_run(bot))
@@ -140,6 +147,7 @@ class OTCSession:
         return (
             f"OTC: {phase}\nРежим: {'тестовый — выплата/открытие могут быть неизвестны' if self.test_mode else 'строгий — открытие и выплата ≥90% подтверждены'}"
             f"\nДанные: { {'snapshot': 'снимки свечей без live-потока', 'live': 'поток', 'pending': 'ещё не определены (проверка доступа)'}.get(self.transport, 'нет данных') }\nЭкспирации: {', '.join(f'M{x // 60}' for x in self.timeframes)}"
+            f"\nСигналов за сеанс: {self.session_signal_count}; пауза по паре/экспирации {self.config.cooldown_seconds} с."
             f"\nДо: {end}\nОтслеживается: {monitored} из {self.available}.\n{'С закрытия свечи' if self.transport == 'snapshot' else 'Возраст котировки'}: {age}"
             "\nЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ. Совпадение с платформой не подтверждено."
             + (
@@ -157,9 +165,64 @@ class OTCSession:
 
     async def _notify(self, bot, text):
         try:
-            await bot.send_message(self.chat_id, text)
-        except Exception:
-            logger.warning("Telegram notification failed")
+            async with asyncio.timeout(10):
+                await bot.send_message(self.chat_id, text)
+        except Exception as exc:
+            logger.warning("Telegram notification failed: %s", type(exc).__name__)
+
+    async def _health_report(self, bot):
+        counts = self._health_counts.copy()
+        self._health_counts.clear()
+        status = self.status()
+        logger.info(
+            "OTC health: %s; reasons=%s", status.replace("\n", " | "), dict(counts)
+        )
+        interval = getattr(self.config, "health_report_seconds", 120)
+        if (
+            self.last_signal_at is not None
+            and 0 <= self.clock() - self.last_signal_at < interval
+        ):
+            return  # The signal itself is already an update to the owner.
+        labels = {
+            "invalid_or_stale_tick": "старые или недопустимые тики",
+            "duplicate_or_unordered_tick": "повторные/неупорядоченные тики",
+            "incomplete_candle": "неполные свечи",
+            "stream_no_fresh_ticks": "поток без свежих цен",
+            "stream_disconnected": "разрывы потока",
+            "cooldown": "пауза между сигналами",
+            "late_signal": "запоздалый расчёт",
+            "unknown_or_stale_payout": "нет подтверждённой выплаты",
+            "stale_snapshot": "старый снимок свечей",
+        }
+        lines = []
+        for reason, count in counts.most_common(4):
+            label = (
+                "условия стратегии не выполнены ("
+                + reason.removeprefix("no_candidate_")
+                + ")"
+                if reason.startswith("no_candidate_")
+                else labels.get(reason, reason)
+            )
+            lines.append(f"{label}: {count}")
+        explanation = (
+            "; ".join(lines)
+            if lines
+            else "ожидание данных, истории или закрытия полной свечи"
+        )
+        await self._notify(
+            bot,
+            f"КОНТРОЛЬ РАБОТЫ — это не торговый сигнал.\n"
+            f"За последние {interval:g} с нового сигнала нет. Причины: {explanation}.\n"
+            + status,
+        )
+
+    async def _health_watchdog(self, bot):
+        interval = getattr(self.config, "health_report_seconds", 120)
+        if interval <= 0:
+            return
+        while True:
+            await asyncio.sleep(interval)
+            await self._health_report(bot)
 
     async def _expiry_watchdog(self):
         while True:
@@ -174,6 +237,7 @@ class OTCSession:
 
     async def _timed_run(self, bot):
         watchdog = asyncio.create_task(self._expiry_watchdog())
+        health_watchdog = asyncio.create_task(self._health_watchdog(bot))
         deadline = None
         try:
             if self.ends_at is None:
@@ -195,6 +259,7 @@ class OTCSession:
         except AccessUnavailable as exc:
             # Exception text originates solely in our sanitized adapter.
             self.last_error = str(exc)
+            logger.warning("OTC access unavailable: %s", self.last_error)
             await self._notify(bot, self.last_error)
         except asyncio.CancelledError:
             raise
@@ -206,8 +271,8 @@ class OTCSession:
             await self._notify(bot, self.last_error)
         finally:
             watchdog.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await watchdog
+            health_watchdog.cancel()
+            await asyncio.gather(watchdog, health_watchdog, return_exceptions=True)
             self.phase = "остановлен"
             self.monitored = 0
             self._quotes.clear()
@@ -233,13 +298,32 @@ class OTCSession:
                     reconnect_delay(attempt, getattr(exc, "retry_after", 0))
                 )
 
+    async def _wait_stream_release(self):
+        await asyncio.sleep(5)
+
     async def _run(self, bot):
         plan = await self._usage_with_retry()
         self.plan = plan
+        logger.info(
+            "OTCharts access: plan=%s; requests=%s; streams=%s/%s",
+            plan.plan_name,
+            plan.remaining,
+            plan.streams_open,
+            plan.streams_limit,
+        )
         if self.test_mode and plan.streams_limit <= 0:
             await self._poll(bot, plan)
             return
         self.transport = "live"
+        if plan.streams_limit > 0 and plan.streams_open >= plan.streams_limit:
+            # A just-closed connection may take a few seconds to release its slot.
+            for _ in range(3):
+                self.phase = "ожидание освобождения потока OTCharts"
+                await self._wait_stream_release()
+                plan = await self._usage_with_retry()
+                self.plan = plan
+                if plan.streams_open < plan.streams_limit:
+                    break
         if plan.streams_limit <= plan.streams_open:
             raise AccessUnavailable(
                 "Нет доступа к потоковым котировкам/выплатам или нет свободного потока."
@@ -259,15 +343,22 @@ class OTCSession:
         if cap <= 0:
             raise AccessUnavailable("Нет доступных инструментов на поток.")
         chosen = assets[:cap]
+        logger.info("OTC selected: %d of %d instruments", len(chosen), len(assets))
         # One catalogue, one stream, history per instrument; leave a reserve.
         if plan.remaining < len(chosen) + 3:
             raise AccessUnavailable(
                 "Недостаточно запросов OTCharts для истории и потока."
             )
         history = {}
-        for asset in chosen:
+        for index, asset in enumerate(chosen, 1):
+            self.phase = f"загрузка истории {index}/{len(chosen)}"
             history[asset.symbol] = await self.provider.candles(
                 asset.symbol, self.clock()
+            )
+            logger.info(
+                "OTC history %s: %d closed candles",
+                asset.symbol,
+                len(history[asset.symbol]),
             )
         await self._scan(bot, history, {a.symbol: a for a in chosen})
 
@@ -363,6 +454,7 @@ class OTCSession:
 
     async def _event(self, reason, symbol=None):
         # Bound repeated rejection writes without hiding the latest cause.
+        self._health_counts[reason] += 1
         key = (symbol, reason)
         now = self.clock()
         if self.db and now - self._last_events.get(key, float("-inf")) >= 60:
@@ -377,6 +469,7 @@ class OTCSession:
         while True:
             try:
                 self.phase = "ожидание свежего тика"
+                logger.info("OTC waiting for fresh ticks: %d instruments", len(chosen))
                 self.monitored = 0
                 loop = asyncio.get_running_loop()
                 stale_timeout = getattr(self.config, "stream_stale_timeout", 15.0)
@@ -413,6 +506,7 @@ class OTCSession:
                         fresh_deadline = loop.time() + stale_timeout
                         if healthy_since is None:
                             healthy_since = loop.time()
+                            logger.info("OTC fresh stream confirmed")
                         if loop.time() - healthy_since >= 30:
                             attempt = 0
                         self.phase = "поток активен"
@@ -604,6 +698,8 @@ class OTCSession:
             await self._event("delivery_failed", tick.symbol)
             return
         await db_call(self.db.delivered, identifier, self.clock())
+        self.last_signal_at = self.clock()
+        self.session_signal_count += 1
         # An intended entry is not proof of a real trade or actual entry.
 
     async def _results(self, tick):

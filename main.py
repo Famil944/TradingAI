@@ -1,5 +1,6 @@
 """TradingAI: read-only OTC research bot."""
 
+import argparse
 import asyncio
 import logging
 
@@ -24,7 +25,7 @@ COMMANDS = [
 ]
 
 
-async def main():
+async def main(*, session_minutes=None):
     if not settings.telegram_bot_token:
         print("Не задан TELEGRAM_BOT_TOKEN. Заполните локальный .env по .env.example.")
         return 1
@@ -49,6 +50,16 @@ async def main():
             identity.username,
             settings.test_mode,
         )
+        if session_minutes is not None:
+            await service.start(
+                bot, settings.admin_chat_id, session_minutes, (60, 300, 900)
+            )
+            await service._notify(
+                bot,
+                "Тестовый сеанс запущен: M1/M5/M15, до 5 инструментов в пределах тарифа. "
+                "Пауза по паре/экспирации 2 минуты. Если сигнала нет, контроль работы приходит раз в 2 минуты. "
+                "Сигнал по расписанию не гарантируется. /otc_stop — остановить.",
+            )
         await dp.start_polling(bot, close_bot_session=False)
     finally:
         await service.stop()
@@ -58,6 +69,14 @@ async def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--otc-session-minutes",
+        type=int,
+        choices=(0, 30, 60, 120, 240, 480),
+        default=None,
+    )
+    args = parser.parse_args()
     logging.basicConfig(
         level=settings.log_level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -75,7 +94,7 @@ if __name__ == "__main__":
         raise SystemExit(2)
     try:
         try:
-            code = asyncio.run(main())
+            code = asyncio.run(main(session_minutes=args.otc_session_minutes))
         except KeyboardInterrupt:
             code = 0
         except Exception as exc:

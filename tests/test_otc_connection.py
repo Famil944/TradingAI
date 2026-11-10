@@ -3,6 +3,7 @@
 import asyncio
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -151,6 +152,74 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_duplicate_ticks_do_not_reset_freshness_deadline(self):
         await self.check_stalled_stream("duplicate")
+
+    async def test_health_report_explains_silence_without_trade_direction(self):
+        await self.session._event("invalid_or_stale_tick", "A")
+        await self.session._event("no_candidate_M1", "A")
+        await self.session._health_report(self.bot)
+        text = self.bot.send_message.call_args.args[1]
+        self.assertIn("КОНТРОЛЬ РАБОТЫ", text)
+        self.assertIn("старые или недопустимые тики", text)
+        self.assertIn("условия стратегии не выполнены (M1)", text)
+        self.assertNotIn("CALL / UP", text)
+        self.assertNotIn("PUT / DOWN", text)
+        self.assertEqual(self.db.stats(), [])
+        self.assertFalse(self.session._health_counts)
+
+    async def test_recent_signal_suppresses_redundant_health_notification(self):
+        self.session.last_signal_at = self.clock[0]
+        await self.session._health_report(self.bot)
+        self.bot.send_message.assert_not_called()
+
+    async def test_two_minute_cooldown_is_minimum_not_forced_direction(self):
+        from services.otc_market import Asset
+
+        self.session.config.cooldown_seconds = 120
+        self.session.chat_id = 1
+        for offset in (0, 119, 120):
+            now = self.clock[0] + offset
+            self.session.clock = lambda at=now: at
+            await self.session._send(
+                self.bot,
+                Tick("A", now, 1),
+                Asset("A", True, True, 95, now),
+                60,
+                ("UP", "fixture"),
+                now,
+            )
+        self.assertEqual(self.bot.send_message.await_count, 2)
+        self.assertEqual(self.session.session_signal_count, 2)
+        self.assertEqual(self.db.stats()[0]["total"], 2)
+
+    async def test_health_watchdog_is_cancelled_with_session(self):
+        self.session.config.health_report_seconds = 0.01
+        await self.session.start(self.bot, 1, 30, (60,))
+        for _ in range(100):
+            if self.bot.send_message.await_count:
+                break
+            await asyncio.sleep(0.005)
+        self.assertGreater(self.bot.send_message.await_count, 0)
+        await self.session.stop()
+        count = self.bot.send_message.await_count
+        await asyncio.sleep(0.03)
+        self.assertEqual(self.bot.send_message.await_count, count)
+
+    async def test_busy_stream_slot_can_clear_without_stopping_session(self):
+        free = await self.provider.usage()
+        self.provider.usage = AsyncMock(
+            side_effect=[replace(free, streams_open=1), free]
+        )
+        self.session._wait_stream_release = AsyncMock()
+        self.session._scan = AsyncMock()
+        await self.session._run(self.bot)
+        self.assertEqual(self.provider.usage.await_count, 2)
+        self.session._wait_stream_release.assert_awaited_once()
+        self.session._scan.assert_awaited_once()
+
+    async def test_failed_service_notification_does_not_crash_session(self):
+        self.bot.send_message.side_effect = TimeoutError("private transport detail")
+        await self.session._notify(self.bot, "health")
+        self.bot.send_message.assert_awaited_once()
 
     async def test_real_deadline_expiry_still_reports_elapsed_time(self):
         self.session.chat_id = 1

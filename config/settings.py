@@ -31,10 +31,10 @@ class Settings:
     )
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
     max_instruments: int = field(
-        default_factory=lambda: max(1, int(os.getenv("OTC_MAX_INSTRUMENTS", "3")))
+        default_factory=lambda: max(1, int(os.getenv("OTC_MAX_INSTRUMENTS", "5")))
     )
     cooldown_seconds: int = field(
-        default_factory=lambda: max(60, int(os.getenv("OTC_COOLDOWN_SECONDS", "900")))
+        default_factory=lambda: max(60, int(os.getenv("OTC_COOLDOWN_SECONDS", "120")))
     )
     test_mode: bool = field(
         default_factory=lambda: (
@@ -46,6 +46,11 @@ class Settings:
     )
     poll_request_budget: int = field(
         default_factory=lambda: max(2, int(os.getenv("OTC_POLL_REQUEST_BUDGET", "12")))
+    )
+    health_report_seconds: int = field(
+        default_factory=lambda: max(
+            0, int(os.getenv("OTC_HEALTH_REPORT_SECONDS", "120"))
+        )
     )
     snapshot_max_age: float = 30.0
     max_tick_age: float = 8.0
