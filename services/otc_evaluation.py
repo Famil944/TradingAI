@@ -220,19 +220,7 @@ def compact_stats(rows, minutes):
 
     wins, losses = count("wins"), count("losses")
     rate = f"{100 * wins / (wins + losses):.1f}%" if wins + losses else "—"
-    lines = [
-        f"M{minutes} · виртуально OTCharts",
-        f"Вин {wins}",
-        f"Проигрыш {losses}",
-        f"Пропуск {count('skipped')}",
-        f"Отмена {count('cancelled')}",
-    ]
-    for label, amount in (
-        ("Ничья", count("draws")),
-        ("Нет данных", count("unknown") + count("not_delivered")),
-        ("Ожидают", count("pending")),
-    ):
-        if amount:
-            lines.append(f"{label} {amount}")
-    lines.append(f"Винрейт {rate}")
-    return "\n".join(lines)
+    return (
+        f"M{minutes}\nВин {wins}\nЛос {losses}\n"
+        f"Пропуск {count('skipped')}\nВинрейт {rate}"
+    )
