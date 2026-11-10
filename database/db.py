@@ -156,6 +156,17 @@ class Database:
             return None
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
+            if seconds in (300, 900):
+                outstanding = c.execute(
+                    """SELECT 1 FROM otc_conditional_plans p
+                    LEFT JOIN otc_plan_assessments a ON a.plan_id=p.id
+                    WHERE p.expires_at-p.entry_at=?
+                    AND p.delivery NOT IN ('FAILED','LATE') AND p.lifecycle!='CANCELLED'
+                    AND (p.expires_at>? OR a.plan_id IS NULL) LIMIT 1""",
+                    (seconds, now),
+                ).fetchone()
+                if outstanding:
+                    return None
             active = c.execute(
                 "SELECT 1 FROM otc_conditional_plans WHERE symbol=? AND lifecycle='ACTIVE' AND expires_at>? AND expires_at-entry_at=?",
                 (plan.symbol, now, plan.expires_at - plan.entry_at),
