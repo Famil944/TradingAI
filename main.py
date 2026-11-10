@@ -43,6 +43,12 @@ async def main():
         await bot.set_my_commands(
             [BotCommand(command=c, description=d) for c, d in COMMANDS]
         )
+        identity = await bot.me()
+        logging.getLogger(__name__).info(
+            "Telegram bot @%s initialized; waiting for /otc (test mode: %s).",
+            identity.username,
+            settings.test_mode,
+        )
         await dp.start_polling(bot, close_bot_session=False)
     finally:
         await service.stop()
