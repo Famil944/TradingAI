@@ -67,6 +67,8 @@ class OTCSession:
         self.session_signal_count = 0
         self.session_plan_count = 0
         self._health_counts = Counter()
+        self._repair_last = {}
+        self._repair_count = 0
 
     @property
     def conditional_mode(self):
@@ -111,6 +113,8 @@ class OTCSession:
             self.session_signal_count = 0
             self.session_plan_count = 0
             self._health_counts.clear()
+            self._repair_last.clear()
+            self._repair_count = 0
             self.available = 0
             self.phase = "подключение"
             self.task = asyncio.create_task(self._timed_run(bot))
@@ -210,6 +214,8 @@ class OTCSession:
             "late_signal": "запоздалый расчёт",
             "unknown_or_stale_payout": "нет подтверждённой выплаты",
             "stale_snapshot": "старый снимок свечей",
+            "history_repaired": "непрерывная история восстановлена",
+            "history_repair_failed": "не удалось восстановить историю",
             "catalogue_refresh_failed": "не удалось обновить каталог, планы приостановлены",
             "conditional_no_setup": "контекст для условного плана не сформирован",
             "conditional_pending_or_cooldown": "уже есть план или действует пауза",
@@ -491,6 +497,52 @@ class OTCSession:
             self._last_events[key] = now
             await db_call(self.db.event, reason, symbol, now)
 
+    async def _repair_history(self, symbol, history):
+        """Backfill fully closed provider bars after an incomplete live minute."""
+        try:
+            plan = await self._usage_with_retry()
+            self.plan = plan
+            if plan.remaining <= 1:
+                await self._event("history_repair_quota", symbol)
+                return
+            fresh = await self.provider.candles(symbol, self.clock())
+            fresh = normalize_candles([vars(b) for b in fresh], int(self.clock()))
+            if not fresh:
+                await self._event("history_repair_empty", symbol)
+                return
+            # Provider closed bars are canonical; preserve newer live bars.
+            latest = fresh[-1].time
+            tail = [b for b in history.get(symbol, []) if b.time > latest]
+            merged = {b.time: b for b in fresh + tail}
+            history[symbol] = [merged[t] for t in sorted(merged)][-1200:]
+            logger.info(
+                "OTC history continuity restored: %s, %d bars",
+                symbol,
+                len(history[symbol]),
+            )
+            await self._event("history_repaired", symbol)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "OTC history repair failed: %s (%s)", symbol, type(exc).__name__
+            )
+            await self._event("history_repair_failed", symbol)
+
+    def _queue_history_repair(self, symbol, history, tasks):
+        now = self.clock()
+        if (
+            self._repair_count >= 50
+            or now - self._repair_last.get(symbol, float("-inf")) < 60
+        ):
+            return
+        existing = tasks.get(symbol)
+        if existing is not None and not existing.done():
+            return
+        self._repair_last[symbol] = now
+        self._repair_count += 1
+        tasks[symbol] = asyncio.create_task(self._repair_history(symbol, history))
+
     async def _refresh_stream_assets(self, active, chosen):
         while True:
             await asyncio.sleep(getattr(self.config, "catalogue_refresh_seconds", 30))
@@ -536,6 +588,7 @@ class OTCSession:
                 refresh_task = asyncio.create_task(
                     self._refresh_stream_assets(active, chosen)
                 )
+                repair_tasks = {}
                 try:
                     async with contextlib.aclosing(
                         self.provider.ticks(list(chosen))
@@ -579,8 +632,16 @@ class OTCSession:
                             if not bar:
                                 if builder.rejection:
                                     await self._event(builder.rejection, tick.symbol)
+                                    if builder.rejection == "incomplete_candle":
+                                        self._queue_history_repair(
+                                            tick.symbol, history, repair_tasks
+                                        )
                                 continue
                             values = history[tick.symbol]
+                            if values and values[-1].time + 60 < bar.time:
+                                self._queue_history_repair(
+                                    tick.symbol, history, repair_tasks
+                                )
                             if not values or values[-1].time < bar.time:
                                 values.append(bar)
                                 del values[:-1200]
@@ -619,7 +680,11 @@ class OTCSession:
                                     )
                 finally:
                     refresh_task.cancel()
-                    await asyncio.gather(refresh_task, return_exceptions=True)
+                    for task in repair_tasks.values():
+                        task.cancel()
+                    await asyncio.gather(
+                        refresh_task, *repair_tasks.values(), return_exceptions=True
+                    )
             except asyncio.CancelledError:
                 raise
             except AccessUnavailable:

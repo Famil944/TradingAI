@@ -233,6 +233,42 @@ class ConditionalSessionTests(unittest.IsolatedAsyncioTestCase):
             await self.session.stop()
         self.assertEqual(self.db.plan_stats()["active"], 0)
 
+    async def test_startup_gap_is_backfilled_without_using_unclosed_future_bar(self):
+        from services.otc_data import Plan as AccessPlan
+
+        broken = self.bars[:850] + self.bars[851:]
+        self.assertIsNone(setup(broken, self.at))
+        self.provider.usage = AsyncMock(
+            return_value=AccessPlan(
+                "fake", 100, 100, "day", self.at + 999, 0, 1, 5, ("otc",)
+            )
+        )
+        future = Candle(self.at, 1, 1, 1, 1)
+        self.provider.candles = AsyncMock(return_value=self.bars + [future])
+        cache = {"A": broken}
+        await self.session._repair_history("A", cache)
+        self.assertEqual(cache["A"], self.bars)
+        self.assertIsNotNone(setup(cache["A"], self.at))
+        self.assertTrue(all(bar.time + 60 <= self.now for bar in cache["A"]))
+
+    async def test_history_repair_is_rate_limited_per_instrument(self):
+        from services.otc_data import Plan as AccessPlan
+
+        self.provider.usage = AsyncMock(
+            return_value=AccessPlan(
+                "fake", 100, 100, "day", self.at + 999, 0, 1, 5, ("otc",)
+            )
+        )
+        self.provider.candles = AsyncMock(return_value=self.bars)
+        tasks = {}
+        cache = {"A": []}
+        self.session._queue_history_repair("A", cache, tasks)
+        self.session._queue_history_repair("A", cache, tasks)
+        await asyncio.gather(*tasks.values())
+        self.session._queue_history_repair("A", cache, tasks)
+        self.assertEqual(self.provider.candles.await_count, 1)
+        self.assertEqual(self.session._repair_count, 1)
+
     async def test_snapshot_mode_still_waits_between_requests(self):
         from services.otc_data import Plan
 
