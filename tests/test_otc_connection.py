@@ -221,6 +221,47 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         await self.session._notify(self.bot, "health")
         self.bot.send_message.assert_awaited_once()
 
+    async def test_slow_catalogue_does_not_pause_reading_fresh_ticks(self):
+        self.session.config.catalogue_refresh_seconds = 0.01
+        blocked = asyncio.Event()
+        metadata_closed = asyncio.Event()
+        ticks = []
+        calls = 0
+        original = self.provider.symbols
+
+        async def symbols():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return await original()
+            blocked.set()
+            try:
+                await self.provider.release.wait()
+            finally:
+                metadata_closed.set()
+            return await original()
+
+        async def stream(symbols):
+            while True:
+                self.clock[0] += 0.01
+                ticks.append(self.clock[0])
+                yield Tick("A", self.clock[0], 1)
+                await asyncio.sleep(0.005)
+
+        self.provider.symbols = symbols
+        self.provider.ticks = stream
+        await self.session.start(self.bot, 1, 30, (60,))
+        await asyncio.wait_for(blocked.wait(), 3)
+        before = len(ticks)
+        for _ in range(100):
+            if len(ticks) > before:
+                break
+            await asyncio.sleep(0.01)
+        self.assertGreater(len(ticks), before)
+        self.assertEqual(self.session.phase, "поток активен")
+        await self.session.stop()
+        self.assertTrue(metadata_closed.is_set())
+
     async def test_real_deadline_expiry_still_reports_elapsed_time(self):
         self.session.chat_id = 1
         self.session.ends_at = self.clock[0] - 1

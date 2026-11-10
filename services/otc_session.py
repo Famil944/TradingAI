@@ -210,6 +210,7 @@ class OTCSession:
             "late_signal": "запоздалый расчёт",
             "unknown_or_stale_payout": "нет подтверждённой выплаты",
             "stale_snapshot": "старый снимок свечей",
+            "catalogue_refresh_failed": "не удалось обновить каталог, планы приостановлены",
             "conditional_no_setup": "контекст для условного плана не сформирован",
             "conditional_pending_or_cooldown": "уже есть план или действует пауза",
             "conditional_too_late_or_session_ending": "недостаточно запаса времени до входа/конца сеанса",
@@ -490,11 +491,39 @@ class OTCSession:
             self._last_events[key] = now
             await db_call(self.db.event, reason, symbol, now)
 
+    async def _refresh_stream_assets(self, active, chosen):
+        while True:
+            await asyncio.sleep(getattr(self.config, "catalogue_refresh_seconds", 30))
+            try:
+                current = await self._usage_with_retry()
+                self.plan = current
+                if current.remaining <= 1:
+                    raise AccessUnavailable(
+                        "Лимит запросов исчерпан; поток остановлен."
+                    )
+                catalogue = self._eligible(
+                    await self.provider.symbols(),
+                    self.clock(),
+                    self.config.payout_max_age,
+                )
+                updated = {a.symbol: a for a in catalogue if a.symbol in chosen}
+                active.clear()
+                active.update(updated)
+                self.available = len(catalogue)
+            except AccessUnavailable:
+                active.clear()
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                active.clear()
+                logger.warning("OTC catalogue refresh failed: %s", type(exc).__name__)
+                await self._event("catalogue_refresh_failed")
+
     async def _scan(self, bot, history, chosen):
         attempt = 0
         builder = MinuteBuilder(self.config.max_tick_age, self.config.max_tick_gap)
         active = dict(chosen)
-        refreshed = self.clock()
         while True:
             try:
                 self.phase = "ожидание свежего тика"
@@ -504,104 +533,102 @@ class OTCSession:
                 stale_timeout = getattr(self.config, "stream_stale_timeout", 15.0)
                 fresh_deadline = loop.time() + stale_timeout
                 healthy_since = None
-                async with contextlib.aclosing(
-                    self.provider.ticks(list(chosen))
-                ) as stream:
-                    while True:
-                        # SSE keepalives and stale/duplicate events do not prove fresh data.
-                        if loop.time() >= fresh_deadline:
-                            raise TimeoutError("fresh market data deadline")
-                        try:
-                            async with asyncio.timeout_at(fresh_deadline):
-                                tick = await anext(stream)
-                        except StopAsyncIteration:
-                            raise ConnectionError("stream ended") from None
-                        now = self.clock()
-                        if tick.symbol not in history:
-                            continue
-                        bar = builder.push(tick, now)
-                        if builder.rejection in (
-                            "invalid_or_stale_tick",
-                            "duplicate_or_unordered_tick",
-                        ):
-                            await self._event(builder.rejection, tick.symbol)
-                            continue
-                        self.last_tick = tick.time
-                        self._quotes[tick.symbol] = tick.time
-                        self.monitored = sum(
-                            0 <= now - t <= self.config.max_tick_age
-                            for t in builder.last.values()
-                        )
-                        fresh_deadline = loop.time() + stale_timeout
-                        if healthy_since is None:
-                            healthy_since = loop.time()
-                            logger.info("OTC fresh stream confirmed")
-                        if loop.time() - healthy_since >= 30:
-                            attempt = 0
-                        self.phase = "поток активен"
-                        if self.db:
-                            await self._results(tick)
-                        if now - refreshed >= 30:
-                            current = await self._usage_with_retry()
-                            self.plan = current
-                            if current.remaining <= 1:
-                                raise AccessUnavailable(
-                                    "Лимит запросов исчерпан; поток остановлен."
-                                )
-                            active = {
-                                a.symbol: a
-                                for a in self._eligible(
-                                    await self.provider.symbols(),
-                                    self.clock(),
-                                    self.config.payout_max_age,
-                                )
-                                if a.symbol in chosen
-                            }
-                            refreshed = self.clock()
-                        if not bar:
-                            if builder.rejection:
-                                await self._event(builder.rejection, tick.symbol)
-                            continue
-                        values = history[tick.symbol]
-                        if not values or values[-1].time < bar.time:
-                            values.append(bar)
-                            del values[:-1200]
-                        asset = active.get(tick.symbol)
-                        now = self.clock()
-                        if not asset or not self._eligible(
-                            [asset], now, self.config.payout_max_age
-                        ):
-                            await self._event("unknown_or_stale_payout", tick.symbol)
-                            continue
-                        closed_at = bar.time + 60
-                        if self.conditional_mode:
-                            await self._consider_plan(
-                                bot, values, tick, asset, closed_at
-                            )
-                            continue
-                        if (
-                            tick.time - closed_at > 2
-                            or now - tick.time > self.config.max_tick_age
-                        ):
-                            await self._event("late_signal", tick.symbol)
-                            continue
-                        for seconds in self.timeframes:
-                            if closed_at % seconds:
+                refresh_task = asyncio.create_task(
+                    self._refresh_stream_assets(active, chosen)
+                )
+                try:
+                    async with contextlib.aclosing(
+                        self.provider.ticks(list(chosen))
+                    ) as stream:
+                        while True:
+                            if refresh_task.done():
+                                refresh_task.result()
+                            # SSE keepalives and stale/duplicate events do not prove fresh data.
+                            if loop.time() >= fresh_deadline:
+                                raise TimeoutError("fresh market data deadline")
+                            try:
+                                async with asyncio.timeout_at(fresh_deadline):
+                                    tick = await anext(stream)
+                            except StopAsyncIteration:
+                                raise ConnectionError("stream ended") from None
+                            now = self.clock()
+                            if tick.symbol not in history:
                                 continue
-                            result = candidate(values, seconds, closed_at)
-                            if result:
-                                await self._send(
-                                    bot, tick, asset, seconds, result, closed_at
-                                )
-                            else:
+                            bar = builder.push(tick, now)
+                            if builder.rejection in (
+                                "invalid_or_stale_tick",
+                                "duplicate_or_unordered_tick",
+                            ):
+                                await self._event(builder.rejection, tick.symbol)
+                                continue
+                            self.last_tick = tick.time
+                            self._quotes[tick.symbol] = tick.time
+                            self.monitored = sum(
+                                0 <= now - t <= self.config.max_tick_age
+                                for t in builder.last.values()
+                            )
+                            fresh_deadline = loop.time() + stale_timeout
+                            if healthy_since is None:
+                                healthy_since = loop.time()
+                                logger.info("OTC fresh stream confirmed")
+                            if loop.time() - healthy_since >= 30:
+                                attempt = 0
+                            self.phase = "поток активен"
+                            if self.db:
+                                await self._results(tick)
+                            if not bar:
+                                if builder.rejection:
+                                    await self._event(builder.rejection, tick.symbol)
+                                continue
+                            values = history[tick.symbol]
+                            if not values or values[-1].time < bar.time:
+                                values.append(bar)
+                                del values[:-1200]
+                            asset = active.get(tick.symbol)
+                            now = self.clock()
+                            if not asset or not self._eligible(
+                                [asset], now, self.config.payout_max_age
+                            ):
                                 await self._event(
-                                    f"no_candidate_M{seconds // 60}", tick.symbol
+                                    "unknown_or_stale_payout", tick.symbol
                                 )
+                                continue
+                            closed_at = bar.time + 60
+                            if self.conditional_mode:
+                                await self._consider_plan(
+                                    bot, values, tick, asset, closed_at
+                                )
+                                continue
+                            if (
+                                tick.time - closed_at > 2
+                                or now - tick.time > self.config.max_tick_age
+                            ):
+                                await self._event("late_signal", tick.symbol)
+                                continue
+                            for seconds in self.timeframes:
+                                if closed_at % seconds:
+                                    continue
+                                result = candidate(values, seconds, closed_at)
+                                if result:
+                                    await self._send(
+                                        bot, tick, asset, seconds, result, closed_at
+                                    )
+                                else:
+                                    await self._event(
+                                        f"no_candidate_M{seconds // 60}", tick.symbol
+                                    )
+                finally:
+                    refresh_task.cancel()
+                    await asyncio.gather(refresh_task, return_exceptions=True)
             except asyncio.CancelledError:
                 raise
             except AccessUnavailable:
                 raise
             except Exception as exc:
+                if refresh_task.done() and not refresh_task.cancelled():
+                    refresh_error = refresh_task.exception()
+                    if isinstance(refresh_error, AccessUnavailable):
+                        raise refresh_error
                 self.phase = "Переподключение"
                 self.monitored = 0
                 self.last_tick = None
@@ -635,7 +662,6 @@ class OTCSession:
                     )
                     if a.symbol in chosen
                 }
-                refreshed = self.clock()
                 for symbol in chosen:
                     history[symbol] = await self.provider.candles(symbol, self.clock())
 
