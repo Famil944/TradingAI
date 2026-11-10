@@ -378,10 +378,22 @@ class OTCSession:
             try:
                 self.phase = "ожидание свежего тика"
                 self.monitored = 0
+                loop = asyncio.get_running_loop()
+                stale_timeout = getattr(self.config, "stream_stale_timeout", 15.0)
+                fresh_deadline = loop.time() + stale_timeout
+                healthy_since = None
                 async with contextlib.aclosing(
                     self.provider.ticks(list(chosen))
                 ) as stream:
-                    async for tick in stream:
+                    while True:
+                        # SSE keepalives and stale/duplicate events do not prove fresh data.
+                        if loop.time() >= fresh_deadline:
+                            raise TimeoutError("fresh market data deadline")
+                        try:
+                            async with asyncio.timeout_at(fresh_deadline):
+                                tick = await anext(stream)
+                        except StopAsyncIteration:
+                            raise ConnectionError("stream ended") from None
                         now = self.clock()
                         if tick.symbol not in history:
                             continue
@@ -398,8 +410,12 @@ class OTCSession:
                             0 <= now - t <= self.config.max_tick_age
                             for t in builder.last.values()
                         )
+                        fresh_deadline = loop.time() + stale_timeout
+                        if healthy_since is None:
+                            healthy_since = loop.time()
+                        if loop.time() - healthy_since >= 30:
+                            attempt = 0
                         self.phase = "поток активен"
-                        attempt = 0
                         if self.db:
                             await self._results(tick)
                         if now - refreshed >= 30:
@@ -453,7 +469,6 @@ class OTCSession:
                                 await self._event(
                                     f"no_candidate_M{seconds // 60}", tick.symbol
                                 )
-                raise ConnectionError("stream ended")
             except asyncio.CancelledError:
                 raise
             except AccessUnavailable:
@@ -468,7 +483,13 @@ class OTCSession:
                 # Broken continuity invalidates outstanding observations.
                 if self.db:
                     await db_call(self.db.recover)
-                await self._event("stream_disconnected")
+                reason = (
+                    "stream_no_fresh_ticks"
+                    if isinstance(exc, TimeoutError)
+                    else "stream_disconnected"
+                )
+                logger.warning("OTC reconnect: %s (%s)", reason, type(exc).__name__)
+                await self._event(reason)
                 delay = reconnect_delay(attempt, getattr(exc, "retry_after", 0))
                 attempt += 1
                 await asyncio.sleep(delay)

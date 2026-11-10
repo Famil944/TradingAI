@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from database.db import Database
 from services.otc_data import AccessUnavailable, OTChartsProvider, RetryableFeedError
+from services.otc_market import Tick
 from services.otc_session import OTCSession
 from tests.test_otc_core import FakeProvider
 
@@ -96,6 +97,60 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RetryableFeedError) as error:
             await provider._get("/v1/usage")
         self.assertNotIn("credentials", str(error.exception))
+
+    async def check_stalled_stream(self, events):
+        self.session.config.stream_stale_timeout = 0.03
+        connections = []
+        closed = []
+        ready = asyncio.Event()
+
+        async def stream(symbols):
+            connections.append(1)
+            try:
+                if len(connections) > 1:
+                    ready.set()
+                    await self.provider.release.wait()
+                else:
+                    yield Tick("A", self.clock[0], 1)
+                    if events == "silent":
+                        await self.provider.release.wait()
+                    else:
+                        while True:
+                            await asyncio.sleep(0.002)
+                            stamp = (
+                                self.clock[0] - 100
+                                if events == "stale"
+                                else self.clock[0]
+                            )
+                            yield Tick("A", stamp, 1)
+            finally:
+                closed.append(1)
+
+        self.provider.ticks = stream
+        with patch("services.otc_session.reconnect_delay", return_value=0):
+            await self.session.start(self.bot, 1, 30, (60,))
+            await asyncio.wait_for(ready.wait(), 2)
+            self.assertGreaterEqual(len(connections), 2)
+            self.assertTrue(closed)
+            self.assertEqual(self.session.monitored, 0)
+            self.assertEqual(self.db.stats(), [])
+            with self.db.connect() as c:
+                self.assertIsNotNone(
+                    c.execute(
+                        "SELECT 1 FROM otc_journal_events WHERE reason='stream_no_fresh_ticks'"
+                    ).fetchone()
+                )
+            await self.session.stop()
+            self.assertFalse(self.session.running())
+
+    async def test_quiet_stream_is_closed_and_reconnected(self):
+        await self.check_stalled_stream("silent")
+
+    async def test_continuous_stale_ticks_do_not_keep_stream_alive(self):
+        await self.check_stalled_stream("stale")
+
+    async def test_duplicate_ticks_do_not_reset_freshness_deadline(self):
+        await self.check_stalled_stream("duplicate")
 
     async def test_real_deadline_expiry_still_reports_elapsed_time(self):
         self.session.chat_id = 1
