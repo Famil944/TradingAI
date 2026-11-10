@@ -1,6 +1,7 @@
 """Advance delivery, manual condition rules, chronology and plan audit."""
 
 import asyncio
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,20 @@ from services.otc_market import Asset, Tick
 from services.otc_session import OTCSession
 from services.otc_strategy import Candle
 from tests.test_otc_test_mode import history
+
+
+def impulse_history():
+    prices = [100 + i * 0.002 + math.sin(i * 0.3 + 0.3) * 0.04 for i in range(901)]
+    return [
+        Candle(
+            1800000000 + i * 60,
+            prices[max(0, i - 1)],
+            max(prices[max(0, i - 1)], p) + 0.002,
+            min(prices[max(0, i - 1)], p) - 0.002,
+            p,
+        )
+        for i, p in enumerate(prices)
+    ]
 
 
 class ConditionalRuleTests(unittest.TestCase):
@@ -91,7 +106,7 @@ class ConditionalRuleTests(unittest.TestCase):
             )
             for b in bars
         ]
-        result = replay(raw)
+        result = replay(raw, rule="legacy")
         self.assertFalse(result["advantage_confirmed"])
         self.assertTrue(result["plans"])
         self.assertTrue(
@@ -107,7 +122,7 @@ class ConditionalSessionTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.temp.name) / "bot.db")
         self.db.init_db()
-        self.bars = history()
+        self.bars = impulse_history()
         self.at = self.bars[-1].time + 60
         self.now = self.at + 5
         self.config = SimpleNamespace(

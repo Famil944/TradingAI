@@ -11,13 +11,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from services.otc_conditional import (
+    context_setup as conditional_setup,
+)
+from services.otc_conditional import (
     make_plan,
 )
 from services.otc_conditional import (
     message as conditional_message,
-)
-from services.otc_conditional import (
-    setup as conditional_setup,
 )
 from services.otc_data import AccessUnavailable, OTChartsProvider, RetryableFeedError
 from services.otc_market import TIMEFRAMES, MinuteBuilder, Tick, eligible, settle
@@ -760,6 +760,7 @@ class OTCSession:
             payout,
             asset.payout_at,
             cooldown=self.config.cooldown_seconds,
+            strategy=context.rule,
         )
         if identifier is None:
             await self._event("conditional_pending_or_cooldown", tick.symbol)

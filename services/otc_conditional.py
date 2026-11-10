@@ -1,6 +1,6 @@
 """Experimental advance plans. Future candle colour is a condition, never a feature."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -8,6 +8,7 @@ from services.otc_strategy import aggregate, atr, ema, rsi
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 STRATEGY = "conditional-trend-pullback-v1"
+CONTEXT_STRATEGY = "conditional-context-v2"
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,8 @@ class Setup:
     colour: str
     invalidation: float
     reason: str
+    rule: str = STRATEGY
+    evidence: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,85 @@ def setup(minutes, closed_at):
             f"Нисходящий контекст EMA20/50 M1 и M5, RSI {oscillator:.1f}; ожидается зелёный откат",
         )
     return None
+
+
+def context_setup(minutes, closed_at):
+    """Choose a hypothesis from observed context, never guess the future colour."""
+    from services.otc_ml.features import FEATURE_NAMES, indicators
+
+    base = setup(minutes, closed_at)
+    if base is None:
+        return None
+    bars = [b for b in minutes if b.time + 60 <= closed_at]
+    feature_values = indicators(bars[-250:])
+    if feature_values is None:
+        return None
+    f = dict(zip(FEATURE_NAMES, feature_values))
+    last, previous = bars[-1], bars[-2]
+    span = last.high - last.low
+    strength = f["atr14"] * last.close
+    if span <= 0 or strength <= 0:
+        return None
+    body = abs(last.close - last.open) / span
+    impulse = (
+        f["adx14"] >= 0.20
+        and body >= 0.5
+        and (
+            (
+                base.direction == "UP"
+                and last.close > last.open
+                and last.close > previous.high
+                and f["rsi14"] >= 0.55
+                and f["macd_hist"] > 0
+            )
+            or (
+                base.direction == "DOWN"
+                and last.close < last.open
+                and last.close < previous.low
+                and f["rsi14"] <= 0.45
+                and f["macd_hist"] < 0
+            )
+        )
+    )
+    near_fast = abs(f["ema20_gap"] * last.close) <= strength
+    pullback = near_fast and (
+        (
+            base.direction == "UP"
+            and last.close < last.open
+            and 0.42 <= f["rsi14"] <= 0.60
+        )
+        or (
+            base.direction == "DOWN"
+            and last.close > last.open
+            and 0.40 <= f["rsi14"] <= 0.58
+        )
+    )
+    if impulse:
+        colour = "green" if base.direction == "UP" else "red"
+        kind = "momentum"
+        description = "Импульс: пробой предыдущей свечи, MACD, ADX и тренд M1/M5"
+    elif pullback:
+        colour = "red" if base.direction == "UP" else "green"
+        kind = "pullback"
+        description = "Откат к EMA20 в согласованном тренде M1/M5"
+    else:
+        return None
+    return Setup(
+        base.direction,
+        colour,
+        base.invalidation,
+        f"{description}; RSI {100 * f['rsi14']:.1f}, ADX {100 * f['adx14']:.1f}. Гипотеза, преимущество не доказано.",
+        f"{CONTEXT_STRATEGY}:{kind}:{base.direction}:{colour}",
+        {
+            "known_asof": closed_at,
+            "last_closed_candle": asdict(last),
+            "previous_closed_candle": asdict(previous),
+            "features": f,
+            "context": kind,
+            "base_context": base.reason.split(";")[0],
+            "advantage_confirmed": False,
+        },
+    )
 
 
 def make_plan(symbol, closed_at, context, now, session_end=None):
@@ -165,7 +247,7 @@ def message(plan, identifier, payout=None, *, compact=True):
     )
 
 
-def replay(raw):
+def replay(raw, *, rule="context"):
     """Evaluate a fixed advance-plan rule using future bars only AFTER scheduling.
 
     No real manual entries are assumed; outcomes remain UNKNOWN without
@@ -195,7 +277,7 @@ def replay(raw):
         by_time = {bar.time: (bar, row) for bar, row in zip(bars, rows)}
         for index in range(250, len(bars)):
             at = bars[index].time
-            context = setup(bars[:index], at)
+            context = (context_setup if rule == "context" else setup)(bars[:index], at)
             if context is None:
                 continue
             plan = make_plan(symbol, at, context, at)
@@ -206,6 +288,7 @@ def replay(raw):
                 expires_at=plan.expires_at,
                 direction=context.direction,
                 required_colour=context.colour,
+                rule=context.rule,
                 condition="UNKNOWN",
                 outcome="UNKNOWN",
             )
@@ -253,7 +336,7 @@ def replay(raw):
         last = at
         active_until[item["symbol"]] = item["expires_at"]
     return dict(
-        strategy=STRATEGY,
+        strategy=CONTEXT_STRATEGY if rule == "context" else STRATEGY,
         mode="hypothetical advance plans, not actual manual trades",
         advantage_confirmed=False,
         plans=selected,
@@ -271,6 +354,7 @@ if __name__ == "__main__":
     parser.add_argument("--replay", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--data-kind", choices=("recorded", "synthetic"), required=True)
+    parser.add_argument("--rule", choices=("context", "legacy"), default="context")
     args = parser.parse_args()
     if args.output.resolve() == args.replay.resolve():
         parser.error("Output must differ from input")
@@ -279,7 +363,7 @@ if __name__ == "__main__":
         for line in args.replay.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    report = replay(rows)
+    report = replay(rows, rule=args.rule)
     report["data_kind"] = args.data_kind
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

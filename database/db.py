@@ -48,11 +48,15 @@ class Database:
             assessment_missing = not conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='otc_plan_assessments'"
             ).fetchone()
+            context_missing = not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='otc_plan_context'"
+            ).fetchone()
             if old_tables and (
                 not exists
                 or nullable_migration
                 or conditional_missing
                 or assessment_missing
+                or context_missing
             ):
                 backup = self.db_path.with_name(
                     self.db_path.name + f".backup-{time.time_ns()}"
@@ -116,6 +120,10 @@ class Database:
               outcome TEXT NOT NULL DEFAULT 'UNKNOWN',
               UNIQUE(symbol,entry_at,strategy)
             );
+            CREATE TABLE IF NOT EXISTS otc_plan_context (
+              plan_id TEXT PRIMARY KEY, known_at REAL NOT NULL, source TEXT NOT NULL,
+              context TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS otc_plan_assessments (
               plan_id TEXT PRIMARY KEY, assessed_at REAL NOT NULL,
               outcome TEXT NOT NULL, condition_result TEXT NOT NULL,
@@ -177,6 +185,17 @@ class Database:
                         payout_at,
                     ),
                 )
+                evidence = getattr(plan.setup, "evidence", None)
+                if evidence:
+                    c.execute(
+                        "INSERT INTO otc_plan_context(plan_id,known_at,source,context) VALUES(?,?,?,?)",
+                        (
+                            identifier,
+                            now,
+                            "otcharts",
+                            json.dumps(evidence, ensure_ascii=False, allow_nan=False),
+                        ),
+                    )
             except sqlite3.IntegrityError:
                 return None
         return identifier
@@ -262,13 +281,13 @@ class Database:
             return [
                 dict(r)
                 for r in c.execute(
-                    """SELECT p.strategy,COUNT(*) total,
+                    """SELECT p.strategy,p.direction,p.colour,COUNT(*) total,
               SUM(a.outcome='WIN') wins,SUM(a.outcome='LOSS') losses,SUM(a.outcome='DRAW') draws,
               SUM(a.outcome='SKIPPED') skipped,SUM(a.outcome='UNKNOWN') unknown,
               SUM(a.outcome='CANCELLED') cancelled,SUM(a.outcome='NOT_DELIVERED') not_delivered,
               SUM(a.plan_id IS NULL) pending
               FROM otc_conditional_plans p LEFT JOIN otc_plan_assessments a ON a.plan_id=p.id
-              WHERE p.created_at>=? GROUP BY p.strategy""",
+              WHERE p.created_at>=? GROUP BY p.strategy,p.direction,p.colour""",
                     (since,),
                 )
             ]

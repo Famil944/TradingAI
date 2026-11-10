@@ -90,6 +90,15 @@ def format_stats(rows, title):
         return f"{title}: оценённых планов пока нет."
     lines = [f"🧪 {title} · виртуально по OTCharts"]
     for row in rows:
+        if len(rows) > 1:
+            direction = "ВВЕРХ" if row.get("direction") == "UP" else "ВНИЗ"
+            colour = "зелёная" if row.get("colour") == "green" else "красная"
+            version = (
+                "v2"
+                if row.get("strategy", "").startswith("conditional-context-v2")
+                else "v1"
+            )
+            lines.append(f"{version}: {colour} → {direction}")
         wins = row["wins"] or 0
         losses = row["losses"] or 0
         n = wins + losses
