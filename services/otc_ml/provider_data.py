@@ -9,7 +9,7 @@ from .data import HORIZONS, Example
 from .features import indicators
 
 
-def build_provider_dataset(rows):
+def build_provider_dataset(rows, *, preview=False):
     groups = defaultdict(list)
     for row in rows:
         if (
@@ -19,7 +19,8 @@ def build_provider_dataset(rows):
         ):
             raise ValueError("Provider provenance required")
         groups[row["symbol"]].append(row)
-    data = {h: [] for h in HORIZONS}
+    horizons = (60, 120, 180, 300, 900) if preview else HORIZONS
+    data = {h: [] for h in horizons}
     for symbol, source in groups.items():
         source.sort(key=lambda r: r["time"])
         if any(a["time"] >= b["time"] for a, b in zip(source, source[1:])):
@@ -28,24 +29,37 @@ def build_provider_dataset(rows):
         if len(bars) != len(source):
             raise ValueError("Invalid provider bars")
         index = {b.time: i for i, b in enumerate(bars)}
-        for i in range(900, len(bars)):
+        for i in range(901 if preview else 900, len(bars)):
             entry = bars[i]
-            history = bars[max(0, i - 1200) : i]
+            stop = i - 1 if preview else i
+            history = bars[max(0, stop - 1200) : stop]
             if any(b.time - a.time != 60 for a, b in zip(history, history[1:])):
                 continue
-            for seconds in HORIZONS:
+            cached_values = indicators(history) if preview else None
+            cached_baseline = (
+                context_setup(history, entry.time - 60, 60) if preview else None
+            )
+            for seconds in horizons:
                 end_index = index.get(entry.time + seconds)
                 if (
-                    entry.time % seconds
+                    entry.time % (60 if preview else seconds)
                     or end_index is None
                     or end_index - i != seconds // 60
                 ):
                     continue
-                values = indicators(aggregate(history, seconds))
+                values = (
+                    cached_values
+                    if preview
+                    else indicators(aggregate(history, seconds))
+                )
                 if values is None:
                     continue
                 end = bars[end_index]
-                baseline = context_setup(history, entry.time, seconds)
+                baseline = (
+                    cached_baseline
+                    if preview
+                    else context_setup(history, entry.time, seconds)
+                )
                 # 90 is a declared reference scenario for comparison, never a historical payout observation.
                 data[seconds].append(
                     Example(
@@ -64,7 +78,7 @@ def build_provider_dataset(rows):
                         end.open,
                     )
                 )
-    for seconds in HORIZONS:
+    for seconds in horizons:
         data[seconds].sort(key=lambda e: (e.at, e.symbol))
     return data, dict(
         input_rows=len(rows),
@@ -72,5 +86,5 @@ def build_provider_dataset(rows):
         reference_payout=90,
         actual_historical_payouts_available=False,
         independent_endpoint_evidence=False,
-        **{f"M{h // 60}_retrospective_examples": len(data[h]) for h in HORIZONS},
+        **{f"M{h // 60}_retrospective_examples": len(data[h]) for h in horizons},
     )

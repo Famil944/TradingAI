@@ -20,6 +20,7 @@ from services.otc_data import OTChartsProvider
 from services.otc_entry_checks import EntryChecks
 from services.otc_evaluation import configured as configured_evaluator
 from services.otc_market_archive import MarketArchive
+from services.otc_ml.preview import MLPreview, PreviewJournal
 from services.otc_ml.runtime import RuntimeML
 from services.otc_session import OTCSession
 
@@ -82,6 +83,15 @@ async def main(*, session_minutes=None, session_end=None):
         ml=ml_runtime,
     )
     entry_task = asyncio.create_task(entry_checks.run())
+    preview = MLPreview(
+        PreviewJournal(ROOT / "data" / "ml-preview.db"),
+        RuntimeML(
+            ROOT / "data" / "ml_preview20_verified", ROOT / "data" / "ml_preview20"
+        ),
+    )
+    await asyncio.to_thread(preview.journal.cancel_future, time.time())
+    service.ml_preview = preview
+    preview_task = asyncio.create_task(preview.run(bot, settings.admin_chat_id))
     (ROOT / "logs").mkdir(exist_ok=True)
     with (
         (ROOT / "logs" / "ml-collector.stdout.log").open("a", encoding="utf-8") as out,
@@ -89,6 +99,21 @@ async def main(*, session_minutes=None, session_end=None):
     ):
         subprocess.Popen(
             [sys.executable, "-u", "-m", "services.otc_ml.collector"],
+            cwd=ROOT,
+            stdout=out,
+            stderr=err,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    with (
+        (ROOT / "logs" / "ml-preview-collector.stdout.log").open(
+            "a", encoding="utf-8"
+        ) as out,
+        (ROOT / "logs" / "ml-preview-collector.stderr.log").open(
+            "a", encoding="utf-8"
+        ) as err,
+    ):
+        subprocess.Popen(
+            [sys.executable, "-u", "-m", "services.otc_ml.collector", "--preview"],
             cwd=ROOT,
             stdout=out,
             stderr=err,
@@ -117,6 +142,8 @@ async def main(*, session_minutes=None, session_end=None):
             await service._notify(bot, text)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        preview_task.cancel()
+        await asyncio.gather(preview_task, return_exceptions=True)
         entry_task.cancel()
         await asyncio.gather(entry_task, return_exceptions=True)
         evaluation_task.cancel()

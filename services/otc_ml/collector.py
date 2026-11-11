@@ -1,5 +1,6 @@
 """No-network background training from the actual local OTCharts archive."""
 
+import argparse
 import json
 import os
 import time
@@ -16,7 +17,7 @@ from .research import atomic_json, train_horizon
 from .validation import ResearchConfig
 
 
-def run_once(archive, output, minimum_new=1000):
+def run_once(archive, output, minimum_new=1000, *, preview=False):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     path = output / "provider-history.jsonl"
@@ -26,7 +27,7 @@ def run_once(archive, output, minimum_new=1000):
     if count < 1000 or count - previous.get("rows", 0) < minimum_new and previous:
         return {"status": "collecting", "rows": count}
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    datasets, counts = build_provider_dataset(rows)
+    datasets, counts = build_provider_dataset(rows, preview=preview)
     experiment = uuid.uuid4().hex
     report = dict(
         schema_version=1,
@@ -34,6 +35,8 @@ def run_once(archive, output, minimum_new=1000):
         created_at=time.time(),
         feature_version=FEATURE_VERSION,
         feature_names=list(FEATURE_NAMES),
+        decision_lead_seconds=20 if preview else 0,
+        feature_period_seconds=60 if preview else None,
         status="research_only",
         live_enabled=False,
         probability_display_enabled=False,
@@ -89,21 +92,29 @@ def run_once(archive, output, minimum_new=1000):
 def main():
     from core.single_instance import SingleInstance
 
-    lock = SingleInstance(port=47655)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--preview", action="store_true")
+    args = parser.parse_args()
+    name = "ml_preview20" if args.preview else "ml_provider"
+    lock = SingleInstance(port=47656 if args.preview else 47655)
     if not lock.acquire():
         return
-    (ROOT / "logs" / "ml-collector.pid").write_text(str(os.getpid()), encoding="utf-8")
+    (
+        ROOT
+        / "logs"
+        / ("ml-preview-collector.pid" if args.preview else "ml-collector.pid")
+    ).write_text(str(os.getpid()), encoding="utf-8")
     archive = MarketArchive(ROOT / "data" / "market-history.db")
     try:
         while True:
             try:
-                result = run_once(archive, ROOT / "data" / "ml_provider")
+                result = run_once(archive, ROOT / "data" / name, preview=args.preview)
                 from database.db import Database
 
                 from .forward import comparison
 
                 atomic_json(
-                    ROOT / "data" / "ml_provider" / "forward-comparison.json",
+                    ROOT / "data" / name / "forward-comparison.json",
                     comparison(Database(), time.time()),
                 )
                 print("XGBoost collector:", result["status"], flush=True)

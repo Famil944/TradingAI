@@ -83,6 +83,13 @@ def menu(chat_id, conditional=None):
         ]
     )
     rows.append([InlineKeyboardButton(text="Статистика", callback_data="otc:stats")])
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="XGBoost · статистика теста", callback_data="otc:mlstats:all"
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -181,6 +188,31 @@ async def callback(query: types.CallbackQuery):
         return
     action = parts[1]
     chat = query.message.chat.id
+    if action == "mlstats":
+        if (
+            len(parts) != 3
+            or parts[2] not in ("all", "1", "2", "3", "5", "15")
+            or not hasattr(service, "ml_preview")
+        ):
+            await query.answer("Тест ещё не запущен")
+            return
+        await query.answer()
+        seconds = None if parts[2] == "all" else int(parts[2]) * 60
+        text = await asyncio.to_thread(service.ml_preview.journal.stats, seconds)
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Все" if key == "all" else key + " мин",
+                        callback_data="otc:mlstats:" + key,
+                    )
+                    for key in ("all", "1", "2", "3", "5", "15")
+                ]
+            ]
+        )
+        if query.message.text != text:
+            await query.message.answer(text, reply_markup=keyboard)
+        return
     if action in ("stats", "cycles"):
         cycles = action == "cycles"
         if len(parts) == 2:

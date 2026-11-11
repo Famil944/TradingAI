@@ -113,6 +113,8 @@ class OTCSession:
             if self.running():
                 return False
             self.chat_id = chat_id
+            if hasattr(self, "ml_preview"):
+                self.ml_preview.enabled = True
             self.timeframes = tuple(timeframes)
             self.ends_at = self.clock() + minutes * 60 if minutes else None
             self.last_tick = None
@@ -133,6 +135,8 @@ class OTCSession:
 
     async def stop(self):
         async with self._lock:
+            if hasattr(self, "ml_preview"):
+                await self.ml_preview.stop()
             if not self.running():
                 return False
             self.task.cancel()
@@ -353,7 +357,7 @@ class OTCSession:
             except (RetryableFeedError, TimeoutError):
                 if attempt == 2:
                     raise
-                logger.warning("OTCharts catalogue startup retry %d/3", attempt+2)
+                logger.warning("OTCharts catalogue startup retry %d/3", attempt + 2)
                 await asyncio.sleep(1)
 
     async def _run(self, bot):
@@ -641,6 +645,10 @@ class OTCSession:
                                 continue
                             self.last_tick = tick.time
                             self._quotes[tick.symbol] = tick.time
+                            if hasattr(self, "ml_preview"):
+                                self.ml_preview.observe(
+                                    history, active, self._quotes, self.ends_at
+                                )
                             self.monitored = sum(
                                 0 <= now - t <= self.config.max_tick_age
                                 for t in builder.last.values()

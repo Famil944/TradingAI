@@ -42,6 +42,16 @@ class RuntimeML:
     def __init__(self, verified_root, study_root):
         self.roots = (Path(verified_root).resolve(), Path(study_root).resolve())
         self.models = {}
+        self.reports = {}
+
+    def read_report(self, root):
+        path = root / "report.json"
+        stamp = path.stat().st_mtime_ns
+        cached = self.reports.get(str(path))
+        if cached is None or cached[0] != stamp:
+            cached = (stamp, json.loads(path.read_text(encoding="utf-8")))
+            self.reports[str(path)] = cached
+        return cached[1]
 
     def status(self):
         path = self.roots[1] / "report.json"
@@ -64,9 +74,7 @@ class RuntimeML:
 
     def requires_filter(self, row):
         try:
-            report = json.loads(
-                (self.roots[0] / "report.json").read_text(encoding="utf-8")
-            )
+            report = self.read_report(self.roots[0])
             h = str(int(row["expires_at"] - row["entry_at"]))
             result = report.get("horizons", {}).get(h, {})
             return approved(report, result)
@@ -79,11 +87,15 @@ class RuntimeML:
             path = root / "report.json"
             if not path.exists():
                 continue
-            report = json.loads(path.read_text(encoding="utf-8"))
+            report = self.read_report(root)
             result = report.get("horizons", {}).get(str(seconds), {})
             if report.get("feature_version") != FEATURE_VERSION or report.get(
                 "feature_names"
             ) != list(FEATURE_NAMES):
+                continue
+            if report.get("decision_lead_seconds", 0) != row.get(
+                "decision_lead_seconds", 0
+            ):
                 continue
             created = report.get("created_at", 0)
             if isinstance(created, str):
@@ -103,15 +115,20 @@ class RuntimeML:
             )
             if hashes != (result.get("model_sha256"), result.get("calibration_sha256")):
                 continue
-            past = [b for b in bars if b.time + 60 <= row["entry_at"]][-1200:]
-            features = indicators(aggregate(past, seconds))
+            cutoff = row.get("feature_asof", row["entry_at"])
+            past = [b for b in bars if b.time + 60 <= cutoff][-1200:]
+            features = indicators(
+                aggregate(past, report.get("feature_period_seconds") or seconds)
+            )
             if features is None:
                 return {"status": "insufficient_live_features", "live": False}
             key = (str(model_path), hashes)
             if key not in self.models:
                 from .model import ResearchModel
 
-                self.models = {key: ResearchModel.load(model_path)}
+                self.models[key] = ResearchModel.load(model_path)
+                if len(self.models) > 12:
+                    self.models.pop(next(iter(self.models)))
             probabilities = (
                 self.models[key]
                 .predict([SimpleNamespace(features=features)])[0]
