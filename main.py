@@ -3,6 +3,8 @@
 import argparse
 import asyncio
 import logging
+import subprocess
+import sys
 import time
 
 from aiogram import Bot, Dispatcher
@@ -16,6 +18,8 @@ from database.db import Database
 from services.otc_data import OTChartsProvider
 from services.otc_entry_checks import EntryChecks
 from services.otc_evaluation import configured as configured_evaluator
+from services.otc_market_archive import MarketArchive
+from services.otc_ml.runtime import RuntimeML
 from services.otc_session import OTCSession
 
 COMMANDS = [
@@ -40,17 +44,38 @@ async def main(*, session_minutes=None, session_end=None):
     await asyncio.to_thread(db.init_db)
     await asyncio.to_thread(db.recover)
     await asyncio.to_thread(db.close_plans, time.time(), cancel=True)
-    service = OTCSession(db=db)
+    archive = MarketArchive(ROOT / "data" / "market-history.db")
+    service = OTCSession(
+        db=db, provider=OTChartsProvider(settings.otcharts_api_key, archive=archive)
+    )
     otc_commands.service = service
     bot = Bot(token=settings.telegram_bot_token)
     dp = Dispatcher()
     dp.include_router(otc_commands.router)
     evaluator = configured_evaluator(db, bot, settings, ROOT)
     evaluation_task = asyncio.create_task(evaluator.run())
+    ml_runtime = RuntimeML(ROOT / "data" / "ml", ROOT / "data" / "ml_provider")
+    service.ml_runtime = ml_runtime
     entry_checks = EntryChecks(
-        db, OTChartsProvider(settings.otcharts_api_key), bot, settings.admin_chat_id
+        db,
+        OTChartsProvider(settings.otcharts_api_key),
+        bot,
+        settings.admin_chat_id,
+        ml=ml_runtime,
     )
     entry_task = asyncio.create_task(entry_checks.run())
+    (ROOT / "logs").mkdir(exist_ok=True)
+    with (
+        (ROOT / "logs" / "ml-collector.stdout.log").open("a", encoding="utf-8") as out,
+        (ROOT / "logs" / "ml-collector.stderr.log").open("a", encoding="utf-8") as err,
+    ):
+        subprocess.Popen(
+            [sys.executable, "-u", "-m", "services.otc_ml.collector"],
+            cwd=ROOT,
+            stdout=out,
+            stderr=err,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
     try:
         await bot.set_my_commands(
             [BotCommand(command=c, description=d) for c, d in COMMANDS]

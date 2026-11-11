@@ -92,11 +92,12 @@ def message(row, decision, now):
 
 class EntryChecks:
     def __init__(
-        self, db, provider, bot, chat_id, clock=time.time, require_quality=True
+        self, db, provider, bot, chat_id, clock=time.time, require_quality=True, ml=None
     ):
         self.db, self.provider, self.bot, self.chat_id = db, provider, bot, chat_id
         self.clock = clock
         self.require_quality = require_quality
+        self.ml = ml
         self.fetched = {}
         self.cache = {}
 
@@ -148,6 +149,30 @@ class EntryChecks:
                         )
                         if not fresh:
                             decision = "REJECTED"
+                        elif self.ml is not None:
+                            try:
+                                async with asyncio.timeout(0.25):
+                                    ml_result = await asyncio.to_thread(
+                                        self.ml.inspect, row, bars, asset.payout
+                                    )
+                                ml_result["predicted_at"] = self.clock()
+                                evidence["xgboost"] = ml_result
+                                if self.ml.requires_filter(row) and not ml_result.get(
+                                    "live"
+                                ):
+                                    decision = "NO_DATA"
+                                if ml_result.get("live") and not ml_result.get(
+                                    "accept"
+                                ):
+                                    decision = "REJECTED"
+                            except Exception as exc:
+                                evidence["xgboost"] = {
+                                    "status": "unavailable",
+                                    "error_type": type(exc).__name__,
+                                    "live": False,
+                                }
+                                if self.ml.requires_filter(row):
+                                    decision = "NO_DATA"
                     except Exception:
                         decision = "NO_DATA"
             if decision == "MET" and self.clock() - row["entry_at"] > 5:

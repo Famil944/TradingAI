@@ -97,7 +97,11 @@ def train_horizon(examples, horizon, config, kind, model_path):
     result["final_holdout_records"] = records
     reasons = []
     if kind != "recorded":
-        reasons.append("synthetic_data_cannot_confirm_edge")
+        reasons.append(
+            "synthetic_data_cannot_confirm_edge"
+            if kind == "synthetic"
+            else "retrospective_provider_study_cannot_confirm_live_edge"
+        )
     # Predeclared recent consecutive windows; do not cherry-pick successful folds.
     recent = result["folds"][-config.min_folds :]
     if len(recent) < config.min_folds or not all(
@@ -133,7 +137,10 @@ def run_research(
 ):
     config = config or ResearchConfig()
     config.validate()
-    if data_kind not in ("recorded", "synthetic") or min_new_verified < 1:
+    if (
+        data_kind not in ("recorded", "synthetic", "provider_retrospective")
+        or min_new_verified < 1
+    ):
         raise ValueError("Invalid input kind or retraining threshold")
     input_path, output_path = Path(input_path), Path(output_path)
     if input_path.resolve() in {
@@ -152,7 +159,12 @@ def run_research(
         raise ValueError(
             "History must be UTF-8 JSONL; credentials are not history data"
         ) from None
-    datasets, counts = build_dataset(rows)
+    if data_kind == "provider_retrospective":
+        from .provider_data import build_provider_dataset
+
+        datasets, counts = build_provider_dataset(rows)
+    else:
+        datasets, counts = build_dataset(rows)
     if data_kind == "recorded" and any(
         e.label_available_at > time.time() for data in datasets.values() for e in data
     ):

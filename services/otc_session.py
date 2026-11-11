@@ -651,6 +651,10 @@ class OTCSession:
                                             tick.symbol, history, repair_tasks
                                         )
                                 continue
+                            if hasattr(self.provider, "record_closed"):
+                                await self.provider.record_closed(
+                                    tick.symbol, bar, self.clock()
+                                )
                             values = history[tick.symbol]
                             if values and values[-1].time + 60 < bar.time:
                                 self._queue_history_repair(

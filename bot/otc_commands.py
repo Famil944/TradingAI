@@ -161,6 +161,7 @@ async def diagnostics(message: types.Message):
     # No API call: inspecting diagnostics must not consume the account quota.
     await message.answer(
         service.status()
+        + ("\n" + service.ml_runtime.status() if hasattr(service, "ml_runtime") else "")
         + "\n\nOTCharts SDK 0.7.0; Pocket Option venue otc; время UTC+2 преобразуется в UTC. "
         "OTCharts передаёт названия, текущие выплаты и статус открытия. Время изменения выплаты API не передаёт; время получения хранится отдельно. "
         "В тестовом режиме эти неизвестные данные не блокируют сигнал; он получает явную пометку. "

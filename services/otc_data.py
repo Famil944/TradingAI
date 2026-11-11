@@ -56,7 +56,8 @@ class OTChartsProvider:
     # There is no independent platform evidence supplied by this provider.
     synchronized = False
 
-    def __init__(self, api_key, session=None):
+    def __init__(self, api_key, session=None, archive=None):
+        self.archive = archive
         self._key = api_key
         self._session = session
         self._owned = session is None
@@ -160,11 +161,19 @@ class OTChartsProvider:
                 )
             )
         self.catalogue = {a.symbol: a for a in result}
+        if self.archive is not None:
+            await asyncio.to_thread(self.archive.assets, result, observed_at)
         return result
 
     async def candles(self, symbol, now):
         d = await self._get(
-            "/v1/candles", {"venue": "otc", "symbol": symbol, "tf": 60, "limit": 1200}
+            "/v1/candles",
+            {
+                "venue": "otc",
+                "symbol": symbol,
+                "tf": 60,
+                "limit": 5000 if self.archive is not None else 1200,
+            },
         )
         if d.get("open") is False:
             self.closed_symbols.add(symbol)
@@ -174,7 +183,16 @@ class OTChartsProvider:
                 rows.append({**row, "time": venue_timestamp(row["time"])})
             except (KeyError, ValueError, TypeError):
                 continue
-        return normalize_candles(rows, int(now))
+        bars = normalize_candles(rows, int(now))
+        if self.archive is not None:
+            await asyncio.to_thread(self.archive.bars, symbol, bars, time.time())
+        return bars[-1200:]
+
+    async def record_closed(self, symbol, bar, now):
+        if self.archive is not None:
+            await asyncio.to_thread(
+                self.archive.bars, symbol, [bar], now, "otcharts_ticks"
+            )
 
     async def ticks(self, symbols):
         session = await self._http()
