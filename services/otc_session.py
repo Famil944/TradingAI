@@ -796,7 +796,12 @@ class OTCSession:
             payout,
             asset.payout_at,
             cooldown=self.config.cooldown_seconds,
-            strategy=context.rule,
+            strategy=context.rule
+            + (
+                ":entry-recheck-v1"
+                if getattr(self.config, "entry_quality_recheck", False)
+                else ""
+            ),
         )
         if identifier is None:
             await self._event("conditional_pending_or_cooldown", tick.symbol)

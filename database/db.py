@@ -252,7 +252,8 @@ class Database:
             return [
                 dict(r)
                 for r in c.execute(
-                    """SELECT p.* FROM otc_conditional_plans p
+                    """SELECT p.*,e.decision entry_decision FROM otc_conditional_plans p
+              LEFT JOIN otc_entry_checks e ON e.plan_id=p.id
               LEFT JOIN otc_plan_assessments a ON a.plan_id=p.id WHERE a.plan_id IS NULL
               AND (p.lifecycle='CANCELLED' OR p.delivery IN ('FAILED','LATE') OR p.expires_at+65<=?)
               ORDER BY p.expires_at LIMIT 500""",

@@ -36,6 +36,13 @@ def assess(row, bars, now):
         return answer("NOT_DELIVERED", "UNKNOWN", "delivery_not_on_time")
     if row["delivery"] != "SENT":
         return answer("UNKNOWN", "UNKNOWN", "delivery_unconfirmed")
+    entry_decision = row.get("entry_decision")
+    if entry_decision in ("LATE", "REJECTED"):
+        return answer("SKIPPED", "UNKNOWN", "entry_quality_" + entry_decision.lower())
+    if entry_decision == "CANCELLED":
+        return answer("CANCELLED", "UNKNOWN", "entry_check_cancelled")
+    if entry_decision == "NO_DATA":
+        return answer("UNKNOWN", "UNKNOWN", "entry_check_missing_data")
     if now < row["expires_at"] + 60:
         return answer("UNKNOWN", "UNKNOWN", "endpoint_bar_not_closed")
     valid = normalize_candles([asdict(b) for b in bars], int(now))

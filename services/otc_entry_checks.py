@@ -2,12 +2,19 @@
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import asdict
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from services.otc_conditional import Plan, Setup, condition_met, display_symbol
+from services.otc_conditional import (
+    Plan,
+    Setup,
+    condition_met,
+    context_setup,
+    display_symbol,
+)
 from services.otc_session import db_call
 from services.otc_strategy import aggregate, normalize_candles
 
@@ -43,6 +50,16 @@ def decide(row, bars, now):
     }
 
 
+def entry_quality(row, bars):
+    seconds = int(row["expires_at"] - row["entry_at"])
+    current = context_setup(bars, int(row["entry_at"]), seconds)
+    if current is None:
+        return False, {"reason": "context_no_longer_valid"}
+    if current.direction != row["direction"]:
+        return False, {"reason": "direction_changed"}
+    return True, {"reason": "context_revalidated", "context": current.evidence}
+
+
 def message(row, decision, now):
     name = display_symbol(row["symbol"])
     minutes = int(row["expires_at"] - row["entry_at"]) // 60
@@ -54,6 +71,10 @@ def message(row, decision, now):
         return prefix + "ОТМЕНА"
     if decision == "SKIPPED":
         return prefix + "ПРОПУСК — условие не выполнено"
+    if decision == "REJECTED":
+        return prefix + "ПРОПУСК — контекст или выплата изменились"
+    if decision == "LATE":
+        return prefix + "ПРОПУСК — подтверждение опоздало"
     if decision == "NO_DATA":
         return prefix + "ПРОПУСК — нет подтверждённых данных"
     delay = max(0, int(now - row["entry_at"]))
@@ -70,9 +91,12 @@ def message(row, decision, now):
 
 
 class EntryChecks:
-    def __init__(self, db, provider, bot, chat_id, clock=time.time):
+    def __init__(
+        self, db, provider, bot, chat_id, clock=time.time, require_quality=True
+    ):
         self.db, self.provider, self.bot, self.chat_id = db, provider, bot, chat_id
         self.clock = clock
+        self.require_quality = require_quality
         self.fetched = {}
         self.cache = {}
 
@@ -99,8 +123,38 @@ class EntryChecks:
             decision, evidence = decide(row, bars, self.clock())
             if row["symbol"] in getattr(self.provider, "closed_symbols", set()):
                 decision, evidence = "CANCELLED", {"reason": "instrument_closed"}
+            if decision == "MET" and self.require_quality:
+                passed, details = entry_quality(row, bars)
+                evidence["entry_quality"] = details
+                if not passed:
+                    decision = "REJECTED"
+                else:
+                    try:
+                        assets = await self.provider.symbols()
+                        asset = next(
+                            (a for a in assets if a.symbol == row["symbol"]), None
+                        )
+                        fresh = (
+                            asset is not None
+                            and asset.open is True
+                            and asset.payout is not None
+                            and math.isfinite(asset.payout)
+                            and 90 <= asset.payout <= 100
+                            and asset.observed_at is not None
+                            and 0 <= self.clock() - asset.observed_at <= 60
+                        )
+                        evidence["entry_market"] = (
+                            asdict(asset) if asset is not None else None
+                        )
+                        if not fresh:
+                            decision = "REJECTED"
+                    except Exception:
+                        decision = "NO_DATA"
+            if decision == "MET" and self.clock() - row["entry_at"] > 5:
+                decision = "LATE"
             if decision is None:
                 continue
+            evidence["quality_version"] = 2
             # Claim before network send: ambiguous Telegram failures must not duplicate advice.
             decision = await db_call(
                 self.db.claim_entry_check, row["id"], self.clock(), decision, evidence

@@ -64,7 +64,9 @@ class EntryCheckTests(unittest.IsolatedAsyncioTestCase):
                 usage=AsyncMock(return_value=SimpleNamespace(remaining=100)),
                 candles=AsyncMock(return_value=bars),
             )
-            service = EntryChecks(db, provider, bot, 1, lambda: plan.entry_at + 2)
+            service = EntryChecks(
+                db, provider, bot, 1, lambda: plan.entry_at + 2, require_quality=False
+            )
             await service.tick()
             await service.tick()
             self.assertEqual(bot.send_message.await_count, 1)
