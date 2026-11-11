@@ -60,6 +60,7 @@ class OTCSession:
         self._lock = asyncio.Lock()
         self._last_events = {}
         self._quotes = {}
+        self.closed_history = {}
         self.plan = None
         self.transport = "live"
         self.poll_requests_used = 0
@@ -98,6 +99,25 @@ class OTCSession:
             if self.transport == "snapshot"
             else self.config.max_tick_age
         )
+
+    def entry_snapshot(self, symbol):
+        now = self.clock()
+        if (
+            not self.running()
+            or not 0
+            <= now - self._quotes.get(symbol, float("-inf"))
+            <= self._price_max_age()
+        ):
+            return None
+        bars = self.closed_history.get(symbol)
+        asset = getattr(self.provider, "catalogue", {}).get(symbol)
+        if not bars:
+            return None
+        if asset is not None and symbol in getattr(
+            self.provider, "closed_symbols", set()
+        ):
+            asset = replace(asset, open=False)
+        return list(bars), asset
 
     def running(self):
         return self.task is not None and not self.task.done()
@@ -605,6 +625,7 @@ class OTCSession:
         attempt = 0
         builder = MinuteBuilder(self.config.max_tick_age, self.config.max_tick_gap)
         active = dict(chosen)
+        self.closed_history = history
         while True:
             try:
                 self.phase = "ожидание свежего тика"

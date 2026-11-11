@@ -60,7 +60,8 @@ def entry_quality(row, bars):
     return True, {"reason": "context_revalidated", "context": current.evidence}
 
 
-def message(row, decision, now):
+def message(row, decision, now, evidence=None):
+    evidence = evidence or {}
     name = display_symbol(row["symbol"])
     minutes = int(row["expires_at"] - row["entry_at"]) // 60
     clock = datetime.fromtimestamp(row["entry_at"], ZoneInfo("Europe/Moscow")).strftime(
@@ -72,16 +73,26 @@ def message(row, decision, now):
     if decision == "SKIPPED":
         return prefix + "ПРОПУСК — условие не выполнено"
     if decision == "REJECTED":
-        return prefix + "ПРОПУСК — контекст или выплата изменились"
-    if decision == "LATE":
-        return prefix + "ПРОПУСК — подтверждение опоздало"
-    if decision == "NO_DATA":
-        return prefix + "ПРОПУСК — нет подтверждённых данных"
-    delay = max(0, int(now - row["entry_at"]))
-    if delay > 5:
+        market = evidence.get("entry_market")
+        if market and market.get("open") is False:
+            return prefix + "Проверка: инструмент закрыт"
+        if market and market.get("payout") is not None and market["payout"] < 90:
+            return prefix + f"Проверка: выплата {market['payout']:g}% ниже 90%"
         return (
             prefix
-            + f"Условие выполнено по OTCharts. Задержка {delay} с — вход прошёл, ПРОПУСК."
+            + "Дополнительная проверка не подтвердила вход; исходный план учитывается отдельно"
+        )
+    if decision == "LATE":
+        return (
+            prefix
+            + f"Условие выполнено · проверка +{max(0, now - row['entry_at']):.1f} с. Сигнал учитывается."
+        )
+    if decision == "NO_DATA":
+        return prefix + "Проверка недоступна · исходный план не отменён"
+    if now - row["entry_at"] > 5:
+        return (
+            prefix
+            + f"Условие выполнено · проверка +{now - row['entry_at']:.1f} с. Сигнал учитывается."
         )
     direction = "ВВЕРХ" if row["direction"] == "UP" else "ВНИЗ"
     return (
@@ -92,12 +103,21 @@ def message(row, decision, now):
 
 class EntryChecks:
     def __init__(
-        self, db, provider, bot, chat_id, clock=time.time, require_quality=True, ml=None
+        self,
+        db,
+        provider,
+        bot,
+        chat_id,
+        clock=time.time,
+        require_quality=True,
+        ml=None,
+        source_snapshot=None,
     ):
         self.db, self.provider, self.bot, self.chat_id = db, provider, bot, chat_id
         self.clock = clock
         self.require_quality = require_quality
         self.ml = ml
+        self.source_snapshot = source_snapshot
         self.fetched = {}
         self.cache = {}
 
@@ -106,7 +126,20 @@ class EntryChecks:
         for row in rows:
             now = self.clock()
             bars = []
-            if row["lifecycle"] != "CANCELLED" and now - row["entry_at"] < 30:
+            live_asset = None
+            if self.source_snapshot is not None and row["lifecycle"] != "CANCELLED":
+                snapshot = self.source_snapshot(row["symbol"])
+                if snapshot:
+                    live_bars, live_asset = snapshot
+                    if decide(row, live_bars, now)[0] is not None:
+                        bars = live_bars
+                    elif now - row["entry_at"] < 3:
+                        continue
+            if (
+                not bars
+                and row["lifecycle"] != "CANCELLED"
+                and now - row["entry_at"] < 30
+            ):
                 symbol = row["symbol"]
                 if now - self.fetched.get(symbol, float("-inf")) >= 10:
                     self.fetched[symbol] = now
@@ -127,59 +160,60 @@ class EntryChecks:
             if decision == "MET" and self.require_quality:
                 passed, details = entry_quality(row, bars)
                 evidence["entry_quality"] = details
-                if not passed:
-                    decision = "REJECTED"
-                else:
-                    try:
+                evidence["context_advisory_only"] = not passed
+                try:
+                    if (
+                        live_asset is not None
+                        and live_asset.observed_at is not None
+                        and 0 <= self.clock() - live_asset.observed_at <= 60
+                    ):
+                        assets = [live_asset]
+                    else:
                         assets = await self.provider.symbols()
-                        asset = next(
-                            (a for a in assets if a.symbol == row["symbol"]), None
-                        )
-                        fresh = (
-                            asset is not None
-                            and asset.open is True
-                            and asset.payout is not None
-                            and math.isfinite(asset.payout)
-                            and 90 <= asset.payout <= 100
-                            and asset.observed_at is not None
-                            and 0 <= self.clock() - asset.observed_at <= 60
-                        )
-                        evidence["entry_market"] = (
-                            asdict(asset) if asset is not None else None
-                        )
-                        if not fresh:
-                            decision = "REJECTED"
-                        elif self.ml is not None:
-                            try:
-                                async with asyncio.timeout(0.25):
-                                    ml_result = await asyncio.to_thread(
-                                        self.ml.inspect, row, bars, asset.payout
-                                    )
-                                ml_result["predicted_at"] = self.clock()
-                                evidence["xgboost"] = ml_result
-                                if self.ml.requires_filter(row) and not ml_result.get(
-                                    "live"
-                                ):
-                                    decision = "NO_DATA"
-                                if ml_result.get("live") and not ml_result.get(
-                                    "accept"
-                                ):
-                                    decision = "REJECTED"
-                            except Exception as exc:
-                                evidence["xgboost"] = {
-                                    "status": "unavailable",
-                                    "error_type": type(exc).__name__,
-                                    "live": False,
-                                }
-                                if self.ml.requires_filter(row):
-                                    decision = "NO_DATA"
-                    except Exception:
-                        decision = "NO_DATA"
-            if decision == "MET" and self.clock() - row["entry_at"] > 5:
-                decision = "LATE"
+                    asset = next((a for a in assets if a.symbol == row["symbol"]), None)
+                    fresh = (
+                        asset is not None
+                        and asset.open is True
+                        and asset.payout is not None
+                        and math.isfinite(asset.payout)
+                        and 90 <= asset.payout <= 100
+                        and asset.observed_at is not None
+                        and 0 <= self.clock() - asset.observed_at <= 60
+                    )
+                    evidence["entry_market"] = (
+                        asdict(asset) if asset is not None else None
+                    )
+                    if not fresh:
+                        decision = "REJECTED"
+                    elif self.ml is not None:
+                        try:
+                            async with asyncio.timeout(0.25):
+                                ml_result = await asyncio.to_thread(
+                                    self.ml.inspect, row, bars, asset.payout
+                                )
+                            ml_result["predicted_at"] = self.clock()
+                            evidence["xgboost"] = ml_result
+                            if self.ml.requires_filter(row) and not ml_result.get(
+                                "live"
+                            ):
+                                decision = "NO_DATA"
+                            if ml_result.get("live") and not ml_result.get("accept"):
+                                decision = "REJECTED"
+                        except Exception as exc:
+                            evidence["xgboost"] = {
+                                "status": "unavailable",
+                                "error_type": type(exc).__name__,
+                                "live": False,
+                            }
+                            if self.ml.requires_filter(row):
+                                decision = "NO_DATA"
+                except Exception:
+                    decision = "NO_DATA"
+            evidence["confirmation_delay_seconds"] = self.clock() - row["entry_at"]
+            evidence["confirmation_is_advisory"] = True
             if decision is None:
                 continue
-            evidence["quality_version"] = 2
+            evidence["quality_version"] = 3
             # Claim before network send: ambiguous Telegram failures must not duplicate advice.
             decision = await db_call(
                 self.db.claim_entry_check, row["id"], self.clock(), decision, evidence
@@ -189,7 +223,7 @@ class EntryChecks:
             try:
                 async with asyncio.timeout(5):
                     await self.bot.send_message(
-                        self.chat_id, message(row, decision, self.clock())
+                        self.chat_id, message(row, decision, self.clock(), evidence)
                     )
             except Exception as exc:
                 logger.warning("Entry check notification: %s", type(exc).__name__)

@@ -81,6 +81,7 @@ async def main(*, session_minutes=None, session_end=None):
         bot,
         settings.admin_chat_id,
         ml=ml_runtime,
+        source_snapshot=service.entry_snapshot,
     )
     entry_task = asyncio.create_task(entry_checks.run())
     preview = MLPreview(

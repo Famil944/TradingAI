@@ -31,7 +31,7 @@ class EntryQualityTests(unittest.IsolatedAsyncioTestCase):
     async def test_payout_and_late_filters_are_persisted_and_counted_as_skips(self):
         for payout, lag, expected in (
             (70, 2, "REJECTED"),
-            (92, 8, "LATE"),
+            (92, 8, "MET"),
             (92, 2, "MET"),
         ):
             with (
@@ -67,17 +67,20 @@ class EntryQualityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(row["entry_decision"], expected)
                 if expected != "MET":
                     self.assertEqual(
-                        assess(row, [], plan.expires_at + 65)["outcome"], "SKIPPED"
+                        assess(row, [], plan.expires_at + 65)["outcome"], "UNKNOWN"
                     )
                 self.assertEqual(bot.send_message.await_count, 1)
 
     async def test_missing_entry_data_never_becomes_win(self):
-        base = dict(lifecycle="ACTIVE", delivery="SENT", expires_at=1800000000)
-        self.assertEqual(
-            assess({**base, "entry_decision": "NO_DATA"}, [], 1800000100)["outcome"],
-            "UNKNOWN",
+        base = dict(
+            lifecycle="ACTIVE",
+            delivery="SENT",
+            expires_at=1800000240,
+            entry_at=1800000180,
+            condition_from=1800000120,
         )
-        self.assertEqual(
-            assess({**base, "entry_decision": "REJECTED"}, [], 1800000100)["outcome"],
-            "SKIPPED",
-        )
+        for decision in ("NO_DATA", "REJECTED", "LATE"):
+            self.assertEqual(
+                assess({**base, "entry_decision": decision}, [], 1800000400)["outcome"],
+                "UNKNOWN",
+            )

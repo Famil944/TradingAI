@@ -49,8 +49,8 @@ class EntryCheckTests(unittest.IsolatedAsyncioTestCase):
         plan, row, bars = self.fixture()
         bars[0] = Candle(bars[0].time, 0.9, 1.2, 0.8, 1.1)
         self.assertEqual(decide(row, bars, plan.entry_at + 2)[0], "SKIPPED")
-        self.assertIn("ПРОПУСК", message(row, "MET", plan.entry_at + 10))
-        self.assertIn("Задержка 10 с", message(row, "MET", plan.entry_at + 10))
+        self.assertIn("Сигнал учитывается", message(row, "MET", plan.entry_at + 10))
+        self.assertIn("+10.0 с", message(row, "MET", plan.entry_at + 10))
 
     async def test_claim_is_persistent_even_when_telegram_send_fails(self):
         plan, row, bars = self.fixture()
