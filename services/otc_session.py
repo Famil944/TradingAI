@@ -297,6 +297,7 @@ class OTCSession:
                 self.last_error = "OTCharts не ответил вовремя. Это сетевой тайм-аут, а не окончание времени сеанса. Попробуйте запустить снова."
                 await self._notify(bot, self.last_error)
         except RetryableFeedError:
+            logger.warning("OTC startup stopped after transient network failure")
             self.last_error = "Не удалось подключиться к OTCharts после повторных попыток. Данные недоступны; сеанс остановлен. Попробуйте запустить снова."
             await self._notify(bot, self.last_error)
         except AccessUnavailable as exc:
@@ -345,6 +346,16 @@ class OTCSession:
     async def _wait_stream_release(self):
         await asyncio.sleep(5)
 
+    async def _catalogue_with_retry(self):
+        for attempt in range(3):
+            try:
+                return await self.provider.symbols()
+            except (RetryableFeedError, TimeoutError):
+                if attempt == 2:
+                    raise
+                logger.warning("OTCharts catalogue startup retry %d/3", attempt+2)
+                await asyncio.sleep(1)
+
     async def _run(self, bot):
         plan = await self._usage_with_retry()
         self.plan = plan
@@ -373,7 +384,7 @@ class OTCSession:
                 "Нет доступа к потоковым котировкам/выплатам или нет свободного потока."
             )
         assets = self._eligible(
-            await self.provider.symbols(), self.clock(), self.config.payout_max_age
+            await self._catalogue_with_retry(), self.clock(), self.config.payout_max_age
         )
         self.available = len(assets)
         if not assets:
