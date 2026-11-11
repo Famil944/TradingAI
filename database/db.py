@@ -54,6 +54,9 @@ class Database:
             entry_check_missing = not conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='otc_entry_checks'"
             ).fetchone()
+            preflight_missing = not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='otc_preflight_checks'"
+            ).fetchone()
             if old_tables and (
                 not exists
                 or nullable_migration
@@ -61,6 +64,7 @@ class Database:
                 or assessment_missing
                 or context_missing
                 or entry_check_missing
+                or preflight_missing
             ):
                 backup = self.db_path.with_name(
                     self.db_path.name + f".backup-{time.time_ns()}"
@@ -123,6 +127,11 @@ class Database:
               delivery TEXT NOT NULL DEFAULT 'PENDING', lifecycle TEXT NOT NULL DEFAULT 'ACTIVE',
               outcome TEXT NOT NULL DEFAULT 'UNKNOWN',
               UNIQUE(symbol,entry_at,strategy)
+            );
+            CREATE TABLE IF NOT EXISTS otc_preflight_checks (
+              plan_id TEXT PRIMARY KEY,checked_at REAL NOT NULL,decision TEXT NOT NULL,
+              reason TEXT NOT NULL,evidence TEXT NOT NULL,announced_at REAL,
+              delivery TEXT NOT NULL DEFAULT 'PENDING'
             );
             CREATE TABLE IF NOT EXISTS otc_entry_checks (
               plan_id TEXT PRIMARY KEY, checked_at REAL NOT NULL, decision TEXT NOT NULL,
@@ -288,6 +297,7 @@ class Database:
                 for r in c.execute(
                     """SELECT a.*,p.symbol,p.entry_at,p.expires_at FROM otc_plan_assessments a
             JOIN otc_conditional_plans p ON p.id=a.plan_id WHERE a.notified_at IS NULL AND p.expires_at>=?
+            AND NOT (a.outcome='CANCELLED' AND EXISTS (SELECT 1 FROM otc_preflight_checks f WHERE f.plan_id=p.id AND f.decision='CANCELLED' AND f.delivery='SENT'))
             ORDER BY a.assessed_at LIMIT 3""",
                     (since,),
                 )
@@ -506,3 +516,70 @@ class Database:
                 (identifier, now, decision, json.dumps(evidence, allow_nan=False)),
             ).rowcount
             return decision if inserted else False
+
+    def preflight_targets(self, now):
+        with self.connect() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    """
+                SELECT p.* FROM otc_conditional_plans p
+                LEFT JOIN otc_preflight_checks f ON f.plan_id=p.id
+                WHERE f.plan_id IS NULL AND p.delivery='SENT' AND p.lifecycle='ACTIVE'
+                AND p.entry_at BETWEEN ? AND ? ORDER BY p.entry_at LIMIT 20
+            """,
+                    (now + 10, now + 15),
+                )
+            ]
+
+    def claim_preflight(self, identifier, now, decision, reason, evidence):
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            plan = connection.execute(
+                "SELECT * FROM otc_conditional_plans WHERE id=?", (identifier,)
+            ).fetchone()
+            if (
+                not plan
+                or plan["lifecycle"] != "ACTIVE"
+                or not 10 <= plan["entry_at"] - now <= 15
+            ):
+                return False
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO otc_preflight_checks(plan_id,checked_at,decision,reason,evidence) VALUES(?,?,?,?,?)",
+                (
+                    identifier,
+                    now,
+                    decision,
+                    reason,
+                    json.dumps(evidence, allow_nan=False),
+                ),
+            ).rowcount
+            return bool(inserted)
+
+    def complete_preflight(self, identifier, now, success):
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT f.decision,f.delivery,p.entry_at,p.lifecycle
+                FROM otc_preflight_checks f JOIN otc_conditional_plans p ON p.id=f.plan_id
+                WHERE f.plan_id=?""",
+                (identifier,),
+            ).fetchone()
+            if not row or row["delivery"] != "PENDING":
+                return False
+            timely = bool(success and 10 <= row["entry_at"] - now <= 15)
+            state = "SENT" if timely else "LATE" if success else "FAILED"
+            connection.execute(
+                "UPDATE otc_preflight_checks SET announced_at=?,delivery=? WHERE plan_id=?",
+                (now if success else None, state, identifier),
+            )
+            if (
+                timely
+                and row["decision"] == "CANCELLED"
+                and row["lifecycle"] == "ACTIVE"
+            ):
+                connection.execute(
+                    "UPDATE otc_conditional_plans SET lifecycle='CANCELLED' WHERE id=? AND entry_at>?",
+                    (identifier, now),
+                )
+            return timely

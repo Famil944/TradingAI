@@ -156,11 +156,9 @@ class EntryChecks:
                 bars = self.cache.get(symbol, [])
             decision, evidence = decide(row, bars, self.clock())
             if row["symbol"] in getattr(self.provider, "closed_symbols", set()):
-                decision, evidence = "CANCELLED", {"reason": "instrument_closed"}
+                evidence["market_warning"] = "instrument_closed"
             if decision == "MET" and self.require_quality:
-                passed, details = entry_quality(row, bars)
-                evidence["entry_quality"] = details
-                evidence["context_advisory_only"] = not passed
+                evidence["context_check_stage"] = "preflight_only"
                 try:
                     if (
                         live_asset is not None
@@ -184,7 +182,9 @@ class EntryChecks:
                         asdict(asset) if asset is not None else None
                     )
                     if not fresh:
-                        decision = "REJECTED"
+                        evidence["market_warning"] = (
+                            "metadata_unavailable_or_payout_changed"
+                        )
                     elif self.ml is not None:
                         try:
                             async with asyncio.timeout(0.25):
@@ -196,9 +196,9 @@ class EntryChecks:
                             if self.ml.requires_filter(row) and not ml_result.get(
                                 "live"
                             ):
-                                decision = "NO_DATA"
+                                evidence["ml_warning"] = "model_unavailable"
                             if ml_result.get("live") and not ml_result.get("accept"):
-                                decision = "REJECTED"
+                                evidence["ml_warning"] = "model_not_confirmed"
                         except Exception as exc:
                             evidence["xgboost"] = {
                                 "status": "unavailable",
@@ -206,9 +206,9 @@ class EntryChecks:
                                 "live": False,
                             }
                             if self.ml.requires_filter(row):
-                                decision = "NO_DATA"
+                                evidence["ml_warning"] = "model_unavailable"
                 except Exception:
-                    decision = "NO_DATA"
+                    evidence["market_warning"] = "metadata_request_failed"
             evidence["confirmation_delay_seconds"] = self.clock() - row["entry_at"]
             evidence["confirmation_is_advisory"] = True
             if decision is None:
@@ -218,7 +218,7 @@ class EntryChecks:
             decision = await db_call(
                 self.db.claim_entry_check, row["id"], self.clock(), decision, evidence
             )
-            if not decision:
+            if not decision or decision == "CANCELLED":
                 continue
             try:
                 async with asyncio.timeout(5):

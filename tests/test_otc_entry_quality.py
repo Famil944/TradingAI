@@ -30,7 +30,7 @@ class EntryQualityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_payout_and_late_filters_are_persisted_and_counted_as_skips(self):
         for payout, lag, expected in (
-            (70, 2, "REJECTED"),
+            (70, 2, "MET"),
             (92, 8, "MET"),
             (92, 2, "MET"),
         ):

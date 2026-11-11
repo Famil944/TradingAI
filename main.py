@@ -22,6 +22,7 @@ from services.otc_evaluation import configured as configured_evaluator
 from services.otc_market_archive import MarketArchive
 from services.otc_ml.preview import MLPreview, PreviewJournal
 from services.otc_ml.runtime import RuntimeML
+from services.otc_preflight import PreflightChecks
 from services.otc_session import OTCSession
 
 COMMANDS = [
@@ -84,6 +85,8 @@ async def main(*, session_minutes=None, session_end=None):
         source_snapshot=service.entry_snapshot,
     )
     entry_task = asyncio.create_task(entry_checks.run())
+    preflight = PreflightChecks(db, bot, settings.admin_chat_id, service.entry_snapshot)
+    preflight_task = asyncio.create_task(preflight.run())
     preview = MLPreview(
         PreviewJournal(ROOT / "data" / "ml-preview.db"),
         RuntimeML(
@@ -143,6 +146,8 @@ async def main(*, session_minutes=None, session_end=None):
             await service._notify(bot, text)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        preflight_task.cancel()
+        await asyncio.gather(preflight_task, return_exceptions=True)
         preview_task.cancel()
         await asyncio.gather(preview_task, return_exceptions=True)
         entry_task.cancel()
