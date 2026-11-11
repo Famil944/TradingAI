@@ -35,6 +35,7 @@ class CycleTests(unittest.TestCase):
     def test_overlap_cannot_be_recovery_and_pending_does_not_lose(self):
         rows = self.rows(["LOSS", "WIN", "LOSS"])
         rows[1]["created_at"] = 100
+        rows[1]["entry_at"] = 200
         result = summarize(rows)
         self.assertEqual((result["wins"], result["losses"], result["stage"]), (0, 0, 2))
         result = summarize(self.rows(["LOSS", None, "WIN"]))
@@ -46,6 +47,17 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(result["losses"], 1)
         self.assertEqual(result["wins"], 0)
         self.assertIn("Винрейт 0.0%", format_cycles(result, 5))
+
+    def test_early_announcement_and_late_bookkeeping_do_not_hide_loss_streak(self):
+        rows = self.rows(["LOSS"] * 5 + ["WIN"])
+        for index, row in enumerate(rows):
+            row["entry_at"] = 1000 + index * 120
+            row["expires_at"] = row["entry_at"] + 60
+            row["created_at"] = row["entry_at"] - 180
+            row["assessed_at"] = row["expires_at"] + 300
+        result = summarize(rows)
+        self.assertEqual((result["wins"], result["losses"], result["stage"]), (1, 1, 0))
+        self.assertIn("Винрейт 50.0%", format_cycles(result, 1))
 
     def test_unknown_never_turns_into_win_or_loss(self):
         result = summarize(self.rows(["LOSS", "UNKNOWN", "WIN"]))

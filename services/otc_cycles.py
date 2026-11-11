@@ -7,8 +7,8 @@ def summarize(rows, since=0):
     ready_at = float("-inf")
     unfinished = False
     for row in rows:
-        # A recovery cannot use a plan already announced before the prior outcome was known.
-        if row["created_at"] < ready_at:
+        # Advance plans can be published early: eligibility depends on entry, not publication.
+        if row["entry_at"] < ready_at:
             continue
         outcome = row["outcome"]
         if outcome in ("SKIPPED", "CANCELLED", "NOT_DELIVERED") or row["delivery"] in (
@@ -21,13 +21,13 @@ def summarize(rows, since=0):
         if outcome == "UNKNOWN":
             unavailable += 1
             stage = 0
-            ready_at = max(row["expires_at"], row["assessed_at"])
+            ready_at = row["expires_at"]
             continue
         if outcome is None or row["delivery"] != "SENT":
             unavailable += 1
             unfinished = True
             break
-        known_at = max(row["expires_at"], row["assessed_at"])
+        known_at = row["expires_at"]
         ready_at = known_at
         if outcome == "DRAW":
             continue
@@ -59,7 +59,7 @@ def read_stats(db, seconds, since=0):
                 """
             SELECT p.created_at,p.entry_at,p.expires_at,p.delivery,a.outcome,a.assessed_at
             FROM otc_conditional_plans p LEFT JOIN otc_plan_assessments a ON a.plan_id=p.id
-            WHERE p.expires_at-p.entry_at=? ORDER BY p.created_at,p.entry_at,p.id
+            WHERE p.expires_at-p.entry_at=? ORDER BY p.entry_at,p.created_at,p.id
         """,
                 (seconds,),
             )
