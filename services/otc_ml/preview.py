@@ -262,7 +262,7 @@ class MLPreview:
         clock = datetime.fromtimestamp(
             selected["entry_at"], ZoneInfo("Europe/Moscow")
         ).strftime("%H:%M:%S")
-        text = f"🧪 XGBoost · отдельный тест\n{selected['name']}\n{direction} · {minutes} мин\nСледующая M1 · {clock} МСК. Опоздал — пропуск."
+        text = f"🧪 XGBoost · отдельный тест\n{selected['name']}\n{direction} · {minutes} мин\nСледующая минута · {clock} МСК. Опоздал — пропуск."
         try:
             timeout = min(3, max(0.1, selected["entry_at"] - 15 - self.clock()))
             async with asyncio.timeout(timeout):
