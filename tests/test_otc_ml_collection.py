@@ -121,3 +121,40 @@ class MLCollectionTests(unittest.TestCase):
             "final_holdout": {},
         }
         self.assertFalse(approved(report, result))
+
+    def test_forward_comparison_uses_only_prospective_timely_predictions(self):
+        from database.db import Database
+        from services.otc_conditional import Setup, make_plan
+        from services.otc_ml.forward import comparison
+
+        with tempfile.TemporaryDirectory() as folder:
+            db = Database(Path(folder) / "bot.db")
+            db.init_db()
+            at = 1800000000
+            for i, (outcome, accept, delay) in enumerate(
+                (("WIN", True, 3), ("LOSS", False, 3), ("WIN", True, 10))
+            ):
+                start = at + i * 300
+                plan = make_plan("A", start, Setup("UP", "red", 0.5, "fixture"), start)
+                identifier = db.prepare_plan(plan, start)
+                db.plan_delivered(identifier, start, True)
+                evidence = {
+                    "xgboost": dict(
+                        status="shadow",
+                        predicted_at=plan.entry_at + delay,
+                        accept=accept,
+                        model_sha256="fixture",
+                    )
+                }
+                db.claim_entry_check(identifier, plan.entry_at + delay, "MET", evidence)
+                db.assess_plan(
+                    identifier,
+                    dict(outcome=outcome, condition="MET", reason="fixture"),
+                    plan.expires_at + 65,
+                )
+            report = comparison(db, at + 2000)
+            self.assertEqual(len(report["groups"]), 1)
+            group = report["groups"][0]
+            self.assertEqual(group["baseline"]["opportunities"], 2)
+            self.assertEqual(group["ml_filter"]["opportunities"], 1)
+            self.assertFalse(group["advantage_confirmed"])
