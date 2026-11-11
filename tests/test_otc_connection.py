@@ -280,3 +280,18 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CatalogueStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transient_catalogue_failure_retries_but_auth_does_not(self):
+        provider = SimpleNamespace(
+            symbols=AsyncMock(side_effect=[RetryableFeedError(), []])
+        )
+        fake = SimpleNamespace(provider=provider)
+        with patch("services.otc_session.asyncio.sleep", new_callable=AsyncMock):
+            self.assertEqual(await OTCSession._catalogue_with_retry(fake), [])
+        self.assertEqual(provider.symbols.await_count, 2)
+        provider.symbols = AsyncMock(side_effect=AccessUnavailable("HTTP 401"))
+        with self.assertRaises(AccessUnavailable):
+            await OTCSession._catalogue_with_retry(fake)
+        self.assertEqual(provider.symbols.await_count, 1)
