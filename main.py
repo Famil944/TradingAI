@@ -8,6 +8,7 @@ import sys
 import time
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import BotCommand
 
 from bot import otc_commands
@@ -31,6 +32,23 @@ COMMANDS = [
     ("otc_stats", "Виртуальная статистика"),
     ("otc_diagnostics", "Диагностика OTC"),
 ]
+
+
+async def initialize_telegram(bot):
+    for attempt in range(3):
+        try:
+            await bot.set_my_commands(
+                [BotCommand(command=c, description=d) for c, d in COMMANDS],
+                request_timeout=10,
+            )
+            return await bot.get_me(request_timeout=10)
+        except (TelegramNetworkError, TimeoutError):
+            if attempt == 2:
+                raise
+            logging.getLogger(__name__).warning(
+                "Telegram startup retry %d/3", attempt + 2
+            )
+            await asyncio.sleep(2)
 
 
 async def main(*, session_minutes=None, session_end=None):
@@ -77,10 +95,7 @@ async def main(*, session_minutes=None, session_end=None):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     try:
-        await bot.set_my_commands(
-            [BotCommand(command=c, description=d) for c, d in COMMANDS]
-        )
-        identity = await bot.me()
+        identity = await initialize_telegram(bot)
         logging.getLogger(__name__).info(
             "Telegram bot @%s initialized; waiting for /otc (test mode: %s).",
             identity.username,
