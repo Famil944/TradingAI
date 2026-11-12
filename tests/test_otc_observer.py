@@ -76,7 +76,8 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_compact_message_keeps_time_condition_and_deadline(self):
         text = message(self.plan, "fixture")
-        self.assertEqual(len(text.splitlines()), 4)
+        self.assertEqual(len(text.splitlines()), 5)
+        self.assertIn("Подтверждения: нет сохранённых данных", text)
         self.assertIn("Facebook OTC", text)
         self.assertIn("Вход ВВЕРХ", text)
         self.assertIn("Если свеча", text)

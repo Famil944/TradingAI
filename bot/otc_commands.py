@@ -83,11 +83,11 @@ def menu(chat_id, conditional=None):
         ]
     )
     rows.append([InlineKeyboardButton(text="Статистика", callback_data="otc:stats")])
+    rows.append([InlineKeyboardButton(text="Подтверждения", callback_data="otc:confirmations")])
     rows.append(
         [
-            InlineKeyboardButton(
-                text="XGBoost · статистика теста", callback_data="otc:mlstats:all"
-            )
+            InlineKeyboardButton(text="🟠 XGBoost", callback_data="otc:mlstats:all"),
+            InlineKeyboardButton(text="🟣 Groq", callback_data="otc:groqstats:all"),
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -97,12 +97,15 @@ def menu(chat_id, conditional=None):
 async def show_menu(message: types.Message):
     if getattr(settings, "signal_mode", "immediate") == "conditional":
         await message.answer(
-            "УСЛОВНЫЕ ПЛАНЫ · ЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ.\n"
-            "Бот заранее указывает вход не ранее чем через 3 минуты, на закрытии свечи выбранного таймфрейма и экспирацию M1/M5/M15. "
-            "Ты сам проверяешь цвет указанной свечи на Pocket Option и уровень отмены. "
-            "Второго подтверждения ждать не нужно. Позднее сообщение или невыполненное условие — пропуск. "
-            "Остановка/перезапуск отменяют прежние планы.\n"
-            "/otc_status — статус; /otc_stop — остановить; /otc_stats — журнал.\nВыбери длительность.",
+            "📊 OTC · M1 / M5 / M15\n"
+            + (
+                "🔵 Основной v5: готовые сигналы · тест.\n"
+                if settings.primary_mode == "ready"
+                else "🔵 Основной: вход по условию свечи.\n"
+            )
+            + "🟣 Groq / 🟠 XGBoost: отдельные тесты.\n"
+            "Опоздал — пропуск.\n"
+            "Выбери экспирацию и длительность.",
             reply_markup=menu(message.chat.id),
         )
         return
@@ -118,17 +121,18 @@ async def show_menu(message: types.Message):
 
 @router.message(Command("otc_status"))
 async def status(message: types.Message):
-    await message.answer(service.status())
+    await message.answer(service.brief_status())
 
 
 @router.message(Command("otc_stop"))
 async def stop(message: types.Message):
+    service.user_stopped = True
     (ROOT / "data" / "observer.stop").parent.mkdir(parents=True, exist_ok=True)
     (ROOT / "data" / "observer.stop").touch()
     stopped = await service.stop()
     await message.answer(
         ("OTC остановлен." if stopped else "OTC уже остановлен.")
-        + " Все прежние условные планы отменены."
+        + " Будущие планы отменены; начавшиеся учитываются."
     )
 
 
@@ -143,6 +147,33 @@ async def stats(message: types.Message):
     await message.answer("Выбери экспирацию:", reply_markup=stats_menu(period))
 
 
+async def send_confirmations(message, period="all"):
+    from services.otc_confirmation_report import format_report, read_records
+
+    durations = {"24h": 86400, "7d": 604800, "30d": 2592000, "all": None}
+    if period not in durations:
+        await message.answer("Используйте /otc_confirmations [24h|7d|30d|all]")
+        return
+    since = time.time() - durations[period] if durations[period] else 0
+    records = await asyncio.to_thread(read_records, ROOT / "data", since)
+    text = await asyncio.to_thread(format_report, records)
+    # Reports can grow with strategy versions; keep Telegram messages bounded.
+    chunk = ""
+    for line in text.splitlines():
+        if len(chunk) + len(line) + 1 > 3500:
+            await message.answer(chunk)
+            chunk = ""
+        chunk += line + "\n"
+    if chunk:
+        await message.answer(chunk)
+
+
+@router.message(Command("otc_confirmations"))
+async def confirmations(message: types.Message):
+    args = (message.text or "").split()
+    await send_confirmations(message, args[1] if len(args) > 1 else "all")
+
+
 def stats_menu(period="all", cycles=False):
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -155,7 +186,11 @@ def stats_menu(period="all", cycles=False):
             ],
             [
                 InlineKeyboardButton(
-                    text="Обычные" if cycles else "Циклы · 3 перекрытия",
+                    text="Обычные"
+                    if cycles
+                    else "Циклы · архив условных"
+                    if settings.primary_mode == "ready"
+                    else "Циклы · 3 перекрытия",
                     callback_data=f"otc:{'stats' if cycles else 'cycles'}",
                 )
             ],
@@ -188,23 +223,32 @@ async def callback(query: types.CallbackQuery):
         return
     action = parts[1]
     chat = query.message.chat.id
-    if action == "mlstats":
+    if action == "confirmations" and len(parts) == 2:
+        await query.answer()
+        await send_confirmations(query.message)
+        return
+    if action in ("mlstats", "groqstats"):
+        preview_name = "groq_preview" if action == "groqstats" else "ml_preview"
         if (
             len(parts) != 3
             or parts[2] not in ("all", "1", "2", "3", "5", "15")
-            or not hasattr(service, "ml_preview")
+            or not hasattr(service, preview_name)
         ):
             await query.answer("Тест ещё не запущен")
             return
         await query.answer()
         seconds = None if parts[2] == "all" else int(parts[2]) * 60
-        text = await asyncio.to_thread(service.ml_preview.journal.stats, seconds)
+        text = await asyncio.to_thread(
+            getattr(service, preview_name).journal.stats, seconds
+        )
+        if action == "groqstats":
+            text += "\n" + await asyncio.to_thread(service.groq_preview.client.status)
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
                         text="Все" if key == "all" else key + " мин",
-                        callback_data="otc:mlstats:" + key,
+                        callback_data="otc:" + action + ":" + key,
                     )
                     for key in ("all", "1", "2", "3", "5", "15")
                 ]
@@ -238,8 +282,17 @@ async def callback(query: types.CallbackQuery):
                     read_stats, service.db, int(parts[2]) * 60, since
                 )
                 text = format_cycles(cycle_stats, int(parts[2]))
+                if settings.primary_mode == "ready":
+                    text = "Архив условных планов\n" + text
             else:
-                text = compact_stats(rows, int(parts[2]))
+                if getattr(
+                    settings, "primary_mode", "conditional"
+                ) == "ready" and hasattr(service, "main_ready"):
+                    text = await asyncio.to_thread(
+                        service.main_ready.journal.stats, int(parts[2]) * 60, since
+                    )
+                else:
+                    text = compact_stats(rows, int(parts[2]))
             if query.message.text != text:
                 await query.message.edit_text(
                     text, reply_markup=stats_menu(parts[3], cycles=cycles)
@@ -267,10 +320,11 @@ async def callback(query: types.CallbackQuery):
     elif action == "stop" and len(parts) == 2:
         (ROOT / "data" / "observer.stop").parent.mkdir(parents=True, exist_ok=True)
         (ROOT / "data" / "observer.stop").touch()
+        service.user_stopped = True
         stopped = await service.stop()
         await query.answer("Остановлено" if stopped else "Уже остановлен")
     elif action == "status" and len(parts) == 2:
         await query.answer()
-        await query.message.answer(service.status())
+        await query.message.answer(service.brief_status())
     else:
         await query.answer("Недопустимый выбор")

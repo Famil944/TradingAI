@@ -166,6 +166,59 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.stats(), [])
         self.assertFalse(self.session._health_counts)
 
+    async def test_compact_health_only_notifies_failure_and_recovery(self):
+        self.session.config.compact_messages = True
+        self.session.last_tick = self.clock[0]
+        await self.session._health_report(self.bot)
+        self.bot.send_message.assert_not_called()
+        self.session.last_tick = None
+        await self.session._health_report(self.bot)
+        await self.session._health_report(self.bot)
+        self.assertEqual(self.bot.send_message.await_count, 1)
+        self.session.last_tick = self.clock[0]
+        await self.session._health_report(self.bot)
+        self.assertEqual(self.bot.send_message.await_count, 2)
+
+    async def test_fresh_prices_do_not_hide_stale_payout_metadata(self):
+        self.session.config.compact_messages = True
+        self.session.config.require_paid_metadata = True
+        self.session.last_tick = self.clock[0]
+        self.provider.catalogue = {}
+        await self.session._health_report(self.bot)
+        self.assertIn("выплатах", self.bot.send_message.call_args.args[1])
+
+    async def test_usage_failure_cannot_block_symbol_refresh(self):
+        active = {}
+        self.provider.usage = AsyncMock(side_effect=TimeoutError())
+        with patch(
+            "services.otc_session.asyncio.sleep",
+            new=AsyncMock(side_effect=[None, asyncio.CancelledError()]),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.session._refresh_stream_assets(active, {"A": None})
+        self.assertIn("A", active)
+        self.provider.usage.assert_not_awaited()
+
+    async def test_history_recovery_survives_temporary_api_failure(self):
+        plan = await self.provider.usage()
+        self.session._usage_with_retry = AsyncMock(
+            side_effect=[RetryableFeedError(), plan]
+        )
+        history = {}
+        with patch("services.otc_session.reconnect_delay", return_value=0):
+            active = await self.session._restore_stream_history({"A": None}, history)
+        self.assertIn("A", history)
+        self.assertIn("A", active)
+        self.assertEqual(self.session._usage_with_retry.await_count, 2)
+
+    async def test_history_recovery_does_not_retry_invalid_access(self):
+        self.session._usage_with_retry = AsyncMock(
+            side_effect=AccessUnavailable("invalid key")
+        )
+        with self.assertRaises(AccessUnavailable):
+            await self.session._restore_stream_history({"A": None}, {})
+        self.session._usage_with_retry.assert_awaited_once()
+
     async def test_recent_signal_suppresses_redundant_health_notification(self):
         self.session.last_signal_at = self.clock[0]
         await self.session._health_report(self.bot)

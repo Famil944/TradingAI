@@ -60,6 +60,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 "otc_status",
                 "otc_stop",
                 "otc_stats",
+                "otc_confirmations",
                 "otc_diagnostics",
             },
         )

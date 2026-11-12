@@ -67,7 +67,7 @@ def message(row, decision, now, evidence=None):
     clock = datetime.fromtimestamp(row["entry_at"], ZoneInfo("Europe/Moscow")).strftime(
         "%H:%M:%S"
     )
-    prefix = f"{name} · M{minutes} · {clock} МСК\n"
+    prefix = f"🔵 Основной · {name} · M{minutes} · {clock} МСК\n"
     if decision == "CANCELLED":
         return prefix + "ОТМЕНА"
     if decision == "SKIPPED":

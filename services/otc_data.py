@@ -13,6 +13,8 @@ import time
 from dataclasses import dataclass
 from importlib.metadata import version
 
+import os
+
 import aiohttp
 
 from services.otc_market import Asset, Tick, utc_timestamp
@@ -51,6 +53,13 @@ def venue_timestamp(value):
     return utc_timestamp(value) - VENUE_OFFSET_SECONDS
 
 
+async def wait_for_tick_time(tick):
+    """Buffer at most two seconds of clock skew; never relabel future data."""
+    ahead = tick.time - time.time()
+    if 0 < ahead <= 2:
+        await asyncio.sleep(ahead)
+
+
 class OTChartsProvider:
     source = "otcharts"
     # There is no independent platform evidence supplied by this provider.
@@ -76,6 +85,7 @@ class OTChartsProvider:
             raise AccessUnavailable("Версия OTCharts не проверена; требуется 0.7.0.")
         if self._session is None:
             self._session = aiohttp.ClientSession(
+                proxy=os.getenv("TRADINGAI_HTTP_PROXY"),
                 headers={"Authorization": "Bearer " + self._key},
                 timeout=aiohttp.ClientTimeout(total=15),
             )
@@ -236,6 +246,7 @@ class OTChartsProvider:
                     except (KeyError, ValueError, TypeError):
                         continue
                     if symbol in symbols:
+                        await wait_for_tick_time(tick)
                         yield tick
         finally:
             self.connected = False

@@ -16,8 +16,8 @@ from services.otc_strategy import aggregate, normalize_candles
 
 logger = logging.getLogger(__name__)
 LABELS = {
-    "WIN": "WIN ✅",
-    "LOSS": "LOSS ❌",
+    "WIN": "+ WIN ✅",
+    "LOSS": "− LOSS ❌",
     "DRAW": "НИЧЬЯ",
     "SKIPPED": "ПРОПУСК",
     "UNKNOWN": "НЕИЗВЕСТНО",
@@ -184,7 +184,7 @@ class Evaluator:
             notifications = await db_call(db.assessment_notifications, now - 900)
             if notifications:
                 text = (
-                    "🧪 "
+                    "🔵 "
                     + title
                     + " · виртуально OTCharts\n"
                     + "\n".join(

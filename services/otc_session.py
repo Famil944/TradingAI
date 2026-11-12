@@ -133,8 +133,17 @@ class OTCSession:
             if self.running():
                 return False
             self.chat_id = chat_id
+            self.user_stopped = False
+            if hasattr(self, "main_ready"):
+                self.main_ready.enabled = (
+                    getattr(self.config, "primary_mode", "conditional") == "ready"
+                )
+                self.main_ready.allowed_timeframes = tuple(timeframes)
+                self.main_ready.sent_count = 0
             if hasattr(self, "ml_preview"):
                 self.ml_preview.enabled = True
+            if hasattr(self, "groq_preview"):
+                self.groq_preview.enabled = True
             self.timeframes = tuple(timeframes)
             self.ends_at = self.clock() + minutes * 60 if minutes else None
             self.last_tick = None
@@ -157,6 +166,10 @@ class OTCSession:
         async with self._lock:
             if hasattr(self, "ml_preview"):
                 await self.ml_preview.stop()
+            if hasattr(self, "groq_preview"):
+                await self.groq_preview.stop()
+            if hasattr(self, "main_ready"):
+                await self.main_ready.stop()
             if not self.running():
                 return False
             self.task.cancel()
@@ -219,6 +232,47 @@ class OTCSession:
             + (f"\n{self.last_error}" if self.last_error else "")
         )
 
+    def catalogue_age(self):
+        observed = [
+            a.observed_at
+            for a in getattr(self.provider, "catalogue", {}).values()
+            if a.observed_at is not None
+        ]
+        return max(0, self.clock() - max(observed)) if observed else None
+
+    def brief_status(self):
+        now = self.clock()
+        monitored = sum(
+            0 <= now - t <= self._price_max_age() for t in self._quotes.values()
+        )
+        metadata_age = self.catalogue_age()
+        metadata_ok = not getattr(self.config, "require_paid_metadata", False) or (
+            metadata_age is not None and metadata_age <= self.config.payout_max_age
+        )
+        active = self.running() and monitored > 0 and metadata_ok
+        end = (
+            datetime.fromtimestamp(self.ends_at, MOSCOW).strftime("%H:%M")
+            if self.ends_at
+            else "до остановки"
+        )
+        frames = " / ".join(f"M{x // 60}" for x in self.timeframes)
+        count = (
+            self.session_plan_count
+            if self.conditional_mode
+            else self.session_signal_count
+        )
+        count_text = f"Планов {count}"
+        if getattr(self.config, "primary_mode", "conditional") == "ready" and hasattr(
+            self, "main_ready"
+        ):
+            count_text = f"Готовые v5 · сигналов {self.main_ready.sent_count}"
+        text = f"{'🟢' if active else '🟠'} OTC · {'работает' if active else self.phase}\n{frames} · инструментов {monitored}\n{count_text} · до {end} МСК"
+        if hasattr(self, "groq_preview"):
+            text += "\n" + self.groq_preview.client.status()
+        if self.running() and not metadata_ok:
+            text += "\nВыплаты устарели · сигналы на паузе"
+        return text
+
     async def _notify(self, bot, text):
         try:
             async with asyncio.timeout(10):
@@ -234,6 +288,28 @@ class OTCSession:
             "OTC health: %s; reasons=%s", status.replace("\n", " | "), dict(counts)
         )
         interval = getattr(self.config, "health_report_seconds", 120)
+        if getattr(self.config, "compact_messages", False):
+            metadata_age = self.catalogue_age()
+            metadata_ok = not getattr(self.config, "require_paid_metadata", False) or (
+                metadata_age is not None and metadata_age <= self.config.payout_max_age
+            )
+            healthy = (
+                self.last_tick is not None
+                and 0 <= self.clock() - self.last_tick <= self._price_max_age()
+                and metadata_ok
+            )
+            previous = getattr(self, "_reported_healthy", None)
+            self._reported_healthy = healthy
+            if not healthy and previous is not False:
+                await self._notify(
+                    bot,
+                    "🟠 Нет свежих данных о выплатах. Сигналы на паузе; повторяю запросы."
+                    if not metadata_ok
+                    else "🟠 Нет свежих котировок. Переподключаюсь; новые сигналы на паузе.",
+                )
+            elif healthy and previous is False:
+                await self._notify(bot, "🟢 Котировки восстановлены. Бот работает.")
+            return
         if (
             self.last_signal_at is not None
             and 0 <= self.clock() - self.last_signal_at < interval
@@ -596,12 +672,8 @@ class OTCSession:
         while True:
             await asyncio.sleep(getattr(self.config, "catalogue_refresh_seconds", 30))
             try:
-                current = await self._usage_with_retry()
-                self.plan = current
-                if current.remaining <= 1:
-                    raise AccessUnavailable(
-                        "Лимит запросов исчерпан; поток остановлен."
-                    )
+                # The symbols response enforces API access/quota itself. A failure
+                # of the separate usage endpoint must not prevent refreshing payouts.
                 catalogue = self._eligible(
                     await self.provider.symbols(),
                     self.clock(),
@@ -670,6 +742,18 @@ class OTCSession:
                                 self.ml_preview.observe(
                                     history, active, self._quotes, self.ends_at
                                 )
+                            if hasattr(self, "groq_preview"):
+                                self.groq_preview.observe(
+                                    history, active, self._quotes, self.ends_at
+                                )
+                            if (
+                                hasattr(self, "main_ready")
+                                and getattr(self.config, "primary_mode", "conditional")
+                                == "ready"
+                            ):
+                                self.main_ready.observe(
+                                    history, active, self._quotes, self.ends_at
+                                )
                             self.monitored = sum(
                                 0 <= now - t <= self.config.max_tick_age
                                 for t in builder.last.values()
@@ -719,6 +803,11 @@ class OTCSession:
                                 continue
                             closed_at = bar.time + 60
                             if self.conditional_mode:
+                                if (
+                                    getattr(self.config, "primary_mode", "conditional")
+                                    == "ready"
+                                ):
+                                    continue
                                 for seconds in self.timeframes:
                                     await self._consider_plan(
                                         bot, values, tick, asset, closed_at, seconds
@@ -777,22 +866,38 @@ class OTCSession:
                 delay = reconnect_delay(attempt, getattr(exc, "retry_after", 0))
                 attempt += 1
                 await asyncio.sleep(delay)
+                active = await self._restore_stream_history(chosen, history)
+
+    async def _restore_stream_history(self, chosen, history):
+        attempt = 0
+        while True:
+            try:
                 plan = await self._usage_with_retry()
+                self.plan = plan
                 if plan.remaining < len(chosen) + 2:
                     raise AccessUnavailable(
                         "Недостаточно запросов для восстановления истории."
                     )
-                active = {
+                catalogue = await self.provider.symbols()
+                restored = {}
+                for symbol in chosen:
+                    restored[symbol] = await self.provider.candles(symbol, self.clock())
+                history.update(restored)
+                return {
                     a.symbol: a
                     for a in self._eligible(
-                        await self.provider.symbols(),
-                        self.clock(),
-                        self.config.payout_max_age,
+                        catalogue, self.clock(), self.config.payout_max_age
                     )
                     if a.symbol in chosen
                 }
-                for symbol in chosen:
-                    history[symbol] = await self.provider.candles(symbol, self.clock())
+            except (RetryableFeedError, TimeoutError) as exc:
+                self.phase = "Переподключение"
+                logger.warning("OTC recovery deferred after temporary network failure")
+                await self._event("history_reconnect_retry")
+                await asyncio.sleep(
+                    reconnect_delay(attempt, getattr(exc, "retry_after", 0))
+                )
+                attempt += 1
 
     async def _consider_plan(self, bot, history, tick, asset, closed_at, seconds=60):
         now = self.clock()
@@ -914,6 +1019,11 @@ class OTCSession:
             "platform_match": False,
             "complete_candles": True,
         }
+        from services.otc_confirmations import build, format_confirmations
+
+        quality["confirmations"] = build(
+            self.closed_history.get(tick.symbol, []), direction, seconds, closed_at
+        )
         identifier = await db_call(
             self.db.record,
             symbol=tick.symbol,
@@ -959,6 +1069,7 @@ class OTCSession:
                 else ""
             )
             + f"\nПричина: {reason}\nID: {identifier}\nСовпадение с платформой не подтверждено. Виртуальный исход UNKNOWN."
+            + "\n" + format_confirmations(quality["confirmations"])
         )
         try:
             await bot.send_message(self.chat_id, text)

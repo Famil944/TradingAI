@@ -89,9 +89,8 @@ def setup(minutes, closed_at):
     return None
 
 
-def context_setup(minutes, closed_at, seconds=60):
-    """Choose a hypothesis from observed context, never guess the future colour."""
-    from services.otc_ml.features import FEATURE_NAMES, indicators
+def trend_context(minutes, closed_at, seconds=60):
+    """Validate the ongoing trend without demanding a new entry trigger."""
 
     if seconds not in (60, 300, 900):
         raise ValueError("Unsupported timeframe")
@@ -147,6 +146,21 @@ def context_setup(minutes, closed_at, seconds=60):
             )
         else:
             return None
+    return base
+
+
+def context_setup(minutes, closed_at, seconds=60):
+    """Choose a hypothesis from observed context, never guess the future colour."""
+    from services.otc_confirmations import build
+    from services.otc_ml.features import FEATURE_NAMES, indicators
+
+    base = trend_context(minutes, closed_at, seconds)
+    minutes = [b for b in minutes if b.time + 60 <= closed_at]
+    bars = (
+        minutes
+        if seconds == 60
+        else [b for b in aggregate(minutes, seconds) if b.time + seconds <= closed_at]
+    )
     if base is None:
         return None
     feature_values = indicators(bars[-250:])
@@ -218,6 +232,7 @@ def context_setup(minutes, closed_at, seconds=60):
             "context": kind,
             "base_context": base.reason.split(";")[0],
             "advantage_confirmed": False,
+            "confirmations": build(minutes, base.direction, seconds, closed_at),
         },
     )
 
@@ -270,6 +285,9 @@ def display_symbol(symbol):
 
 
 def message(plan, identifier, payout=None, *, compact=True, name=None):
+    from services.otc_confirmations import format_confirmations
+
+    confirmations = format_confirmations((plan.setup.evidence or {}).get("confirmations"))
     def clock(at):
         return datetime.fromtimestamp(at, MOSCOW).strftime("%H:%M:%S")
 
@@ -290,12 +308,13 @@ def message(plan, identifier, payout=None, *, compact=True, name=None):
         sign = ">" if plan.setup.direction == "UP" else "<"
         direction_short = "ВВЕРХ" if plan.setup.direction == "UP" else "ВНИЗ"
         return (
-            f"🧪 {name or display_symbol(plan.symbol)}"
+            f"🔵 Основной · {name or display_symbol(plan.symbol)}"
             + (f" · {payout:g}% сейчас" if payout is not None else " · выплата ?")
             + "\n"
             f"Вход {direction_short} — {clock(plan.entry_at)} МСК · {(plan.expires_at - plan.entry_at) // 60} мин\n"
             f"Если свеча M{(plan.entry_at - plan.condition_from) // 60} {clock(plan.condition_from)}–{clock(plan.entry_at)} {colour_short}, закрытие {sign} {plan.setup.invalidation:.8g}\n"
             f"Иначе — ПРОПУСК. Получить до {clock(plan.delivery_deadline)}."
+            + "\n" + confirmations
         )
     return (
         f"УСЛОВНЫЙ ПЛАН · ЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ\n{plan.symbol}\n"
@@ -307,7 +326,7 @@ def message(plan, identifier, payout=None, *, compact=True, name=None):
         f"Выплата: {payout_text}; проверь открытие и выплату на платформе.\n"
         "Цвет свечи и вход проверяешь САМ; второго подтверждения не будет. "
         "При остановке/перезапуске бота прежние планы отменяются. Сделки бот не открывает.\n"
-        f"Основание сейчас: {plan.setup.reason}. Условия через 3 минуты могут измениться.\nID: {identifier}"
+        f"Основание сейчас: {plan.setup.reason}. Условия через 3 минуты могут измениться.\n{confirmations}\nID: {identifier}"
     )
 
 

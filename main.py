@@ -3,11 +3,14 @@
 import argparse
 import asyncio
 import logging
+import os
 import subprocess
 import sys
 import time
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiohttp import ClientSession
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import BotCommand
 
@@ -19,11 +22,14 @@ from database.db import Database
 from services.otc_data import OTChartsProvider
 from services.otc_entry_checks import EntryChecks
 from services.otc_evaluation import configured as configured_evaluator
+from services.otc_groq import GroqClient, GroqPreview
 from services.otc_market_archive import MarketArchive
 from services.otc_ml.preview import MLPreview, PreviewJournal
 from services.otc_ml.runtime import RuntimeML
 from services.otc_preflight import PreflightChecks
+from services.otc_ready import ReadyPrimary
 from services.otc_session import OTCSession
+from services.otc_supervisor import heartbeat
 
 COMMANDS = [
     ("start", "Начать"),
@@ -32,6 +38,7 @@ COMMANDS = [
     ("otc_status", "Статус OTC"),
     ("otc_stop", "Остановить OTC"),
     ("otc_stats", "Виртуальная статистика"),
+    ("otc_confirmations", "Результаты по подтверждениям"),
     ("otc_diagnostics", "Диагностика OTC"),
 ]
 
@@ -69,7 +76,14 @@ async def main(*, session_minutes=None, session_end=None):
         db=db, provider=OTChartsProvider(settings.otcharts_api_key, archive=archive)
     )
     otc_commands.service = service
-    bot = Bot(token=settings.telegram_bot_token)
+    heartbeat_task = asyncio.create_task(heartbeat(service))
+    proxy = os.getenv("TRADINGAI_HTTP_PROXY")
+    session = None
+    if proxy:
+        session = AiohttpSession()
+        session._session = ClientSession(proxy=proxy)
+        session._should_reset_connector = False
+    bot = Bot(token=settings.telegram_bot_token, session=session)
     dp = Dispatcher()
     dp.include_router(otc_commands.router)
     evaluator = configured_evaluator(db, bot, settings, ROOT)
@@ -92,10 +106,34 @@ async def main(*, session_minutes=None, session_end=None):
         RuntimeML(
             ROOT / "data" / "ml_preview20_verified", ROOT / "data" / "ml_preview20"
         ),
+        settlement_provider=evaluator.provider,
     )
     await asyncio.to_thread(preview.journal.cancel_future, time.time())
     service.ml_preview = preview
     preview_task = asyncio.create_task(preview.run(bot, settings.admin_chat_id))
+    groq_journal = PreviewJournal(ROOT / "data" / "groq-preview.db", label="Groq")
+    groq = GroqPreview(
+        groq_journal,
+        GroqClient(
+            settings.groq_api_key,
+            groq_journal.path,
+            model=settings.groq_model,
+            interval=settings.groq_interval_seconds,
+            max_requests=settings.groq_max_requests,
+            max_tokens=settings.groq_max_tokens,
+        ),
+        settlement_provider=evaluator.provider,
+    )
+    await asyncio.to_thread(groq_journal.cancel_future, time.time())
+    service.groq_preview = groq
+    groq_task = asyncio.create_task(groq.run(bot, settings.admin_chat_id))
+    ready_journal = PreviewJournal(
+        ROOT / "data" / "primary-ready.db", label="Основной v5", per_horizon=True
+    )
+    ready = ReadyPrimary(ready_journal, settlement_provider=evaluator.provider)
+    await asyncio.to_thread(ready_journal.cancel_future, time.time())
+    service.main_ready = ready
+    ready_task = asyncio.create_task(ready.run(bot, settings.admin_chat_id))
     (ROOT / "logs").mkdir(exist_ok=True)
     with (
         (ROOT / "logs" / "ml-collector.stdout.log").open("a", encoding="utf-8") as out,
@@ -135,9 +173,9 @@ async def main(*, session_minutes=None, session_end=None):
                 bot, settings.admin_chat_id, session_minutes, (60, 300, 900)
             )
             if session_end is not None:
-                service.ends_at = min(service.ends_at, session_end)
+                service.ends_at = session_end
             text = (
-                "🧪 Обновлено. Сеанс продолжается до прежнего времени; будущие планы отменены."
+                "🧪 Сеанс обновлён до заданного времени; будущие планы отменены."
                 if session_end is not None
                 else f"🧪 Условный режим · {session_minutes} мин. Прежние планы отменены."
                 if service.conditional_mode
@@ -146,6 +184,12 @@ async def main(*, session_minutes=None, session_end=None):
             await service._notify(bot, text)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        ready_task.cancel()
+        await asyncio.gather(ready_task, return_exceptions=True)
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
+        groq_task.cancel()
+        await asyncio.gather(groq_task, return_exceptions=True)
         preflight_task.cancel()
         await asyncio.gather(preflight_task, return_exceptions=True)
         preview_task.cancel()
@@ -182,7 +226,13 @@ if __name__ == "__main__":
     )
     for handler in logging.getLogger().handlers:
         handler.setFormatter(
-            SecretFormatter((settings.telegram_bot_token, settings.otcharts_api_key))
+            SecretFormatter(
+                (
+                    settings.telegram_bot_token,
+                    settings.otcharts_api_key,
+                    settings.groq_api_key,
+                )
+            )
         )
     # Framework request URLs may include bot credentials; hide transport details.
     logging.getLogger("aiohttp").setLevel(logging.CRITICAL)

@@ -88,3 +88,18 @@ class PreflightTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision, "KEEP")
         self.assertFalse(evidence["future_condition_checked"])
         self.assertLessEqual(evidence["known_asof"], now)
+
+    async def test_payout_changes_do_not_cancel_issued_plan(self):
+        row = dict(entry_at=1800000180, expires_at=1800000240,
+                   direction="UP", payout=92)
+        now = row["entry_at"] - 15
+        for payout in (89, 50, 0, 95, None):
+            with self.subTest(payout=payout):
+                asset = Asset("A", True, True, payout, None, observed_at=now)
+                with patch("services.otc_preflight.context_setup",
+                           return_value=Setup("UP", "red", 0.5, "fixture")):
+                    decision, _, evidence = analyze(row, ([], asset), now)
+                self.assertEqual(decision, "KEEP")
+                self.assertEqual(evidence["signal_payout"], 92)
+                self.assertEqual(evidence["market"]["payout"], payout)
+                self.assertFalse(evidence["payout_affects_outcome"])

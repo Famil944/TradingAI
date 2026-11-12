@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import math
 import time
 from dataclasses import asdict
 from datetime import datetime
@@ -29,12 +28,10 @@ def analyze(row, snapshot, now):
     evidence["market"] = asdict(asset)
     if asset.open is not True:
         return "CANCELLED", "instrument_closed", evidence
-    if (
-        asset.payout is None
-        or not math.isfinite(asset.payout)
-        or not 90 <= asset.payout <= 100
-    ):
-        return "CANCELLED", "payout_below_threshold", evidence
+    # An issued plan is evaluated by its price outcome. Payout observations
+    # remain in evidence, but a changed/unknown payout never cancels the plan.
+    evidence["signal_payout"] = row.get("payout")
+    evidence["payout_affects_outcome"] = False
     current = context_setup(bars, known_at, int(row["expires_at"] - row["entry_at"]))
     if current is None:
         return "CANCELLED", "context_not_confirmed", evidence
@@ -48,14 +45,13 @@ def message(row, decision, reason):
     clock = datetime.fromtimestamp(row["entry_at"], ZoneInfo("Europe/Moscow")).strftime(
         "%H:%M:%S"
     )
-    title = f"{display_symbol(row['symbol'])} · M{int(row['expires_at'] - row['entry_at']) // 60} · {clock} МСК\n"
+    title = f"🔵 Основной · {display_symbol(row['symbol'])} · M{int(row['expires_at'] - row['entry_at']) // 60} · {clock} МСК\n"
     if decision == "KEEP":
         return title + "План в силе. Вход только при исходном условии свечи."
     label = {
         "no_fresh_data": "нет свежих данных",
         "no_fresh_market_metadata": "нет свежих данных о выплате",
         "instrument_closed": "инструмент закрыт",
-        "payout_below_threshold": "выплата ниже 90%",
         "context_not_confirmed": "доп. анализ не подтвердил контекст",
         "direction_changed": "направление изменилось",
     }.get(reason, "дополнительная проверка")

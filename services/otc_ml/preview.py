@@ -19,23 +19,39 @@ DURATIONS = (60, 120, 180, 300, 900)
 
 
 class PreviewJournal:
-    def __init__(self, path):
+    def __init__(self, path, label="XGBoost", per_horizon=False):
         self.path = Path(path)
+        self.label = label
+        self.per_horizon = per_horizon
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with contextlib.closing(sqlite3.connect(self.path)) as db:
-            db.execute("""CREATE TABLE IF NOT EXISTS predictions(
+            db.execute("BEGIN IMMEDIATE")
+            uniqueness = (
+                "UNIQUE(entry_at,expires_at)" if per_horizon else "UNIQUE(entry_at)"
+            )
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS predictions(
                 id TEXT PRIMARY KEY,symbol TEXT,created_at REAL,entry_at REAL,expires_at REAL,
                 direction TEXT,payout REAL,model_sha TEXT,evidence TEXT,sent_at REAL,
                 outcome TEXT DEFAULT 'PENDING',entry_price REAL,expiry_price REAL,
-                UNIQUE(entry_at))""")
+                """
+                + uniqueness
+                + ")"
+            )
+            columns = {row[1] for row in db.execute("PRAGMA table_info(predictions)")}
+            if "message_id" not in columns:
+                db.execute("ALTER TABLE predictions ADD COLUMN message_id INTEGER")
             db.commit()
 
     def reserve(self, selected, now):
         with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
             db.execute("BEGIN IMMEDIATE")
-            if db.execute(
-                "SELECT 1 FROM predictions WHERE outcome='PENDING' LIMIT 1"
-            ).fetchone():
+            pending_query = "SELECT 1 FROM predictions WHERE outcome='PENDING'"
+            params = ()
+            if self.per_horizon:
+                pending_query += " AND expires_at-entry_at=?"
+                params = (selected["expires_at"] - selected["entry_at"],)
+            if db.execute(pending_query + " LIMIT 1", params).fetchone():
                 return None
             identifier = uuid.uuid4().hex
             try:
@@ -66,9 +82,29 @@ class PreviewJournal:
             )
             db.commit()
 
-    def sent(self, identifier, now):
+    def sent(self, identifier, now, message_id=None, late=False):
         with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
-            db.execute("UPDATE predictions SET sent_at=? WHERE id=?", (now, identifier))
+            db.execute(
+                """UPDATE predictions SET sent_at=?,message_id=?,
+                outcome=CASE WHEN ? AND outcome='PENDING' THEN 'LATE' ELSE outcome END
+                WHERE id=?""",
+                (now, message_id, late, identifier),
+            )
+            db.commit()
+
+    def cards_to_update(self):
+        with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
+            return db.execute(
+                """SELECT id,message_id,evidence,outcome FROM predictions
+                WHERE message_id IS NOT NULL AND outcome!='PENDING'
+                ORDER BY expires_at LIMIT 10"""
+            ).fetchall()
+
+    def card_updated(self, identifier):
+        with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
+            db.execute(
+                "UPDATE predictions SET message_id=NULL WHERE id=?", (identifier,)
+            )
             db.commit()
 
     def pending(self):
@@ -87,21 +123,30 @@ class PreviewJournal:
             )
             db.commit()
 
-    def stats(self, seconds=None):
+    def stats(self, seconds=None, since=0):
         with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
             rows = db.execute(
-                "SELECT outcome,count(*) FROM predictions WHERE (? IS NULL OR expires_at-entry_at=?) GROUP BY outcome",
-                (seconds, seconds),
+                "SELECT outcome,count(*) FROM predictions WHERE (? IS NULL OR expires_at-entry_at=?) AND entry_at>=? GROUP BY outcome",
+                (seconds, seconds, since),
             ).fetchall()
         counts = dict(rows)
         wins = counts.get("WIN", 0)
         losses = counts.get("LOSS", 0)
         rate = f"{100 * wins / (wins + losses):.1f}%" if wins + losses else "—"
-        title = "XGBoost · отдельный тест" + (
-            f" · {seconds // 60} мин" if seconds else ""
+        title = (
+            (
+                "🟣 "
+                if self.label == "Groq"
+                else "🔵 "
+                if self.label.startswith("Основной")
+                else "🟠 "
+            )
+            + self.label
+            + " · отдельный тест"
+            + (f" · {seconds // 60} мин" if seconds else "")
         )
         return (
-            f"{title}\nВин {wins}\nЛос {losses}\nПропуск {sum(counts.get(k, 0) for k in ('CANCELLED', 'NOT_DELIVERED', 'LATE'))}\nВинрейт {rate}"
+            f"{title}\nВин {wins} (+)\nЛос {losses} (−)\nПропуск {sum(counts.get(k, 0) for k in ('CANCELLED', 'NOT_DELIVERED', 'LATE'))}\nВинрейт {rate}"
             + (f"\nНет данных {counts['UNKNOWN']}" if counts.get("UNKNOWN") else "")
             + (f"\nОжидают {counts['PENDING']}" if counts.get("PENDING") else "")
         )
@@ -195,9 +240,39 @@ def settle_preview(row, bars, now):
     return outcome, entry.open, expiry.open
 
 
+def signal_card(selected, outcome=None, *, source):
+    arrow = "⬆️" if selected["direction"] == "UP" else "⬇️"
+    status = {
+        "WIN": "✅",
+        "LOSS": "❌",
+        "DRAW": "➖",
+        "UNKNOWN": "❔",
+        "CANCELLED": "Отменён",
+        "LATE": "Опоздал",
+    }.get(outcome)
+    report = selected.get("confirmations") or {}
+    count = report["count"] if report.get("available") else "—"
+    minutes = int(selected["expires_at"] - selected["entry_at"]) // 60
+    clock = datetime.fromtimestamp(
+        selected["entry_at"], ZoneInfo("Europe/Moscow")
+    ).strftime("%H:%M:%S")
+    heading = f"СИГНАЛ {arrow}" + (f" {status}" if status else "")
+    return (
+        f"{heading}\n\nИсточник: {source}\nАктив: {selected['name']}\nИндикаторы: {count}"
+        f"\nЭкспирация: M{minutes}\nВход: {clock} МСК"
+    )
+
+
 class MLPreview:
-    def __init__(self, journal, runtime, clock=time.time):
+    icon = "🟠"
+    label = "XGBoost"
+    planning_window = (15, 20)
+
+    def __init__(self, journal, runtime, clock=time.time, settlement_provider=None):
         self.journal, self.runtime, self.clock = journal, runtime, clock
+        self.settlement_provider = settlement_provider
+        self.settlement_cache = {}
+        self.last_settlement_fetch = {}
         self.enabled = True
         self.snapshot = None
         self.attempted = None
@@ -212,6 +287,33 @@ class MLPreview:
             self.planning.cancel()
             await asyncio.gather(self.planning, return_exceptions=True)
         await asyncio.to_thread(self.journal.cancel_future, self.clock())
+
+    async def settle_pending(self, history):
+        for row in await asyncio.to_thread(self.journal.pending):
+            now = self.clock()
+            bars = history.get(row["symbol"], [])
+            if self.settlement_provider is not None and row.get("sent_at") is not None:
+                if now < row["expires_at"] + 60:
+                    continue
+                symbol = row["symbol"]
+                if now - self.last_settlement_fetch.get(symbol, float("-inf")) >= 60:
+                    self.last_settlement_fetch[symbol] = now
+                    try:
+                        quota = await self.settlement_provider.usage()
+                        if quota.remaining <= 10:
+                            raise RuntimeError("quota reserve")
+                        self.settlement_cache[
+                            symbol
+                        ] = await self.settlement_provider.candles(symbol, now)
+                    except Exception as exc:
+                        logger.warning(
+                            "XGBoost settlement history: %s", type(exc).__name__
+                        )
+                # Never substitute provisional tick opens for canonical history.
+                bars = self.settlement_cache.get(symbol, [])
+            result = settle_preview(row, bars, self.clock())
+            if result:
+                await asyncio.to_thread(self.journal.finish, row["id"], *result)
 
     async def plan(self, bot, chat_id, snapshot):
         history, assets, quotes, end = snapshot
@@ -249,6 +351,25 @@ class MLPreview:
         )
         if selected["estimated_ev"] is None or selected["estimated_ev"] < 0.05:
             return
+        await self.publish(selected, bot, chat_id)
+
+    async def publish(self, selected, bot, chat_id):
+        from services.otc_confirmations import build
+
+        selected = dict(selected)
+        evidence = selected.get("evidence") or {}
+        confirmations = evidence.get("confirmations")
+        if confirmations is None:
+            history = self.snapshot[0] if self.snapshot else {}
+            # A Groq decision uses its original packet cutoff, before its wait.
+            asof = selected.get("feature_asof", self.clock())
+            confirmations = build(
+                list(history.get(selected["symbol"], [])),
+                selected["direction"],
+                int(selected["expires_at"] - selected["entry_at"]),
+                asof,
+            )
+        selected["confirmations"] = confirmations
         identifier = await asyncio.to_thread(
             self.journal.reserve, selected, self.clock()
         )
@@ -258,36 +379,63 @@ class MLPreview:
             await asyncio.to_thread(self.journal.finish, identifier, "LATE")
             return
         minutes = int(selected["expires_at"] - selected["entry_at"]) // 60
-        direction = "ВВЕРХ" if selected["direction"] == "UP" else "ВНИЗ"
-        clock = datetime.fromtimestamp(
-            selected["entry_at"], ZoneInfo("Europe/Moscow")
-        ).strftime("%H:%M:%S")
-        text = f"🧪 XGBoost · отдельный тест\n{selected['name']}\n{direction} · {minutes} мин\nСледующая минута · {clock} МСК. Опоздал — пропуск."
         try:
             timeout = min(3, max(0.1, selected["entry_at"] - 15 - self.clock()))
             async with asyncio.timeout(timeout):
-                await bot.send_message(chat_id, text)
+                message = await bot.send_message(
+                    chat_id, signal_card(selected, source=self.label)
+                )
         except (Exception, asyncio.CancelledError):
             await asyncio.to_thread(self.journal.finish, identifier, "NOT_DELIVERED")
             return
         now = self.clock()
-        if not 15 <= selected["entry_at"] - now <= 20:
-            await asyncio.to_thread(
-                self.journal.finish, identifier, "LATE", None, None, now
-            )
-        else:
-            await asyncio.to_thread(self.journal.sent, identifier, now)
+        message_id = getattr(message, "message_id", None)
+        late = not 15 <= selected["entry_at"] - now <= 20
+        await asyncio.to_thread(
+            self.journal.sent,
+            identifier,
+            now,
+            message_id if isinstance(message_id, int) else None,
+            late,
+        )
+        if not late:
             logger.info(
-                "XGBoost preview sent: %s, %d minutes, %.1fs before entry",
+                "%s preview sent: %s, %d minutes, %.1fs before entry",
+                self.label,
                 selected["symbol"],
                 minutes,
                 selected["entry_at"] - now,
             )
+            return True
+
+    async def update_cards(self, bot, chat_id):
+        from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+
+        for identifier, message_id, evidence, outcome in await asyncio.to_thread(
+            self.journal.cards_to_update
+        ):
+            try:
+                async with asyncio.timeout(3):
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=signal_card(json.loads(evidence), outcome, source=self.label),
+                    )
+            except (TelegramBadRequest, TelegramForbiddenError) as exc:
+                logger.info("Signal card edit rejected: %s", type(exc).__name__)
+            except Exception as exc:
+                logger.warning("Signal card edit retry: %s", type(exc).__name__)
+                break
+            await asyncio.to_thread(self.journal.card_updated, identifier)
 
     async def run(self, bot, chat_id):
+        next_card_update = 0
         try:
             while True:
                 try:
+                    if self.clock() >= next_card_update:
+                        next_card_update = self.clock() + 10
+                        await self.update_cards(bot, chat_id)
                     if self.planning and self.planning.done():
                         if not self.planning.cancelled():
                             error = self.planning.exception()
@@ -299,19 +447,14 @@ class MLPreview:
                         self.planning = None
                     if self.snapshot:
                         history, assets, quotes, end = self.snapshot
-                        for row in await asyncio.to_thread(self.journal.pending):
-                            result = settle_preview(
-                                row, history.get(row["symbol"], []), self.clock()
-                            )
-                            if result:
-                                await asyncio.to_thread(
-                                    self.journal.finish, row["id"], *result
-                                )
+                        await self.settle_pending(history)
                         now = self.clock()
                         entry = int(now) // 60 * 60 + 60
                         if (
                             self.enabled
-                            and 15 <= entry - now <= 20
+                            and self.planning_window[0]
+                            <= entry - now
+                            <= self.planning_window[1]
                             and self.attempted != entry
                             and (self.planning is None or self.planning.done())
                         ):

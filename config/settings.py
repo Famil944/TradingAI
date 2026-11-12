@@ -12,6 +12,24 @@ load_dotenv(ROOT / ".env", override=False)
 
 @dataclass(frozen=True)
 class Settings:
+    primary_mode: str = field(
+        default_factory=lambda: os.getenv("OTC_PRIMARY_MODE", "conditional")
+    )
+    groq_api_key: str = field(
+        default_factory=lambda: os.getenv("GROQ_API_KEY", ""), repr=False
+    )
+    groq_model: str = field(
+        default_factory=lambda: os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+    )
+    groq_interval_seconds: int = field(
+        default_factory=lambda: max(60, int(os.getenv("GROQ_INTERVAL_SECONDS", "300")))
+    )
+    groq_max_requests: int = field(
+        default_factory=lambda: max(0, int(os.getenv("GROQ_MAX_REQUESTS", "100")))
+    )
+    groq_max_tokens: int = field(
+        default_factory=lambda: max(0, int(os.getenv("GROQ_MAX_TOKENS", "150000")))
+    )
     telegram_bot_token: str = field(
         default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""), repr=False
     )
@@ -58,6 +76,7 @@ class Settings:
         )
     )
     entry_quality_recheck: bool = True
+    compact_messages: bool = True
     require_paid_metadata: bool = True
     snapshot_max_age: float = 30.0
     max_tick_age: float = 8.0
@@ -67,6 +86,8 @@ class Settings:
     settlement_tolerance: float = 2.0
 
     def __post_init__(self):
+        if self.primary_mode not in ("conditional", "ready"):
+            raise ValueError("OTC_PRIMARY_MODE must be conditional or ready")
         if self.signal_mode not in ("immediate", "conditional"):
             raise ValueError("OTC_SIGNAL_MODE must be immediate or conditional")
 
