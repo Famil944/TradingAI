@@ -44,17 +44,36 @@ class PreviewJournal:
             columns = {row[1] for row in db.execute("PRAGMA table_info(predictions)")}
             if "message_id" not in columns:
                 db.execute("ALTER TABLE predictions ADD COLUMN message_id INTEGER")
+            if "resolved_at" not in columns:
+                db.execute("ALTER TABLE predictions ADD COLUMN resolved_at REAL")
             db.commit()
+
+    def _blocked(self, db, now, seconds=None):
+        scope, params = ("", ())
+        if self.per_horizon:
+            scope, params = " AND expires_at-entry_at=?", (seconds,)
+        if db.execute(
+            "SELECT 1 FROM predictions WHERE outcome='PENDING'" + scope + " LIMIT 1",
+            params,
+        ).fetchone():
+            return "pending_position"
+        latest = db.execute(
+            "SELECT max(resolved_at) FROM predictions WHERE sent_at IS NOT NULL "
+            "AND outcome IN ('WIN','LOSS','DRAW','UNKNOWN')" + scope,
+            params,
+        ).fetchone()[0]
+        if latest is not None and now < latest + 60:
+            return "result_cooldown"
+        return None
+
+    def blocked(self, now, seconds=None):
+        with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
+            return self._blocked(db, now, seconds)
 
     def reserve(self, selected, now):
         with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
             db.execute("BEGIN IMMEDIATE")
-            pending_query = "SELECT 1 FROM predictions WHERE outcome='PENDING'"
-            params = ()
-            if self.per_horizon:
-                pending_query += " AND expires_at-entry_at=?"
-                params = (selected["expires_at"] - selected["entry_at"],)
-            if db.execute(pending_query + " LIMIT 1", params).fetchone():
+            if self._blocked(db, now, selected["expires_at"] - selected["entry_at"]):
                 return None
             identifier = uuid.uuid4().hex
             try:
@@ -77,11 +96,27 @@ class PreviewJournal:
             except sqlite3.IntegrityError:
                 return None
 
-    def finish(self, identifier, outcome, entry=None, expiry=None, sent_at=None):
+    def finish(
+        self,
+        identifier,
+        outcome,
+        entry=None,
+        expiry=None,
+        sent_at=None,
+        *,
+        resolved_at=None,
+    ):
         with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
             db.execute(
-                "UPDATE predictions SET outcome=?,entry_price=?,expiry_price=?,sent_at=COALESCE(?,sent_at) WHERE id=? AND outcome='PENDING'",
-                (outcome, entry, expiry, sent_at, identifier),
+                "UPDATE predictions SET outcome=?,entry_price=?,expiry_price=?,sent_at=COALESCE(?,sent_at),resolved_at=? WHERE id=? AND outcome='PENDING'",
+                (
+                    outcome,
+                    entry,
+                    expiry,
+                    sent_at,
+                    time.time() if resolved_at is None else resolved_at,
+                    identifier,
+                ),
             )
             db.commit()
 
@@ -155,7 +190,9 @@ class PreviewJournal:
         )
 
 
-def select_forecast(runtime, histories, assets, quotes, now, session_end=None, reasons=None):
+def select_forecast(
+    runtime, histories, assets, quotes, now, session_end=None, reasons=None
+):
     entry = int(now) // 60 * 60 + 60
     if not 15 <= entry - now <= 23:
         return None
@@ -255,6 +292,7 @@ def settle_preview(row, bars, now):
 
 def signal_card(selected, outcome=None, *, source):
     from services.otc_regime import describe
+
     arrow = "🟢⬆️" if selected["direction"] == "UP" else "🔴⬇️"
     status = {
         "WIN": "✅",
@@ -265,9 +303,15 @@ def signal_card(selected, outcome=None, *, source):
         "LATE": "Опоздал",
     }.get(outcome)
     report = selected.get("confirmations") or {}
-    count = f"{report['count']}/{report.get('total', 5)}" if report.get("available") else "—/5"
+    count = (
+        f"{report['count']}/{report.get('total', 5)}"
+        if report.get("available")
+        else "—/5"
+    )
     state = report.get("market_state")
-    market = f"\nРынок M{report.get('period', 60) // 60}: {describe(state)}" if state else ""
+    market = (
+        f"\nРынок M{report.get('period', 60) // 60}: {describe(state)}" if state else ""
+    )
     minutes = int(selected["expires_at"] - selected["entry_at"]) // 60
     clock = datetime.fromtimestamp(
         selected["entry_at"], ZoneInfo("Europe/Moscow")
@@ -334,6 +378,8 @@ class MLPreview:
                 await asyncio.to_thread(self.journal.finish, row["id"], *result)
 
     async def plan(self, bot, chat_id, snapshot):
+        if await asyncio.to_thread(self.journal.blocked, self.clock()):
+            return
         history, assets, quotes, end = snapshot
         histories = {symbol: list(bars) for symbol, bars in history.items()}
         reasons = Counter()
@@ -410,7 +456,11 @@ class MLPreview:
         from services.otc_delivery_guard import claim
 
         if not await asyncio.to_thread(
-            claim, self.journal.path.with_name("signal-delivery.db"), selected, self.label, self.clock()
+            claim,
+            self.journal.path.with_name("signal-delivery.db"),
+            selected,
+            self.label,
+            self.clock(),
         ):
             await asyncio.to_thread(self.journal.finish, identifier, "CANCELLED")
             logger.info("%s duplicate suppressed: %s", self.label, selected["symbol"])
@@ -459,7 +509,9 @@ class MLPreview:
                     await bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=message_id,
-                        text=signal_card(json.loads(evidence), outcome, source=self.label),
+                        text=signal_card(
+                            json.loads(evidence), outcome, source=self.label
+                        ),
                     )
             except (TelegramBadRequest, TelegramForbiddenError) as exc:
                 logger.info("Signal card edit rejected: %s", type(exc).__name__)

@@ -8,7 +8,9 @@ confirmations. UP/DOWN is chosen by the larger vote count; equal counts use the
 fixed EMA, MACD, candle, RSI, alignment order. Among assets, the highest count wins
 with symbol as a deterministic tie breaker. Zero votes or insufficient/stale data
 do not generate a forecast. Existing freshness, payout/open, delivery window,
-independent pending horizons and M1 spacing checks remain.
+independent pending horizons remain. Each horizon now waits 60 seconds after its
+recorded result before publishing again. The highest confirmation count selects
+one expiration per asset/entry; ties prefer the shorter expiration.
 
 The former context/ADX/RSI/Bollinger/stretch gates no longer block the primary
 channel. The old selector remains available only for v5 regression/research.

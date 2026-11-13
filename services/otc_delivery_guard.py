@@ -11,6 +11,12 @@ def claim(path, selected, source, now=None):
             symbol TEXT, direction TEXT, entry_at INTEGER, expires_at INTEGER,
             source TEXT, claimed_at REAL,
             PRIMARY KEY(symbol,direction,entry_at,expires_at))""")
+        db.execute("BEGIN IMMEDIATE")
+        if db.execute(
+            "SELECT 1 FROM claims WHERE symbol=? AND entry_at=? LIMIT 1",
+            (selected["symbol"], selected["entry_at"]),
+        ).fetchone():
+            return False
         cursor = db.execute(
             "INSERT OR IGNORE INTO claims VALUES(?,?,?,?,?,?)",
             (

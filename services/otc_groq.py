@@ -335,7 +335,7 @@ class GroqPreview(MLPreview):
         self.client = client
 
     async def plan(self, bot, chat_id, snapshot):
-        if await asyncio.to_thread(self.journal.pending):
+        if await asyncio.to_thread(self.journal.blocked, self.clock()):
             return
         history, assets, quotes, end = snapshot
         now = self.clock()

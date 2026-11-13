@@ -3,9 +3,7 @@
 import asyncio
 import logging
 import math
-import sqlite3
 import time
-from contextlib import closing
 from dataclasses import asdict
 
 from services.otc_candidate_research import CandidateJournal, TickSampler
@@ -235,6 +233,24 @@ def select_ready(
     return selected
 
 
+def best_expirations(candidates):
+    best = {}
+
+    def rank(candidate):
+        return (
+            candidate.get("confirmations", {}).get(
+                "count", candidate.get("quality_score", 0)
+            ),
+            -(candidate["expires_at"] - candidate["entry_at"]),
+        )
+
+    for candidate in candidates:
+        key = (candidate["symbol"], candidate["entry_at"])
+        if key not in best or rank(candidate) > rank(best[key]):
+            best[key] = candidate
+    return sorted(best.values(), key=rank, reverse=True)
+
+
 class ReadyPrimary(MLPreview):
     label = "Основной · готовый"
     icon = "🔵"
@@ -277,21 +293,12 @@ class ReadyPrimary(MLPreview):
     async def plan(self, bot, chat_id, snapshot):
         history, assets, quotes, end = snapshot
         histories = {s: list(b) for s, b in history.items()}
-        pending = await asyncio.to_thread(self.journal.pending)
-        blocked = {int(p["expires_at"] - p["entry_at"]) for p in pending}
+        offered = []
         for seconds in self.allowed_timeframes:
             now = self.clock()
             if not self.enabled or not 15 <= (int(now) // 60 * 60 + 60) - now <= 20:
                 continue
-            unavailable = "pending_position" if seconds in blocked else None
-            # Two-minute spacing for M1 remains; M5/M15 wait for settlement.
-            if seconds == 60:
-                with closing(sqlite3.connect(self.journal.path)) as db:
-                    previous = db.execute(
-                        "SELECT max(entry_at) FROM predictions WHERE expires_at-entry_at=60 AND sent_at IS NOT NULL"
-                    ).fetchone()[0]
-                if previous is not None and int(now) // 60 * 60 + 60 - previous < 120:
-                    unavailable = unavailable or "m1_spacing"
+            unavailable = await asyncio.to_thread(self.journal.blocked, now, seconds)
             audit = []
             selected = await asyncio.to_thread(
                 select_ready,
@@ -315,6 +322,10 @@ class ReadyPrimary(MLPreview):
                 continue
             if not selected or not self.enabled or not self.snapshot:
                 continue
+            offered.append(selected)
+        for selected in best_expirations(offered):
+            if not self.enabled or not self.snapshot:
+                break
             _, current_assets, current_quotes, current_end = self.snapshot
             asset = current_assets.get(selected["symbol"])
             if not fresh(asset, current_quotes.get(selected["symbol"]), self.clock()):

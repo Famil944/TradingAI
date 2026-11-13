@@ -20,7 +20,8 @@ class DeliveryGuardTests(unittest.TestCase):
                 )
             self.assertEqual(sum(outcomes), 1)
             self.assertFalse(claim(path, signal, "restarted"))
-            self.assertTrue(claim(path, dict(signal, expires_at=900), "Primary"))
+            self.assertFalse(claim(path, dict(signal, expires_at=900), "Primary"))
+            self.assertFalse(claim(path, dict(signal, direction="DOWN"), "Groq"))
             self.assertTrue(
                 claim(path, dict(signal, entry_at=660, expires_at=720), "Primary")
             )
