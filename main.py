@@ -10,9 +10,9 @@ import time
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiohttp import ClientSession
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import BotCommand
+from aiohttp import ClientSession
 
 from bot import otc_commands
 from config.settings import ROOT, settings
@@ -35,11 +35,8 @@ COMMANDS = [
     ("start", "Начать"),
     ("help", "Справка"),
     ("otc", "OTC меню"),
-    ("otc_status", "Статус OTC"),
-    ("otc_stop", "Остановить OTC"),
     ("otc_stats", "Виртуальная статистика"),
-    ("otc_confirmations", "Результаты по подтверждениям"),
-    ("otc_diagnostics", "Диагностика OTC"),
+    ("otc_research", "Качество фильтров и задержек"),
 ]
 
 
@@ -128,39 +125,24 @@ async def main(*, session_minutes=None, session_end=None):
     service.groq_preview = groq
     groq_task = asyncio.create_task(groq.run(bot, settings.admin_chat_id))
     ready_journal = PreviewJournal(
-        ROOT / "data" / "primary-ready.db", label="Основной v5", per_horizon=True
+        ROOT / "data" / "primary-ready.db", label="Основной v6", per_horizon=True
     )
     ready = ReadyPrimary(ready_journal, settlement_provider=evaluator.provider)
     await asyncio.to_thread(ready_journal.cancel_future, time.time())
     service.main_ready = ready
     ready_task = asyncio.create_task(ready.run(bot, settings.admin_chat_id))
     (ROOT / "logs").mkdir(exist_ok=True)
-    with (
-        (ROOT / "logs" / "ml-collector.stdout.log").open("a", encoding="utf-8") as out,
-        (ROOT / "logs" / "ml-collector.stderr.log").open("a", encoding="utf-8") as err,
-    ):
-        subprocess.Popen(
-            [sys.executable, "-u", "-m", "services.otc_ml.collector"],
-            cwd=ROOT,
-            stdout=out,
-            stderr=err,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    with (
-        (ROOT / "logs" / "ml-preview-collector.stdout.log").open(
-            "a", encoding="utf-8"
-        ) as out,
-        (ROOT / "logs" / "ml-preview-collector.stderr.log").open(
-            "a", encoding="utf-8"
-        ) as err,
-    ):
-        subprocess.Popen(
-            [sys.executable, "-u", "-m", "services.otc_ml.collector", "--preview"],
-            cwd=ROOT,
-            stdout=out,
-            stderr=err,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+    if os.getenv("OTC_ML_TRAINING", "true").lower() in ("1", "true", "yes"):
+        for name, extra in (("ml-collector", []), ("ml-preview-collector", ["--preview"])):
+            with (
+                (ROOT / "logs" / f"{name}.stdout.log").open("a", encoding="utf-8") as out,
+                (ROOT / "logs" / f"{name}.stderr.log").open("a", encoding="utf-8") as err,
+            ):
+                subprocess.Popen(
+                    [sys.executable, "-u", "-m", "services.otc_ml.collector", *extra],
+                    cwd=ROOT, stdout=out, stderr=err,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
     try:
         identity = await initialize_telegram(bot)
         logging.getLogger(__name__).info(
@@ -181,7 +163,8 @@ async def main(*, session_minutes=None, session_end=None):
                 if service.conditional_mode
                 else "🧪 Сеанс запущен. Контроль — раз в 2 минуты. /otc_stop — остановить."
             )
-            await service._notify(bot, text)
+            indicators = await asyncio.to_thread(otc_commands.strategy_status, service)
+            await service._notify(bot, text + "\n\n" + indicators)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
         ready_task.cancel()

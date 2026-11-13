@@ -81,8 +81,7 @@ class RuntimeML:
         except (OSError, ValueError, TypeError):
             return False
 
-    def inspect(self, row, bars, payout):
-        seconds = int(row["expires_at"] - row["entry_at"])
+    def candidates(self, seconds, decision_lead):
         for index, root in enumerate(self.roots):
             path = root / "report.json"
             if not path.exists():
@@ -93,9 +92,7 @@ class RuntimeML:
                 "feature_names"
             ) != list(FEATURE_NAMES):
                 continue
-            if report.get("decision_lead_seconds", 0) != row.get(
-                "decision_lead_seconds", 0
-            ):
+            if report.get("decision_lead_seconds", 0) != decision_lead:
                 continue
             created = report.get("created_at", 0)
             if isinstance(created, str):
@@ -115,6 +112,22 @@ class RuntimeML:
             )
             if hashes != (result.get("model_sha256"), result.get("calibration_sha256")):
                 continue
+            yield report, certified, model_path, hashes
+
+    def preview_ready(self):
+        for seconds in (60, 120, 180, 300, 900):
+            try:
+                if next(self.candidates(seconds, 20), None) is not None:
+                    return True
+            except (OSError, ValueError, TypeError):
+                continue
+        return False
+
+    def inspect(self, row, bars, payout):
+        seconds = int(row["expires_at"] - row["entry_at"])
+        for report, certified, model_path, hashes in self.candidates(
+            seconds, row.get("decision_lead_seconds", 0)
+        ):
             cutoff = row.get("feature_asof", row["entry_at"])
             past = [b for b in bars if b.time + 60 <= cutoff][-1200:]
             features = indicators(

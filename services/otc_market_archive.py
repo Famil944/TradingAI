@@ -38,6 +38,12 @@ class MarketArchive:
                     "SELECT open,high,low,close,source FROM bars WHERE symbol=? AND time=?",
                     (symbol, bar.time),
                 ).fetchone()
+                if (
+                    old is not None
+                    and old[4] == "otcharts_history"
+                    and source == "otcharts_ticks"
+                ):
+                    continue
                 if old is None:
                     db.execute(
                         "INSERT INTO bars VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -53,6 +59,12 @@ class MarketArchive:
                     db.execute(
                         "UPDATE bars SET open=?,high=?,low=?,close=?,last_observed=?,revisions=revisions+?,source=? WHERE symbol=? AND time=?",
                         (*values, now, revision, source, symbol, bar.time),
+                    )
+                elif old[4] == "otcharts_ticks" and source == "otcharts_history":
+                    # Identical OHLC still gains canonical provenance on confirmation.
+                    db.execute(
+                        "UPDATE bars SET source=?,last_observed=? WHERE symbol=? AND time=?",
+                        (source, now, symbol, bar.time),
                     )
             db.commit()
 

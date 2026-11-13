@@ -1,6 +1,7 @@
 """Prospective shadow comparison on the same recorded confirmed plans; no profit claims."""
 
 import json
+import math
 from collections import defaultdict
 
 
@@ -30,22 +31,33 @@ def comparison(db, now):
             <= min(row["entry_at"] + 5, row["assessed_at"])
         ):
             continue
+        market = evidence.get("entry_market") or {}
+        payout = market.get("payout")
+        net = None
+        if isinstance(payout, (int, float)) and math.isfinite(payout) and 0 <= payout <= 100:
+            net = {"WIN": payout / 100, "LOSS": -1.0, "DRAW": 0.0}[row["outcome"]]
         groups[(row["seconds"], ml["model_sha256"])].append(
             dict(
                 outcome=row["outcome"],
                 selected=bool(ml.get("accept")),
                 day=int(row["entry_at"]) // 86400,
+                net=net,
             )
         )
 
     def metrics(items):
         wins = sum(r["outcome"] == "WIN" for r in items)
         losses = sum(r["outcome"] == "LOSS" for r in items)
+        returns = [r["net"] for r in items if r["net"] is not None]
         return dict(
             opportunities=len(items),
             wins=wins,
             losses=losses,
             win_rate=wins / (wins + losses) if wins + losses else None,
+            draws=len(items) - wins - losses,
+            known_payout_count=len(returns),
+            net_units=sum(returns) if returns else None,
+            mean_net_units=sum(returns) / len(returns) if returns else None,
         )
 
     return dict(
@@ -58,6 +70,8 @@ def comparison(db, now):
                 model_sha256=sha,
                 baseline=metrics(items),
                 ml_filter=metrics([r for r in items if r["selected"]]),
+                rejected=metrics([r for r in items if not r["selected"]]),
+                coverage=sum(r["selected"] for r in items) / len(items),
                 days=len({r["day"] for r in items}),
                 advantage_confirmed=False,
             )

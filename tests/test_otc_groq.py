@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from services.otc_groq import GroqClient, GroqPreview, market_packet
 from services.otc_market import Asset
@@ -49,6 +49,8 @@ class GroqTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.client.ask(self.packet))
         session.post.assert_called_once()
         restarted = GroqClient("secret", self.path, clock=lambda: self.now[0])
+        self.assertFalse(restarted.health()[0])
+        self.assertIn("лимит исчерпан", restarted.health()[1])
         self.assertIsNone(restarted.reserve(10))
         self.assertEqual(self.journal.pending(), [])
 
@@ -92,6 +94,51 @@ class GroqTests(unittest.IsolatedAsyncioTestCase):
             clock=lambda: self.now[0],
         )
         self.assertIsNone(limited.reserve(2))
+
+    async def test_insufficient_remaining_budget_is_red_without_network_and_recovers(
+        self,
+    ):
+        client = GroqClient(
+            "secret", self.path, max_tokens=2000, clock=lambda: self.now[0]
+        )
+        identifier = client.reserve(1800)
+        client.complete(identifier, "OK", tokens=1800)
+        self.now[0] += 301
+        client.session = Mock()
+        self.assertIsNone(await client.ask(self.packet))
+        client.session.post.assert_not_called()
+        self.assertFalse(client.health()[0])
+        self.assertIn("лимит исчерпан", client.health()[1])
+        restarted = GroqClient(
+            "secret", self.path, max_tokens=2000, clock=lambda: self.now[0]
+        )
+        self.assertIn("лимит исчерпан", restarted.health()[1])
+        from bot import otc_commands as commands
+
+        current = SimpleNamespace(
+            running=lambda: True,
+            phase="поток активен",
+            groq_preview=SimpleNamespace(
+                client=restarted, enabled=True, journal=self.journal
+            ),
+            ml_preview=SimpleNamespace(
+                enabled=True,
+                journal=self.journal,
+                runtime=SimpleNamespace(preview_ready=lambda: True),
+            ),
+        )
+        with (
+            patch.object(commands, "read_journal", return_value=[]),
+            patch.object(commands, "stats_epoch", return_value=0),
+        ):
+            text = commands.strategy_status(current)
+        self.assertIn("🔴 Groq · 0 · лимит исчерпан", text)
+        self.assertIn("🟢 Основной", text)
+        self.assertIn("🟢 XGBoost", text)
+        self.assertTrue(current.groq_preview.enabled)
+        self.now[0] += 86400
+        self.assertNotIn("лимит исчерпан", restarted.health()[1])
+        self.assertIsNotNone(restarted.reserve(1000))
 
     async def test_packet_excludes_future_and_stale_assets(self):
         now = 1800000030.0

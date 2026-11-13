@@ -8,6 +8,7 @@ import math
 import sqlite3
 import time
 import uuid
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -152,10 +153,12 @@ class PreviewJournal:
         )
 
 
-def select_forecast(runtime, histories, assets, quotes, now, session_end=None):
+def select_forecast(runtime, histories, assets, quotes, now, session_end=None, reasons=None):
     entry = int(now) // 60 * 60 + 60
-    if not 15 <= entry - now <= 20:
+    if not 15 <= entry - now <= 23:
         return None
+    if reasons is None:
+        reasons = Counter()
     best = None
     for symbol, bars in histories.items():
         asset = assets.get(symbol)
@@ -169,6 +172,7 @@ def select_forecast(runtime, histories, assets, quotes, now, session_end=None):
             or not 0 <= now - asset.observed_at <= 60
             or not 0 <= now - quotes.get(symbol, float("-inf")) <= 8
         ):
+            reasons["asset_or_quote_ineligible"] += 1
             continue
         for seconds in DURATIONS:
             if session_end and entry + seconds + 60 > session_end:
@@ -183,12 +187,17 @@ def select_forecast(runtime, histories, assets, quotes, now, session_end=None):
             result = runtime.inspect(row, bars, asset.payout)
             probabilities = result.get("probabilities")
             if probabilities is None:
+                reasons[result.get("status", "no_prediction")] += 1
                 continue
             direction = "UP" if probabilities[2] >= probabilities[0] else "DOWN"
             probability = probabilities[2 if direction == "UP" else 0]
             ev = expected_return(probabilities, direction, asset.payout)
             # Same numerical selection thresholds; this research forecast remains explicitly unqualified.
-            if probability < 0.60 or ev is None or ev < 0.05:
+            if probability < 0.60:
+                reasons["below_probability_floor"] += 1
+                continue
+            if ev is None or ev < 0.05:
+                reasons["below_expected_return_floor"] += 1
                 continue
             candidate = dict(
                 symbol=symbol,
@@ -241,6 +250,7 @@ def settle_preview(row, bars, now):
 
 
 def signal_card(selected, outcome=None, *, source):
+    from services.otc_regime import describe
     arrow = "⬆️" if selected["direction"] == "UP" else "⬇️"
     status = {
         "WIN": "✅",
@@ -251,7 +261,9 @@ def signal_card(selected, outcome=None, *, source):
         "LATE": "Опоздал",
     }.get(outcome)
     report = selected.get("confirmations") or {}
-    count = report["count"] if report.get("available") else "—"
+    count = f"{report['count']}/{report.get('total', 5)}" if report.get("available") else "—/5"
+    state = report.get("market_state")
+    market = f"\nРынок M{report.get('period', 60) // 60}: {describe(state)}" if state else ""
     minutes = int(selected["expires_at"] - selected["entry_at"]) // 60
     clock = datetime.fromtimestamp(
         selected["entry_at"], ZoneInfo("Europe/Moscow")
@@ -259,14 +271,16 @@ def signal_card(selected, outcome=None, *, source):
     heading = f"СИГНАЛ {arrow}" + (f" {status}" if status else "")
     return (
         f"{heading}\n\nИсточник: {source}\nАктив: {selected['name']}\nИндикаторы: {count}"
-        f"\nЭкспирация: M{minutes}\nВход: {clock} МСК"
+        f"{market}\nЭкспирация: M{minutes}\nВход: {clock} МСК"
     )
 
 
 class MLPreview:
     icon = "🟠"
     label = "XGBoost"
-    planning_window = (15, 20)
+    # The last closed minute is already available here. Start inference
+    # before the delivery window so a cold model load can finish in time.
+    planning_window = (20, 23)
 
     def __init__(self, journal, runtime, clock=time.time, settlement_provider=None):
         self.journal, self.runtime, self.clock = journal, runtime, clock
@@ -318,6 +332,7 @@ class MLPreview:
     async def plan(self, bot, chat_id, snapshot):
         history, assets, quotes, end = snapshot
         histories = {symbol: list(bars) for symbol, bars in history.items()}
+        reasons = Counter()
         selected = await asyncio.to_thread(
             select_forecast,
             self.runtime,
@@ -326,13 +341,21 @@ class MLPreview:
             dict(quotes),
             self.clock(),
             end,
+            reasons,
         )
-        if (
-            not selected
-            or not self.enabled
-            or not 15 <= selected["entry_at"] - self.clock() <= 20
-        ):
+        if not selected:
+            logger.info("XGBoost skipped: %s", dict(reasons) or "no candidates")
             return
+        delay = selected["entry_at"] - self.clock() - 20
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if not self.enabled:
+            return
+        if not 15 <= selected["entry_at"] - self.clock() <= 20:
+            logger.info("XGBoost skipped: inference missed delivery window")
+            return
+        if self.snapshot:
+            _, assets, quotes, _ = self.snapshot
         current = assets.get(selected["symbol"])
         now = self.clock()
         if (
@@ -344,12 +367,14 @@ class MLPreview:
             or not 0 <= now - current.observed_at <= 60
             or not 0 <= now - quotes.get(selected["symbol"], float("-inf")) <= 8
         ):
+            logger.info("XGBoost skipped: asset or quote changed before delivery")
             return
         selected["payout"] = current.payout
         selected["estimated_ev"] = expected_return(
             selected["probabilities"], selected["direction"], current.payout
         )
         if selected["estimated_ev"] is None or selected["estimated_ev"] < 0.05:
+            logger.info("XGBoost skipped: expected return below floor at delivery")
             return
         await self.publish(selected, bot, chat_id)
 

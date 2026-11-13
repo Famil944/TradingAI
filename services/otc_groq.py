@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import sqlite3
 import time
 from contextlib import closing
@@ -92,6 +93,11 @@ class GroqClient:
         now = self.clock()
         with closing(sqlite3.connect(self.path, timeout=3)) as db:
             db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO groq_state VALUES('request_estimate',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (estimate,),
+            )
             paused = db.execute(
                 "SELECT value FROM groq_state WHERE key='paused_until'"
             ).fetchone()
@@ -105,6 +111,7 @@ class GroqClient:
                 or tokens + estimate > self.max_tokens
                 or (latest is not None and now - latest < self.interval)
             ):
+                db.commit()
                 return None
             cursor = db.execute(
                 "INSERT INTO groq_calls(at,tokens,status) VALUES(?,?,?)",
@@ -179,7 +186,8 @@ class GroqClient:
         try:
             if self.session is None:
                 self.session = aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=10)
+                    proxy=os.getenv("TRADINGAI_HTTP_PROXY"),
+                    timeout=aiohttp.ClientTimeout(total=10),
                 )
             async with self.session.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -259,7 +267,7 @@ class GroqClient:
         if self.session is not None:
             await self.session.close()
 
-    def status(self):
+    def health(self):
         now = self.clock()
         with closing(sqlite3.connect(self.path, timeout=3)) as db:
             count, tokens = db.execute(
@@ -269,18 +277,52 @@ class GroqClient:
             paused = db.execute(
                 "SELECT value FROM groq_state WHERE key='paused_until'"
             ).fetchone()
+            latest = db.execute(
+                "SELECT status,evidence FROM groq_calls WHERE at>? AND status!='RESERVED' "
+                "ORDER BY id DESC LIMIT 1",
+                (now - 86400,),
+            ).fetchone()
+            estimate_row = db.execute(
+                "SELECT value FROM groq_state WHERE key='request_estimate'"
+            ).fetchone()
+        estimate = estimate_row[0] if estimate_row else 900
+        if not estimate_row and latest and latest[1]:
+            packet = json.loads(latest[1]).get("packet")
+            if packet:
+                estimate = (
+                    len(
+                        json.dumps(
+                            packet, separators=(",", ":"), allow_nan=False
+                        ).encode()
+                    )
+                    // 2
+                    + 900
+                )
+        exhausted = count >= self.max_requests or tokens + estimate > self.max_tokens
+        rate_limited = bool(
+            paused and now < paused[0] and latest and latest[0] == "HTTP_429"
+        )
         state = (
             "нет ключа"
             if not self.key
+            else "лимит исчерпан"
+            if exhausted or rate_limited
             else "пауза"
-            if (
-                (paused and now < paused[0])
-                or count >= self.max_requests
-                or tokens >= self.max_tokens
-            )
-            else "активен"
+            if paused and now < paused[0]
+            else "API ответил"
+            if latest and latest[0] == "OK"
+            else "ошибка последнего запроса"
+            if latest
+            else "ожидает первого ответа API"
         )
-        return f"Groq: {state} · запросы {count}/{self.max_requests}"
+        return state == "API ответил", (
+            f"{state} · запросы {count}/{self.max_requests}"
+            f" · токены {tokens}/{self.max_tokens}"
+        )
+
+    def status(self):
+        active, detail = self.health()
+        return f"{'🟢' if active else '🔴'} Groq · {detail}"
 
 
 class GroqPreview(MLPreview):

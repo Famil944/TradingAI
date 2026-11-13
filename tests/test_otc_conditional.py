@@ -84,10 +84,10 @@ class ConditionalRuleTests(unittest.TestCase):
         self.assertIn("неизвестна", text)
         self.assertIn("отменяются", text)
 
-    def test_conditional_menu_offers_all_expiries(self):
+    def test_unified_menu_offers_all_expiries(self):
         from bot.otc_commands import menu
 
-        buttons = [b for row in menu(1, conditional=True).inline_keyboard for b in row]
+        buttons = [b for row in menu(1).inline_keyboard for b in row]
         timeframes = [
             b.callback_data for b in buttons if b.callback_data.startswith("otc:tf:")
         ]

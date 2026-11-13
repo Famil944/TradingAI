@@ -57,15 +57,12 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 "start",
                 "help",
                 "otc",
-                "otc_status",
-                "otc_stop",
                 "otc_stats",
-                "otc_confirmations",
-                "otc_diagnostics",
+                "otc_research",
             },
         )
         commands.choices[1] = (300,)
-        keyboard = commands.menu(1, conditional=False)
+        keyboard = commands.menu(1, expanded=False)
         labels = [
             b.text
             for row in keyboard.inline_keyboard
@@ -73,6 +70,10 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             if b.text.startswith("✅")
         ]
         self.assertEqual(labels, ["✅ M5"])
+        expanded = commands.menu(1, expanded=True)
+        callbacks = {b.callback_data for row in expanded.inline_keyboard for b in row}
+        self.assertIn("otc:panel:hide", callbacks)
+        self.assertIn("otc:panel:show", callbacks)
         commands.choices.clear()
 
 

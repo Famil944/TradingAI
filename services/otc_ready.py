@@ -1,16 +1,28 @@
 """Experimental primary signals from already completed candles, no future-colour condition."""
 
 import asyncio
+import logging
+import math
+import sqlite3
 import time
+from contextlib import closing
+from dataclasses import asdict
 
+from services.otc_candidate_research import CandidateJournal, TickSampler
 from services.otc_conditional import context_setup
+from services.otc_confirmations import build
 from services.otc_groq import fresh
+from services.otc_ml.features import FEATURE_NAMES, indicators
 from services.otc_ml.preview import MLPreview
+from services.otc_strategy import aggregate
 
-VERSION = "primary-ready-v5"
+VERSION = "primary-ready-v6-one-confirmation"
+logger = logging.getLogger(__name__)
 
 
-def select_ready(histories, assets, quotes, now, seconds, end=None):
+def select_ready_v5(
+    histories, assets, quotes, now, seconds, end=None, audit=None, recent_ticks=None
+):
     entry = int(now) // 60 * 60 + 60
     if seconds not in (60, 300, 900) or not 15 <= entry - now <= 20:
         return None
@@ -20,39 +32,87 @@ def select_ready(histories, assets, quotes, now, seconds, end=None):
     candidates = []
     for symbol, bars in histories.items():
         asset = assets.get(symbol)
+        record = dict(
+            symbol=symbol,
+            entry_at=entry,
+            expires_at=entry + seconds,
+            observed_at=now,
+            feature_asof=known_at,
+            version="primary-ready-v5",
+            direction=None,
+            payout=getattr(asset, "payout", None),
+            payout_observed_at=getattr(asset, "observed_at", None),
+            quote_at=quotes.get(symbol),
+            decision_lead_seconds=entry - now,
+            gates={},
+            selected=False,
+            reason="asset_or_quote_ineligible",
+        )
+        if audit is not None:
+            audit.append(record)
         if not fresh(asset, quotes.get(symbol), now):
             continue
         past = [bar for bar in bars if bar.time + 60 <= known_at]
         setup = context_setup(past, known_at, seconds)
         if setup is None:
+            record["reason"] = "no_context_or_insufficient_history"
             continue
         features = setup.evidence["features"]
-        atr = features["atr14"]
-        if (
-            atr <= 0
-            or features["adx14"] < 0.20
-            or abs(features["ema20_gap"]) / atr > 1.5
+        record.update(direction=setup.direction, evidence=setup.evidence)
+        required = (
+            "atr14",
+            "adx14",
+            "ema20_gap",
+            "ema_spread",
+            "macd_hist",
+            "rsi14",
+            "bb_position",
+        )
+        if any(
+            not isinstance(features.get(k), (int, float))
+            or not math.isfinite(features[k])
+            for k in required
         ):
+            record["reason"] = "invalid_features"
             continue
-        if setup.direction == "UP":
-            aligned = (
-                features["macd_hist"] > 0
-                and features["rsi14"] <= 0.68
-                and features["bb_position"] <= 0.9
-            )
-        else:
-            aligned = (
-                features["macd_hist"] < 0
-                and features["rsi14"] >= 0.32
-                and features["bb_position"] >= 0.1
-            )
-        if not aligned:
+        atr = features["atr14"]
+        if atr <= 0:
+            record["reason"] = "invalid_atr"
             continue
+        up = setup.direction == "UP"
+        gates = dict(
+            adx=features["adx14"] >= 0.20,
+            ema_distance=abs(features["ema20_gap"]) / atr <= 1.5,
+            macd=features["macd_hist"] > 0 if up else features["macd_hist"] < 0,
+            rsi=features["rsi14"] <= 0.68 if up else features["rsi14"] >= 0.32,
+            bollinger=features["bb_position"] <= 0.9
+            if up
+            else features["bb_position"] >= 0.1,
+        )
         score = (
             features["adx14"]
             + 0.05 * abs(features["ema_spread"]) / atr
             - 0.05 * abs(features["ema20_gap"]) / atr
         )
+        record.update(
+            gates=gates,
+            quality_score=score,
+            regime="strong_trend" if features["adx14"] >= 0.25 else "weak_trend",
+            reason="eligible" if all(gates.values()) else "filter_rejected",
+        )
+        # This live feature is recorded only; it does not alter the v5 decision.
+        tick = (recent_ticks or {}).get(symbol)
+        last = setup.evidence.get("last_closed_candle")
+        if last and "time" in last:
+            record["last_closed_at"] = last["time"] + seconds
+            record["feature_age_at_entry_seconds"] = entry - record["last_closed_at"]
+        if tick and last and 0 <= now - tick[1] <= 8 and tick[1] <= tick[2] <= now:
+            movement = (tick[0] - last["close"]) / (atr * last["close"])
+            record["micro_move_atr"] = movement if up else -movement
+            record["micro_tick_at"] = tick[1]
+            record["micro_received_at"] = tick[2]
+        if not all(gates.values()):
+            continue
         candidates.append(
             (
                 score,
@@ -64,7 +124,7 @@ def select_ready(histories, assets, quotes, now, seconds, end=None):
                     expires_at=entry + seconds,
                     direction=setup.direction,
                     payout=asset.payout,
-                    model_sha256=VERSION,
+                    model_sha256="primary-ready-v5",
                     model_role="unqualified_primary_experiment",
                     feature_asof=known_at,
                     evidence=setup.evidence,
@@ -73,19 +133,146 @@ def select_ready(histories, assets, quotes, now, seconds, end=None):
                 ),
             )
         )
-    return (
+    selected = (
         max(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
     )
+    if selected and audit is not None:
+        for record in audit:
+            record["selected"] = record["symbol"] == selected["symbol"]
+    return selected
+
+
+def select_ready(
+    histories, assets, quotes, now, seconds, end=None, audit=None, recent_ticks=None
+):
+    entry = int(now) // 60 * 60 + 60
+    if seconds not in (60, 300, 900) or not 15 <= entry - now <= 20:
+        return None
+    if end and entry + seconds + 60 > end:
+        return None
+    asof = entry - 60
+    candidates = []
+    for symbol, minutes in histories.items():
+        asset = assets.get(symbol)
+        row = dict(
+            version=VERSION,
+            symbol=symbol,
+            observed_at=now,
+            feature_asof=asof,
+            entry_at=entry,
+            expires_at=entry + seconds,
+            payout=getattr(asset, "payout", None),
+            direction=None,
+            selected=False,
+            gates={},
+            reason="asset_or_quote_ineligible",
+        )
+        if audit is not None:
+            audit.append(row)
+        if not fresh(asset, quotes.get(symbol), now):
+            continue
+        up = build(minutes, "UP", seconds, asof)
+        down = build(minutes, "DOWN", seconds, asof)
+        if not up["available"]:
+            row["reason"] = "insufficient_indicator_history"
+            continue
+        # Majority of observed directional votes; ties use a fixed indicator order.
+        direction = "UP" if up["count"] > down["count"] else "DOWN"
+        if up["count"] == down["count"]:
+            for key in ("ema", "macd", "candle", "rsi", "alignment"):
+                if up["checks"][key] in ("agree", "against"):
+                    direction = "UP" if up["checks"][key] == "agree" else "DOWN"
+                    break
+        confirmations = up if direction == "UP" else down
+        if confirmations["count"] < 1:
+            row["reason"] = "no_directional_confirmation"
+            continue
+        bars = aggregate([b for b in minutes if b.time + 60 <= asof], seconds)[-250:]
+        values = indicators(bars)
+        if values is None:
+            row["reason"] = "insufficient_indicator_history"
+            continue
+        evidence = dict(
+            confirmations=confirmations,
+            features=dict(zip(FEATURE_NAMES, values)),
+            last_closed_candle=asdict(bars[-1]),
+            advantage_confirmed=False,
+        )
+        row.update(
+            direction=direction,
+            evidence=evidence,
+            reason="eligible",
+            regime=confirmations.get("market_state", {}).get("state", "unknown"),
+            gates={"min_confirmation": True},
+            quality_score=confirmations["count"],
+            confirmation_count=confirmations["count"],
+        )
+        candidates.append(
+            dict(
+                symbol=symbol,
+                name=asset.name or symbol,
+                entry_at=entry,
+                expires_at=entry + seconds,
+                direction=direction,
+                payout=asset.payout,
+                model_sha256=VERSION,
+                model_role="unqualified_primary_experiment",
+                feature_asof=asof,
+                evidence=evidence,
+                confirmations=confirmations,
+                condition_required=False,
+                quality_score=confirmations["count"],
+            )
+        )
+    selected = (
+        max(candidates, key=lambda r: (r["quality_score"], r["symbol"]))
+        if candidates
+        else None
+    )
+    if selected and audit is not None:
+        for row in audit:
+            row["selected"] = row["symbol"] == selected["symbol"]
+    return selected
 
 
 class ReadyPrimary(MLPreview):
     label = "Основной · готовый"
     icon = "🔵"
+    planning_window = (15, 20)
 
     def __init__(self, journal, clock=time.time, settlement_provider=None):
         super().__init__(journal, None, clock, settlement_provider)
         self.allowed_timeframes = (60, 300, 900)
         self.sent_count = 0
+        self.research = CandidateJournal(journal.path.with_name("ready-candidates.db"))
+        self.sampler = TickSampler()
+        self.recent_ticks = {}
+        self.next_research_flush = 0
+
+    def observe_tick(self, tick, received_at):
+        if self.sampler.valid(tick, received_at):
+            previous = self.recent_ticks.get(tick.symbol)
+            if previous is None or tick.time > previous[1]:
+                self.recent_ticks[tick.symbol] = (tick.price, tick.time, received_at)
+            self.sampler.observe(tick, received_at)
+
+    async def settle_pending(self, history):
+        if self.clock() >= self.next_research_flush:
+            self.next_research_flush = self.clock() + 5
+            samples = self.sampler.drain(self.clock())
+            if samples:
+                try:
+                    await asyncio.to_thread(self.research.samples, samples)
+                except Exception:
+                    self.sampler.restore(samples)
+                    logger.exception("Candidate tick journal unavailable; will retry")
+        await super().settle_pending(history)
+
+    async def stop(self):
+        await super().stop()
+        samples = self.sampler.drain(self.clock())
+        if samples:
+            await asyncio.to_thread(self.research.samples, samples)
 
     async def plan(self, bot, chat_id, snapshot):
         history, assets, quotes, end = snapshot
@@ -94,25 +281,38 @@ class ReadyPrimary(MLPreview):
         blocked = {int(p["expires_at"] - p["entry_at"]) for p in pending}
         for seconds in self.allowed_timeframes:
             now = self.clock()
-            if (
-                seconds in blocked
-                or not self.enabled
-                or not 15 <= (int(now) // 60 * 60 + 60) - now <= 20
-            ):
+            if not self.enabled or not 15 <= (int(now) // 60 * 60 + 60) - now <= 20:
                 continue
+            unavailable = "pending_position" if seconds in blocked else None
             # Two-minute spacing for M1 remains; M5/M15 wait for settlement.
             if seconds == 60:
-                import sqlite3
-
-                with sqlite3.connect(self.journal.path) as db:
+                with closing(sqlite3.connect(self.journal.path)) as db:
                     previous = db.execute(
                         "SELECT max(entry_at) FROM predictions WHERE expires_at-entry_at=60 AND sent_at IS NOT NULL"
                     ).fetchone()[0]
                 if previous is not None and int(now) // 60 * 60 + 60 - previous < 120:
-                    continue
+                    unavailable = unavailable or "m1_spacing"
+            audit = []
             selected = await asyncio.to_thread(
-                select_ready, histories, dict(assets), dict(quotes), now, seconds, end
+                select_ready,
+                histories,
+                dict(assets),
+                dict(quotes),
+                now,
+                seconds,
+                end,
+                audit,
+                dict(self.recent_ticks),
             )
+            for record in audit:
+                record["operational_block"] = unavailable
+            try:
+                await asyncio.to_thread(self.research.record, audit)
+                self.sampler.register(audit, self.clock())
+            except Exception:
+                logger.exception("Candidate research journal unavailable")
+            if unavailable:
+                continue
             if not selected or not self.enabled or not self.snapshot:
                 continue
             _, current_assets, current_quotes, current_end = self.snapshot

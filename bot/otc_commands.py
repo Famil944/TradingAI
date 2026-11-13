@@ -2,6 +2,8 @@
 
 import asyncio
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import BaseMiddleware, F, Router, types
 from aiogram.filters import Command
@@ -11,10 +13,20 @@ from config.settings import ROOT, settings
 from services.otc_cycles import format_cycles, read_stats
 from services.otc_evaluation import compact_stats
 from services.otc_market import TIMEFRAMES
+from services.otc_signal_report import read_journal, report as signal_quality_report
 
 router = Router()
 service = None
 choices = {}
+STATS_EPOCH = ROOT / "data" / "signal-stats-epoch.txt"
+SOURCES = (("Основной", "main_ready"), ("Groq", "groq_preview"), ("XGBoost", "ml_preview"))
+
+
+def stats_epoch():
+    try:
+        return float(STATS_EPOCH.read_text(encoding="ascii"))
+    except FileNotFoundError:
+        return 0.0
 
 
 class OwnerOnly(BaseMiddleware):
@@ -47,10 +59,13 @@ def allowed(chat_id):
     return settings.admin_chat_id > 0 and chat_id == settings.admin_chat_id
 
 
-def menu(chat_id, conditional=None):
-    if conditional is None:
-        conditional = getattr(settings, "signal_mode", "immediate") == "conditional"
+def menu(chat_id, expanded=False):
     chosen = choices.get(chat_id, TIMEFRAMES)
+    duration = (
+        getattr(service, "session_minutes", None)
+        if service and service.running()
+        else None
+    )
     buttons = []
     for key, label, value in [
         ("all", "Все M1/M5/M15", TIMEFRAMES),
@@ -64,7 +79,7 @@ def menu(chat_id, conditional=None):
                 callback_data=f"otc:tf:{key}",
             )
         )
-    rows = [[buttons[0]], buttons[1:]]
+    rows = [buttons]
     for pair in [
         [(30, "30 минут"), (60, "1 час")],
         [(120, "2 часа"), (240, "4 часа")],
@@ -72,56 +87,59 @@ def menu(chat_id, conditional=None):
     ]:
         rows.append(
             [
-                InlineKeyboardButton(text=label, callback_data=f"otc:start:{value}")
+                InlineKeyboardButton(
+                    text=("✅ " if duration == value else "") + label,
+                    callback_data=f"otc:start:{value}",
+                )
                 for value, label in pair
             ]
         )
     rows.append(
         [
             InlineKeyboardButton(text="Остановить", callback_data="otc:stop"),
-            InlineKeyboardButton(text="Статус", callback_data="otc:status"),
+            InlineKeyboardButton(
+                text="▴ Скрыть ботов" if expanded else "▾ Боты",
+                callback_data="otc:panel:hide" if expanded else "otc:panel:show",
+            ),
         ]
     )
-    rows.append([InlineKeyboardButton(text="Статистика", callback_data="otc:stats")])
-    rows.append([InlineKeyboardButton(text="Подтверждения", callback_data="otc:confirmations")])
-    rows.append(
-        [
-            InlineKeyboardButton(text="🟠 XGBoost", callback_data="otc:mlstats:all"),
-            InlineKeyboardButton(text="🟣 Groq", callback_data="otc:groqstats:all"),
-        ]
-    )
+    if expanded:
+        rows.append([InlineKeyboardButton(text="Обновить", callback_data="otc:panel:show")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def strategy_status(current):
+    streaming = bool(current and current.running() and current.phase == "поток активен")
+    boost = getattr(current, "ml_preview", None)
+    groq = getattr(current, "groq_preview", None)
+    groq_health = groq.client.health() if groq else (False, "не запущен")
+    active = {
+        "Основной": streaming,
+        "XGBoost": bool(streaming and boost and boost.enabled and boost.runtime.preview_ready()),
+        "Groq": bool(streaming and groq and groq.enabled and groq_health[0]),
+    }
+    since, now = stats_epoch(), time.time()
+    lines = []
+    for label, attr in SOURCES:
+        preview = getattr(current, attr, None)
+        count = len(read_journal(preview.journal, since, now)) if preview else 0
+        detail = f" · {groq_health[1]}" if label == "Groq" and not groq_health[0] else ""
+        lines.append(f"{'🟢' if active[label] else '🔴'} {label} · {count}{detail}")
+    return "\n".join(lines)
+
+
+MENU_TITLE = "OTC · тестовые сигналы"
 
 
 @router.message(Command("start", "help", "otc"))
 async def show_menu(message: types.Message):
-    if getattr(settings, "signal_mode", "immediate") == "conditional":
-        await message.answer(
-            "📊 OTC · M1 / M5 / M15\n"
-            + (
-                "🔵 Основной v5: готовые сигналы · тест.\n"
-                if settings.primary_mode == "ready"
-                else "🔵 Основной: вход по условию свечи.\n"
-            )
-            + "🟣 Groq / 🟠 XGBoost: отдельные тесты.\n"
-            "Опоздал — пропуск.\n"
-            "Выбери экспирацию и длительность.",
-            reply_markup=menu(message.chat.id),
-        )
-        return
-    await message.answer(
-        "Pocket Option OTC · исследовательские сигналы M1/M5/M15.\n"
-        "ЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ. Автоматических сделок нет.\n"
-        "Тестовый режим допускает неизвестные выплату и открытие; строгий требует подтверждения и ≥90%.\n"
-        "/otc_status — статус; /otc_stop — остановить; /otc_stats [24h|7d|30d|all] — статистика; "
-        "/otc_diagnostics — ограничения источника.\nВыберите экспирацию и длительность.",
-        reply_markup=menu(message.chat.id),
-    )
+    await message.answer(MENU_TITLE, reply_markup=menu(message.chat.id))
 
 
 @router.message(Command("otc_status"))
 async def status(message: types.Message):
-    await message.answer(service.brief_status())
+    indicators = await asyncio.to_thread(strategy_status, service)
+    await message.answer(MENU_TITLE + "\n\n" + indicators, reply_markup=menu(message.chat.id, True))
 
 
 @router.message(Command("otc_stop"))
@@ -134,6 +152,49 @@ async def stop(message: types.Message):
         ("OTC остановлен." if stopped else "OTC уже остановлен.")
         + " Будущие планы отменены; начавшиеся учитываются."
     )
+
+
+@router.message(Command("otc_quality"))
+async def quality(message: types.Message):
+    now = datetime.now(ZoneInfo("Europe/Moscow"))
+    since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    journals = {}
+    for label, attr in (("Основной", "main_ready"), ("Groq", "groq_preview"), ("XGBoost", "ml_preview")):
+        preview = getattr(service, attr, None)
+        if preview:
+            journals[label] = preview.journal
+    if not journals:
+        await message.answer("Журналы сигналов недоступны.")
+        return
+    lines = await asyncio.to_thread(signal_quality_report, journals, since.timestamp(), now.timestamp())
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) + 1 > 3500:
+            await message.answer(chunk, parse_mode=None)
+            chunk = ""
+        chunk += line + "\n"
+    if chunk:
+        await message.answer(chunk, parse_mode=None)
+
+
+@router.message(Command("otc_research"))
+async def research_quality(message: types.Message):
+    from services.otc_candidate_report import format_report, report
+
+    args = (message.text or "").split()
+    period = args[1] if len(args) > 1 else "7d"
+    periods = {"24h": 86400, "7d": 604800, "30d": 2592000, "all": None}
+    if period not in periods:
+        await message.answer("Период: 24h, 7d, 30d или all.")
+        return
+    now = time.time()
+    since = now - periods[period] if periods[period] else 0
+    data = await asyncio.to_thread(
+        report, ROOT / "data/ready-candidates.db", ROOT / "data/market-history.db", since, now
+    )
+    text = format_report(data)
+    for offset in range(0, len(text), 3500):
+        await message.answer(text[offset:offset + 3500], parse_mode=None)
 
 
 @router.message(Command("otc_stats"))
@@ -223,6 +284,16 @@ async def callback(query: types.CallbackQuery):
         return
     action = parts[1]
     chat = query.message.chat.id
+    if action == "panel" and len(parts) == 3 and parts[2] in ("show", "hide"):
+        await query.answer()
+        expanded = parts[2] == "show"
+        text = MENU_TITLE
+        if expanded:
+            text += "\n\n" + await asyncio.to_thread(strategy_status, service)
+        keyboard = menu(chat, expanded)
+        if query.message.text != text or query.message.reply_markup != keyboard:
+            await query.message.edit_text(text, reply_markup=keyboard)
+        return
     if action == "confirmations" and len(parts) == 2:
         await query.answer()
         await send_confirmations(query.message)
@@ -239,7 +310,7 @@ async def callback(query: types.CallbackQuery):
         await query.answer()
         seconds = None if parts[2] == "all" else int(parts[2]) * 60
         text = await asyncio.to_thread(
-            getattr(service, preview_name).journal.stats, seconds
+            getattr(service, preview_name).journal.stats, seconds, stats_epoch()
         )
         if action == "groqstats":
             text += "\n" + await asyncio.to_thread(service.groq_preview.client.status)
@@ -274,6 +345,8 @@ async def callback(query: types.CallbackQuery):
                 parts[3]
             ]
             since = time.time() - duration if duration else 0
+            if not cycles:
+                since = max(since, stats_epoch())
             rows = await asyncio.to_thread(
                 service.db.virtual_stats, since, int(parts[2]) * 60
             )
@@ -303,7 +376,9 @@ async def callback(query: types.CallbackQuery):
     if action == "tf" and len(parts) == 3 and parts[2] in ("all", "1", "5", "15"):
         choices[chat] = TIMEFRAMES if parts[2] == "all" else (int(parts[2]) * 60,)
         await query.answer("Экспирации выбраны")
-        await query.message.edit_reply_markup(reply_markup=menu(chat))
+        await query.message.edit_reply_markup(
+            reply_markup=menu(chat, query.message.text != MENU_TITLE)
+        )
     elif (
         action == "start"
         and len(parts) == 3
@@ -313,6 +388,10 @@ async def callback(query: types.CallbackQuery):
             query.bot, chat, int(parts[2]), choices.get(chat, TIMEFRAMES)
         )
         await query.answer("Проверяю доступ" if started else "Сеанс уже запущен")
+        keyboard = menu(chat, query.message.text != MENU_TITLE)
+        if query.message.reply_markup != keyboard:
+            await query.message.edit_reply_markup(reply_markup=keyboard)
+
     elif action == "observer_stop" and len(parts) == 2:
         (ROOT / "data" / "observer.stop").parent.mkdir(parents=True, exist_ok=True)
         (ROOT / "data" / "observer.stop").touch()
@@ -323,8 +402,12 @@ async def callback(query: types.CallbackQuery):
         service.user_stopped = True
         stopped = await service.stop()
         await query.answer("Остановлено" if stopped else "Уже остановлен")
+        keyboard = menu(chat, query.message.text != MENU_TITLE)
+        if query.message.reply_markup != keyboard:
+            await query.message.edit_reply_markup(reply_markup=keyboard)
     elif action == "status" and len(parts) == 2:
         await query.answer()
-        await query.message.answer(service.brief_status())
+        indicators = await asyncio.to_thread(strategy_status, service)
+        await query.message.answer(MENU_TITLE + "\n\n" + indicators, reply_markup=menu(chat, True))
     else:
         await query.answer("Недопустимый выбор")

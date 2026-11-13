@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from services.otc_market import Asset
 from services.otc_ml.preview import PreviewJournal
-from services.otc_ready import select_ready
+from services.otc_ready import select_ready_v5 as select_ready
 from services.otc_strategy import Candle
 
 

@@ -146,6 +146,7 @@ class OTCSession:
                 self.groq_preview.enabled = True
             self.timeframes = tuple(timeframes)
             self.ends_at = self.clock() + minutes * 60 if minutes else None
+            self.session_minutes = minutes
             self.last_tick = None
             self._quotes.clear()
             self.last_error = None
@@ -754,6 +755,7 @@ class OTCSession:
                                 self.main_ready.observe(
                                     history, active, self._quotes, self.ends_at
                                 )
+                                self.main_ready.observe_tick(tick, now)
                             self.monitored = sum(
                                 0 <= now - t <= self.config.max_tick_age
                                 for t in builder.last.values()
