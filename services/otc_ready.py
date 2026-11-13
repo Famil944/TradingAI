@@ -152,7 +152,7 @@ def select_ready(
         raise ValueError("min_confirmations must be 2..5")
     entry = int(now) // 60 * 60 + 60
     if (seconds not in (60, 300, 900) or entry % seconds != 0
-            or not 15 <= entry - now <= 20):
+            or not 15 <= entry - now <= 23):
         return None
     if end and entry + seconds + 60 > end:
         return None
