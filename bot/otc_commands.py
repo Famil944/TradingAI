@@ -11,6 +11,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config.settings import ROOT, settings
 from services.otc_cycles import format_cycles, read_stats
+from services.otc_filter_report import format_report as format_filter_report
+from services.otc_filter_report import report as filter_report
 from services.otc_evaluation import compact_stats
 from services.otc_market import TIMEFRAMES
 from services.otc_signal_report import read_journal, report as signal_quality_report
@@ -195,6 +197,44 @@ async def research_quality(message: types.Message):
     text = format_report(data)
     for offset in range(0, len(text), 3500):
         await message.answer(text[offset:offset + 3500], parse_mode=None)
+
+
+@router.message(Command("otc_filters"))
+async def filters_report(message: types.Message):
+    args = (message.text or "").split()
+    period = args[1] if len(args) > 1 else "7d"
+    windows = {"24h": 86400, "7d": 604800, "30d": 2592000}
+    if period not in windows:
+        await message.answer("Используй /otc_filters [24h|7d|30d]")
+        return
+    now = time.time()
+    result = await asyncio.to_thread(
+        filter_report, ROOT / "data", now - windows[period], now
+    )
+    text = format_filter_report(result)
+    for offset in range(0, len(text), 3400):
+        await message.answer(text[offset:offset + 3400], parse_mode=None)
+
+
+@router.message(Command("otc_compare"))
+async def compare_strategies(message: types.Message):
+    from services.otc_signal_report import report as compare_report
+
+    args = (message.text or "").split()
+    period = args[1] if len(args) > 1 else "7d"
+    windows = {"24h": 86400, "7d": 604800, "30d": 2592000}
+    if period not in windows:
+        await message.answer("Используй /otc_compare [24h|7d|30d]")
+        return
+    now = time.time()
+    journals = {
+        label: getattr(service, attr).journal for label, attr in SOURCES
+        if getattr(service, attr, None) is not None
+    }
+    lines = await asyncio.to_thread(compare_report, journals, now - windows[period], now)
+    text = "\\n".join(lines)
+    for offset in range(0, len(text), 3400):
+        await message.answer(text[offset:offset + 3400], parse_mode=None)
 
 
 @router.message(Command("otc_stats"))

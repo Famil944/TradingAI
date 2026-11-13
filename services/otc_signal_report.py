@@ -54,16 +54,23 @@ def report(journals, since, until):
     def key(row):
         return row["symbol"], row["entry_at"], row["expires_at"]
 
-    groq = {key(row): row for row in sources.get("Groq", [])}
-    pairs = defaultdict(list)
-    for row in sources.get("Основной", []):
-        other = groq.get(key(row))
-        if other is not None:
-            pairs[row["direction"] == other["direction"]].append(row)
-    lines.extend([
-        "\nОсновной и Groq · один актив, вход и экспирация",
-        f"Совпали · {summarize(pairs[True])}",
-        f"Разошлись · {summarize(pairs[False])}",
-        "В сравнении показан исход Основного. Винрейт = победы / (победы + поражения).",
-    ])
+    for left, right in (("Основной", "Groq"), ("Основной", "XGBoost"),
+                        ("Groq", "XGBoost")):
+        other = {key(row): row for row in sources.get(right, [])}
+        matched = [(row, other[key(row)]) for row in sources.get(left, [])
+                   if key(row) in other]
+        same = [a for a, b in matched if a["direction"] == b["direction"]]
+        different = [a for a, b in matched if a["direction"] != b["direction"]]
+        lines.append(
+            f"\\n{left} / {right} · одинаковый актив, вход и экспирация: "
+            f"пересечений {len(matched)}, согласны {len(same)}, против {len(different)}"
+        )
+        if matched:
+            lines.append(f"Согласованные · {summarize(same)}")
+            lines.append(f"Противоположные · {summarize(different)}")
+        else:
+            lines.append("Нет одинаковых возможностей входа; сравнивать точность напрямую нельзя.")
+    lines.append(
+        "Результаты виртуальные по OTCharts; сравнение не является независимым доказательством доходности."
+    )
     return lines
