@@ -94,6 +94,43 @@ class M1SelectionIntegrationTests(unittest.TestCase):
             )
             self.assertIsNone(blocked)
 
+    def test_primary_can_prepare_before_delivery_window_with_m1_shadow(self):
+        bars = history()
+        now = bars[-1].time + 98  # 22 seconds before the next M1 entry
+        asset = Asset("A", True, True, 92, None, "A", now)
+        with (
+            patch("services.otc_ready.build", side_effect=[
+                fake_checks("UP", 4), fake_checks("DOWN", 0),
+            ]),
+            patch(
+                "services.otc_ready.evaluate_policy",
+                return_value={
+                    "reason": "eligible",
+                    "strategy": "trend_continuation",
+                    "gates": {"trend_aligned": True},
+                },
+            ),
+            patch(
+                "services.otc_ready.evaluate_m1",
+                return_value={
+                    "passed": False,
+                    "reason": "m1_stale_tick",
+                    "gates": {"fresh_tick": False},
+                    "metrics": {},
+                },
+            ),
+        ):
+            selected = select_ready(
+                {"A": bars},
+                {"A": asset},
+                {"A": now},
+                now,
+                60,
+                m1_strict_enabled=False,
+            )
+        self.assertIsNotNone(selected)
+        self.assertFalse(selected["m1_strict_active"])
+
     def test_m5_does_not_call_m1_policy(self):
         bars = history()
         now = bars[-1].time + 40  # entry index 1000, a 5m boundary
