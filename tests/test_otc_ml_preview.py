@@ -4,7 +4,7 @@ from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from services.otc_market import Asset
 from services.otc_ml.preview import PreviewJournal, select_forecast, settle_preview
@@ -21,7 +21,11 @@ class FakeRuntime:
 
 
 class PreviewTests(unittest.TestCase):
-    def test_duration_is_selected_by_forecast_not_fixed_or_random(self):
+    @patch(
+        "services.otc_ml.preview.build",
+        return_value=dict(available=5, count=1, total=5),
+    )
+    def test_duration_is_selected_by_forecast_not_fixed_or_random(self, confirmations):
         now = 1800000042
         asset = Asset("A", True, True, 92, None, "Asset", now)
         selected = select_forecast(
@@ -50,6 +54,21 @@ class PreviewTests(unittest.TestCase):
         self.assertIsNone(
             select_forecast(Weak(), {"A": []}, {"A": asset}, {"A": now}, now)
         )
+        with patch(
+            "services.otc_ml.preview.build",
+            return_value=dict(available=5, count=1, total=5),
+        ):
+            selected = select_forecast(Weak(), {"A": []}, {"A": asset}, {"A": now}, now)
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["selection_policy"], "xgboost-one-confirmation-v1")
+        self.assertLess(selected["estimated_ev"], 0.05)
+        with patch(
+            "services.otc_ml.preview.build",
+            return_value=dict(available=5, count=0, total=5),
+        ):
+            self.assertIsNone(
+                select_forecast(Weak(), {"A": []}, {"A": asset}, {"A": now}, now)
+            )
 
     def test_preview_training_excludes_forming_candle_for_twenty_second_lead(self):
         bars = impulse_history()
@@ -103,7 +122,13 @@ class PreviewTests(unittest.TestCase):
 
 
 class PreviewDeliveryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_timely_delivery_and_late_acknowledgement_are_separate(self):
+    @patch(
+        "services.otc_ml.preview.build",
+        return_value=dict(available=5, count=1, total=5),
+    )
+    async def test_timely_delivery_and_late_acknowledgement_are_separate(
+        self, confirmations
+    ):
         from services.otc_ml.preview import MLPreview
 
         for delay, expected in ((1, "PENDING"), (5, "LATE")):

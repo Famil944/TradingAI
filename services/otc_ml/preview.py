@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from services.otc_confirmations import build
+
 from .quality import expected_return
 
 logger = logging.getLogger(__name__)
@@ -190,14 +192,13 @@ def select_forecast(runtime, histories, assets, quotes, now, session_end=None, r
                 reasons[result.get("status", "no_prediction")] += 1
                 continue
             direction = "UP" if probabilities[2] >= probabilities[0] else "DOWN"
-            probability = probabilities[2 if direction == "UP" else 0]
             ev = expected_return(probabilities, direction, asset.payout)
-            # Same numerical selection thresholds; this research forecast remains explicitly unqualified.
-            if probability < 0.60:
-                reasons["below_probability_floor"] += 1
+            if ev is None:
+                reasons["invalid_model_probabilities"] += 1
                 continue
-            if ev is None or ev < 0.05:
-                reasons["below_expected_return_floor"] += 1
+            confirmations = build(bars, direction, seconds, now)
+            if not confirmations["available"] or confirmations["count"] < 1:
+                reasons["no_directional_confirmation"] += 1
                 continue
             candidate = dict(
                 symbol=symbol,
@@ -208,6 +209,9 @@ def select_forecast(runtime, histories, assets, quotes, now, session_end=None, r
                 payout=asset.payout,
                 model_sha256=result["model_sha256"],
                 model_role="unqualified_experimental",
+                selection_policy="xgboost-one-confirmation-v1",
+                evidence=dict(confirmations=confirmations),
+                confirmations=confirmations,
                 estimated_ev=ev,
                 probabilities=probabilities,
                 feature_asof=now,
@@ -373,8 +377,8 @@ class MLPreview:
         selected["estimated_ev"] = expected_return(
             selected["probabilities"], selected["direction"], current.payout
         )
-        if selected["estimated_ev"] is None or selected["estimated_ev"] < 0.05:
-            logger.info("XGBoost skipped: expected return below floor at delivery")
+        if selected["estimated_ev"] is None:
+            logger.info("XGBoost skipped: invalid probabilities at delivery")
             return
         await self.publish(selected, bot, chat_id)
 
@@ -399,6 +403,17 @@ class MLPreview:
             self.journal.reserve, selected, self.clock()
         )
         if not identifier:
+            return
+        if not 15 <= selected["entry_at"] - self.clock() <= 20:
+            await asyncio.to_thread(self.journal.finish, identifier, "LATE")
+            return
+        from services.otc_delivery_guard import claim
+
+        if not await asyncio.to_thread(
+            claim, self.journal.path.with_name("signal-delivery.db"), selected, self.label, self.clock()
+        ):
+            await asyncio.to_thread(self.journal.finish, identifier, "CANCELLED")
+            logger.info("%s duplicate suppressed: %s", self.label, selected["symbol"])
             return
         if not 15 <= selected["entry_at"] - self.clock() <= 20:
             await asyncio.to_thread(self.journal.finish, identifier, "LATE")

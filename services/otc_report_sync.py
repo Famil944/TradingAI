@@ -84,6 +84,11 @@ def export(root=ROOT, device="termux", now=None):
                 and re.fullmatch(r"[A-Za-z0-9_.:-]{1,100}", version)
                 else "unknown"
             )
+            if (
+                json.loads(evidence or "{}").get("selection_policy")
+                == "xgboost-one-confirmation-v1"
+            ):
+                version += ":one-confirmation-v1"
             for period in ("all", "24h"):
                 if period == "24h" and entry < now - 86400:
                     continue
