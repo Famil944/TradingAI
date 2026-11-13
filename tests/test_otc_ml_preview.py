@@ -44,6 +44,21 @@ class PreviewTests(unittest.TestCase):
             )
         )
 
+    @patch(
+        "services.otc_ml.preview.build",
+        return_value=dict(available=5, count=1, total=5),
+    )
+    def test_xgboost_forecast_does_not_require_payout(self, confirmations):
+        now = 1800000042
+        asset = Asset("A", True, True, None, None, "Asset", now)
+        selected = select_forecast(
+            FakeRuntime(), {"A": []}, {"A": asset}, {"A": now}, now
+        )
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["direction"], "UP")
+        self.assertIsNone(selected["payout"])
+        self.assertIsNone(selected["estimated_ev"])
+
     def test_no_model_or_weak_forecast_does_not_generate_signal(self):
         class Weak:
             def inspect(self, *args):
