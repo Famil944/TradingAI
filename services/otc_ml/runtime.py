@@ -148,15 +148,29 @@ class RuntimeML:
                 .tolist()
             )
             config = report.get("configuration", {})
-            p = probabilities[2 if row["direction"] == "UP" else 0]
-            ev = expected_return(probabilities, row["direction"], payout)
-            probability_ok = p >= config.get("probability_floor", 0.60)
-            ev_ok = ev is None or ev >= config.get("min_expected_return", 0.05)
+            # The caller initially supplies an UP placeholder to obtain a
+            # forecast. Never evaluate a DOWN forecast against UP probability.
+            direction = "UP" if probabilities[2] >= probabilities[0] else "DOWN"
+            p = probabilities[2 if direction == "UP" else 0]
+            ev = expected_return(probabilities, direction, payout)
+            floor = config.get("probability_floor")  # no implicit 0.60 floor
+            minimum_ev = config.get("min_expected_return")
+            probability_ok = floor is None or p >= floor
+            ev_ok = minimum_ev is None or (ev is not None and ev >= minimum_ev)
             passed = probability_ok and ev_ok
+            # Research models are unqualified: report threshold diagnostics
+            # without silently blocking shadow observations. Certified models
+            # must still satisfy their explicitly trained/report thresholds.
             return dict(
                 status="validated_filter" if certified else "shadow",
                 live=certified,
-                accept=passed,
+                accept=passed if certified else True,
+                threshold_passed=passed,
+                threshold_applied=certified,
+                selected_direction=direction,
+                direction_probability=p,
+                probability_floor=floor,
+                minimum_expected_return=minimum_ev,
                 probabilities=probabilities,
                 expected_return=ev,
                 model_sha256=hashes[0],

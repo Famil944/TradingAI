@@ -259,7 +259,21 @@ def select_forecast(
             if probabilities is None:
                 reasons[result.get("status", "no_prediction")] += 1
                 continue
+            if (
+                not isinstance(probabilities, (tuple, list))
+                or len(probabilities) != 3
+                or any(
+                    not isinstance(p, (int, float)) or not math.isfinite(p)
+                    or not 0 <= p <= 1 for p in probabilities
+                )
+                or abs(sum(probabilities) - 1) > 1e-6
+            ):
+                reasons["invalid_model_probabilities"] += 1
+                continue
             direction = "UP" if probabilities[2] >= probabilities[0] else "DOWN"
+            if result.get("selected_direction", direction) != direction:
+                reasons["direction_mismatch"] += 1
+                continue
             direction_probability = probabilities[2 if direction == "UP" else 0]
             if result.get("accept") is False:
                 reasons["model_threshold_rejected"] += 1
@@ -283,6 +297,9 @@ def select_forecast(
                 confirmations=confirmations,
                 estimated_ev=ev,
                 direction_probability=direction_probability,
+                threshold_passed=result.get("threshold_passed"),
+                threshold_applied=result.get("threshold_applied", False),
+                minimum_expected_return=result.get("minimum_expected_return"),
                 probabilities=probabilities,
                 feature_asof=now,
                 decision_lead_seconds=20,
@@ -473,6 +490,15 @@ class MLPreview:
         selected["estimated_ev"] = expected_return(
             selected["probabilities"], selected["direction"], selected["payout"]
         )
+        # A certified model must still pass its EV gate after the payout
+        # changed between inference and Telegram delivery.
+        if selected.get("threshold_applied"):
+            floor = selected.get("minimum_expected_return")
+            if floor is not None and (
+                selected["estimated_ev"] is None or selected["estimated_ev"] < floor
+            ):
+                logger.info("XGBoost skipped: certified EV gate failed at delivery")
+                return
         await self.publish(selected, bot, chat_id)
 
     async def publish(self, selected, bot, chat_id):

@@ -18,9 +18,12 @@ py-modules = ["main", "preflight"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["bot*", "config*", "core*", "database*", "services*"]
+include = ["bot*", "config*", "core*", "database*", "services*", "web*"]
 exclude = ["tests*", "data*"]
 namespaces = true
+
+[tool.setuptools.package-data]
+web = ["*.html", "*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
