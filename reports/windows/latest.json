@@ -1,8 +1,8 @@
 {
   "schema": "tradingai-public-report-v1",
   "device": "windows",
-  "generated_at": 1794558381.7894008,
-  "generated_utc": "2026-11-13T08:26:21.789401+00:00",
+  "generated_at": 1794559295.5637782,
+  "generated_utc": "2026-11-13T08:41:35.563778+00:00",
   "virtual_only": true,
   "sources": {
     "primary": {
@@ -12,7 +12,6 @@
           "version": "primary-ready-v5",
           "seconds": 60,
           "outcomes": {
-            "UNKNOWN": 1,
             "WIN": 7,
             "LOSS": 5
           },
@@ -35,14 +34,13 @@
           "version": "primary-ready-v6-one-confirmation",
           "seconds": 60,
           "outcomes": {
-            "LOSS": 2,
-            "WIN": 10,
+            "LOSS": 5,
+            "WIN": 12,
             "UNKNOWN": 1,
-            "NOT_DELIVERED": 3,
-            "PENDING": 1
+            "NOT_DELIVERED": 3
           },
-          "resolved": 12,
-          "win_rate": 0.8333333333333334
+          "resolved": 17,
+          "win_rate": 0.7058823529411765
         },
         {
           "period": "24h",
@@ -50,12 +48,12 @@
           "seconds": 300,
           "outcomes": {
             "WIN": 4,
-            "LOSS": 1,
+            "LOSS": 3,
             "DRAW": 1,
             "PENDING": 1
           },
-          "resolved": 5,
-          "win_rate": 0.8
+          "resolved": 7,
+          "win_rate": 0.5714285714285714
         },
         {
           "period": "24h",
@@ -63,10 +61,11 @@
           "seconds": 900,
           "outcomes": {
             "WIN": 2,
+            "LOSS": 1,
             "PENDING": 1
           },
-          "resolved": 2,
-          "win_rate": 1.0
+          "resolved": 3,
+          "win_rate": 0.6666666666666666
         },
         {
           "period": "all",
@@ -96,14 +95,13 @@
           "version": "primary-ready-v6-one-confirmation",
           "seconds": 60,
           "outcomes": {
-            "LOSS": 2,
-            "WIN": 10,
+            "LOSS": 5,
+            "WIN": 12,
             "UNKNOWN": 1,
-            "NOT_DELIVERED": 3,
-            "PENDING": 1
+            "NOT_DELIVERED": 3
           },
-          "resolved": 12,
-          "win_rate": 0.8333333333333334
+          "resolved": 17,
+          "win_rate": 0.7058823529411765
         },
         {
           "period": "all",
@@ -111,12 +109,12 @@
           "seconds": 300,
           "outcomes": {
             "WIN": 4,
-            "LOSS": 1,
+            "LOSS": 3,
             "DRAW": 1,
             "PENDING": 1
           },
-          "resolved": 5,
-          "win_rate": 0.8
+          "resolved": 7,
+          "win_rate": 0.5714285714285714
         },
         {
           "period": "all",
@@ -124,15 +122,16 @@
           "seconds": 900,
           "outcomes": {
             "WIN": 2,
+            "LOSS": 1,
             "PENDING": 1
           },
-          "resolved": 2,
-          "win_rate": 1.0
+          "resolved": 3,
+          "win_rate": 0.6666666666666666
         }
       ],
       "late_deliveries": 0,
       "overdue_pending": 0,
-      "latest_sent_at": 1794558340.8533378
+      "latest_sent_at": 1794559180.58714
     },
     "groq": {
       "groups": [
@@ -216,6 +215,16 @@
     "xgboost": {
       "groups": [
         {
+          "period": "24h",
+          "version": "c2415e6527a08ae8399a4abade9103149fc87c60637fee2a002d03e5ca236918:one-confirmation-v1",
+          "seconds": 900,
+          "outcomes": {
+            "PENDING": 1
+          },
+          "resolved": 0,
+          "win_rate": null
+        },
+        {
           "period": "all",
           "version": "9ff87f50b7b871244f5e7fe65df91dc214dc747be57a58212d21bcc82c5dfa0a",
           "seconds": 900,
@@ -224,40 +233,50 @@
           },
           "resolved": 1,
           "win_rate": 0.0
+        },
+        {
+          "period": "all",
+          "version": "c2415e6527a08ae8399a4abade9103149fc87c60637fee2a002d03e5ca236918:one-confirmation-v1",
+          "seconds": 900,
+          "outcomes": {
+            "PENDING": 1
+          },
+          "resolved": 0,
+          "win_rate": null
         }
       ],
       "late_deliveries": 0,
       "overdue_pending": 0,
-      "latest_sent_at": 1794425622.4788897
+      "latest_sent_at": 1794558403.205698
     }
   },
   "candidates": {
     "period": "24h",
-    "count": 945,
+    "count": 1170,
     "reasons": {
       "no_context_or_insufficient_history": 225,
-      "asset_or_quote_ineligible": 198,
-      "eligible": 488,
-      "insufficient_indicator_history": 34
+      "asset_or_quote_ineligible": 213,
+      "eligible": 692,
+      "insufficient_indicator_history": 40
     },
     "confirmations": {
-      "2": 77,
-      "4": 127,
-      "3": 249,
-      "5": 35
+      "2": 108,
+      "4": 192,
+      "3": 327,
+      "5": 65
     },
     "regimes": {
-      "transition": 162,
-      "uptrend": 142,
-      "range": 162,
-      "downtrend": 22
+      "transition": 199,
+      "uptrend": 244,
+      "range": 216,
+      "downtrend": 33
     }
   },
   "runtime": {
-    "heartbeat_age_seconds": 5.9,
+    "heartbeat_age_seconds": 6.7,
     "stale": false,
     "running": true,
-    "quote_age_seconds": 0.9253506660461426,
+    "quote_age_seconds": 15.877058744430542,
     "error_present": false,
     "user_stopped": false
   }
