@@ -17,7 +17,7 @@ from services.otc_m1_policy import evaluate as evaluate_m1, live_check as check_
 from services.otc_policy import evaluate as evaluate_policy
 from services.otc_strategy import aggregate
 
-VERSION = "primary-ready-v9-policy-shadow"
+VERSION = "primary-ready-v10-early-plan"
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +26,7 @@ def select_ready_v5(
 ):
     entry = int(now) // 60 * 60 + 60
     if (seconds not in (60, 300, 900) or entry % seconds != 0
-            or not 15 <= entry - now <= 20):
+            or not 15 <= entry - now <= 23):
         return None
     if end and entry + seconds + 60 > end:
         return None
@@ -307,7 +307,7 @@ class ReadyPrimary(MLPreview):
     label = "Основной · готовый"
     icon = "🔵"
     require_payout = True
-    planning_window = (15, 20)
+    planning_window = (20, 23)
 
     def __init__(self, journal, clock=time.time, settlement_provider=None):
         super().__init__(journal, None, clock, settlement_provider)
@@ -376,7 +376,7 @@ class ReadyPrimary(MLPreview):
             next_entry = int(now) // 60 * 60 + 60
             if next_entry % seconds:
                 continue
-            if not self.enabled or not 15 <= next_entry - now <= 20:
+            if not self.enabled or not 15 <= next_entry - now <= 23:
                 continue
             unavailable = await asyncio.to_thread(self.journal.blocked, now, seconds)
             audit = []
@@ -422,6 +422,12 @@ class ReadyPrimary(MLPreview):
         for selected in best_expirations(offered):
             if not self.enabled or not self.snapshot:
                 break
+            delay = selected["entry_at"] - self.clock() - 20
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if not self.enabled or not 15 <= selected["entry_at"] - self.clock() <= 20:
+                logger.info("Primary skipped: analysis missed delivery window")
+                continue
             _, current_assets, current_quotes, current_end = self.snapshot
             asset = current_assets.get(selected["symbol"])
             if not fresh(asset, current_quotes.get(selected["symbol"]), self.clock()):
