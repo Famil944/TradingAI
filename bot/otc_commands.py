@@ -141,6 +141,7 @@ def strategy_status(current):
                         "asset_or_quote_ineligible": "ждёт свежие данные/выплату",
                         "insufficient_indicator_history": "накапливает историю",
                         "insufficient_directional_confirmations": "мало подтверждений",
+                        "pair_loss_cooldown": "пара на паузе после минуса",
                     }
                     detail = f" · {labels.get(reason, reason)} ({amount})"
             elif current and current.running():
