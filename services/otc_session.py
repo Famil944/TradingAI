@@ -675,8 +675,11 @@ class OTCSession:
         tasks[symbol] = asyncio.create_task(self._repair_history(symbol, history))
 
     async def _refresh_stream_assets(self, active, chosen):
+        refresh_seconds = getattr(self.config, "catalogue_refresh_seconds", 50)
+        retry_seconds = min(5, max(1, refresh_seconds))
+        delay = refresh_seconds
         while True:
-            await asyncio.sleep(getattr(self.config, "catalogue_refresh_seconds", 50))
+            await asyncio.sleep(delay)
             try:
                 # The symbols response enforces API access/quota itself. A failure
                 # of the separate usage endpoint must not prevent refreshing payouts.
@@ -689,15 +692,20 @@ class OTCSession:
                 active.clear()
                 active.update(updated)
                 self.available = len(catalogue)
+                delay = refresh_seconds
             except AccessUnavailable:
                 active.clear()
                 raise
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                active.clear()
+                # Keep the last good catalogue on transient failures. Freshness is
+                # still enforced at signal time through observed_at/payout_max_age.
+                # Retry quickly instead of waiting a full catalogue interval, which
+                # otherwise creates false "no fresh payout data" pauses.
                 logger.warning("OTC catalogue refresh failed: %s", type(exc).__name__)
                 await self._event("catalogue_refresh_failed")
+                delay = retry_seconds
 
     async def _scan(self, bot, history, chosen):
         attempt = 0

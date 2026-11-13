@@ -199,6 +199,23 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("A", active)
         self.provider.usage.assert_not_awaited()
 
+    async def test_transient_catalogue_refresh_keeps_last_good_metadata(self):
+        active = {"A": object()}
+        self.session.config.catalogue_refresh_seconds = 50
+        self.provider.symbols = AsyncMock(
+            side_effect=[RetryableFeedError(), await FakeProvider(self.clock).symbols()]
+        )
+        sleeper = AsyncMock(
+            side_effect=[None, None, asyncio.CancelledError()]
+        )
+        with patch("services.otc_session.asyncio.sleep", new=sleeper):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.session._refresh_stream_assets(active, {"A": None})
+        self.assertIn("A", active)
+        self.assertEqual(self.provider.symbols.await_count, 2)
+        self.assertEqual(sleeper.await_args_list[0].args[0], 50)
+        self.assertEqual(sleeper.await_args_list[1].args[0], 5)
+
     async def test_history_recovery_survives_temporary_api_failure(self):
         plan = await self.provider.usage()
         self.session._usage_with_retry = AsyncMock(
