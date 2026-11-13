@@ -17,7 +17,7 @@ from services.otc_m1_policy import evaluate as evaluate_m1, live_check as check_
 from services.otc_policy import evaluate as evaluate_policy
 from services.otc_strategy import aggregate
 
-VERSION = "primary-ready-v10-early-plan"
+VERSION = "primary-ready-v11-ranked-loss-cooldown"
 logger = logging.getLogger(__name__)
 
 
@@ -144,12 +144,45 @@ def select_ready_v5(
     return selected
 
 
+def setup_rank(candidate):
+    """Rank eligible primary candidates by signal quality, never by symbol first."""
+    confirmations = candidate.get("confirmations") or {}
+    checks = confirmations.get("checks") or {}
+    evidence = candidate.get("evidence") or {}
+    features = evidence.get("features") or {}
+    atr = features.get("atr14")
+    atr = atr if isinstance(atr, (int, float)) and math.isfinite(atr) and atr > 0 else 0.0
+
+    def finite(name):
+        value = features.get(name, 0.0)
+        return value if isinstance(value, (int, float)) and math.isfinite(value) else 0.0
+
+    ema_strength = abs(finite("ema_spread")) / atr if atr else 0.0
+    macd_strength = abs(finite("macd_hist")) / atr if atr else 0.0
+    body_strength = abs(finite("body_atr"))
+    payout = candidate.get("payout")
+    payout = payout if isinstance(payout, (int, float)) and math.isfinite(payout) else 0.0
+    return (
+        confirmations.get("count", candidate.get("quality_score", 0)),
+        1 if checks.get("alignment") == "agree" else 0,
+        1 if (candidate.get("policy") or {}).get("reason") == "eligible" else 0,
+        finite("adx14"),
+        ema_strength,
+        macd_strength,
+        body_strength,
+        payout,
+        candidate.get("symbol", ""),
+    )
+
+
 def select_ready(
     histories, assets, quotes, now, seconds, end=None, audit=None, recent_ticks=None,
     min_confirmations=3, m1_strict_enabled=True, policy_enforced=False,
+    excluded_symbols=None,
 ):
     if not isinstance(min_confirmations, int) or not 2 <= min_confirmations <= 5:
         raise ValueError("min_confirmations must be 2..5")
+    excluded_symbols = set(excluded_symbols or ())
     entry = int(now) // 60 * 60 + 60
     if (seconds not in (60, 300, 900) or entry % seconds != 0
             or not 15 <= entry - now <= 23):
@@ -177,6 +210,9 @@ def select_ready(
         )
         if audit is not None:
             audit.append(row)
+        if symbol in excluded_symbols:
+            row["reason"] = "pair_loss_cooldown"
+            continue
         if not fresh(asset, quotes.get(symbol), now):
             continue
         up = build(minutes, "UP", seconds, asof)
@@ -274,11 +310,7 @@ def select_ready(
                 quality_score=confirmations["count"],
             )
         )
-    selected = (
-        max(candidates, key=lambda r: (r["quality_score"], r["symbol"]))
-        if candidates
-        else None
-    )
+    selected = max(candidates, key=setup_rank) if candidates else None
     if selected and audit is not None:
         for row in audit:
             row["selected"] = row["symbol"] == selected["symbol"]
@@ -290,9 +322,7 @@ def best_expirations(candidates):
 
     def rank(candidate):
         return (
-            candidate.get("confirmations", {}).get(
-                "count", candidate.get("quality_score", 0)
-            ),
+            setup_rank(candidate),
             -(candidate["expires_at"] - candidate["entry_at"]),
         )
 
@@ -315,6 +345,7 @@ class ReadyPrimary(MLPreview):
         self.min_confirmations = settings.ready_min_confirmations
         self.m1_strict_enabled = settings.m1_strict_enabled
         self.policy_enforced = settings.primary_policy_enforced
+        self.loss_cooldown_seconds = settings.primary_loss_cooldown_seconds
         self.sent_count = 0
         self.last_reasons = {}
         self.last_attempt_at = None
@@ -384,6 +415,9 @@ class ReadyPrimary(MLPreview):
             if not self.enabled or not 15 <= next_entry - now <= 23:
                 continue
             unavailable = await asyncio.to_thread(self.journal.blocked, now, seconds)
+            loss_cooldowns = await asyncio.to_thread(
+                self.journal.loss_cooldowns, now, self.loss_cooldown_seconds
+            )
             audit = []
             selected = await asyncio.to_thread(
                 select_ready,
@@ -398,9 +432,14 @@ class ReadyPrimary(MLPreview):
                 self.min_confirmations,
                 self.m1_strict_enabled,
                 self.policy_enforced,
+                set(loss_cooldowns),
             )
             for record in audit:
                 record["operational_block"] = unavailable
+                if record.get("reason") == "pair_loss_cooldown":
+                    record["loss_cooldown_remaining"] = loss_cooldowns.get(
+                        record.get("symbol"), 0
+                    )
             reason_counts = {}
             for record in audit:
                 reason = record.get("reason", "unknown")
