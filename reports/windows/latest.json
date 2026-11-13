@@ -1,8 +1,8 @@
 {
   "schema": "tradingai-public-report-v1",
   "device": "windows",
-  "generated_at": 1794556495.4125035,
-  "generated_utc": "2026-11-13T07:54:55.412503+00:00",
+  "generated_at": 1794556530.6647637,
+  "generated_utc": "2026-11-13T07:55:30.664764+00:00",
   "virtual_only": true,
   "sources": {
     "primary": {
@@ -49,10 +49,10 @@
           "seconds": 300,
           "outcomes": {
             "UNKNOWN": 1,
-            "PENDING": 1
+            "LOSS": 1
           },
-          "resolved": 0,
-          "win_rate": null
+          "resolved": 1,
+          "win_rate": 0.0
         },
         {
           "period": "24h",
@@ -106,10 +106,10 @@
           "seconds": 300,
           "outcomes": {
             "UNKNOWN": 1,
-            "PENDING": 1
+            "LOSS": 1
           },
-          "resolved": 0,
-          "win_rate": null
+          "resolved": 1,
+          "win_rate": 0.0
         },
         {
           "period": "all",
@@ -246,10 +246,10 @@
     }
   },
   "runtime": {
-    "heartbeat_age_seconds": 10.0,
+    "heartbeat_age_seconds": 0.3,
     "stale": false,
     "running": true,
-    "quote_age_seconds": 1.3954157829284668,
+    "quote_age_seconds": null,
     "error_present": false,
     "user_stopped": false
   }
