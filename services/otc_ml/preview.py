@@ -251,7 +251,7 @@ def settle_preview(row, bars, now):
 
 def signal_card(selected, outcome=None, *, source):
     from services.otc_regime import describe
-    arrow = "⬆️" if selected["direction"] == "UP" else "⬇️"
+    arrow = "🟢⬆️" if selected["direction"] == "UP" else "🔴⬇️"
     status = {
         "WIN": "✅",
         "LOSS": "❌",
