@@ -62,6 +62,14 @@ class Settings:
     poll_seconds: int = field(
         default_factory=lambda: max(60, int(os.getenv("OTC_POLL_SECONDS", "300")))
     )
+    catalogue_refresh_seconds: int = field(
+        default_factory=lambda: max(
+            15, min(55, int(os.getenv("OTC_CATALOGUE_REFRESH_SECONDS", "50")))
+        )
+    )
+    ready_min_confirmations: int = field(
+        default_factory=lambda: int(os.getenv("OTC_READY_MIN_CONFIRMATIONS", "3"))
+    )
     poll_request_budget: int = field(
         default_factory=lambda: max(2, int(os.getenv("OTC_POLL_REQUEST_BUDGET", "12")))
     )
@@ -90,6 +98,8 @@ class Settings:
             raise ValueError("OTC_PRIMARY_MODE must be conditional or ready")
         if self.signal_mode not in ("immediate", "conditional"):
             raise ValueError("OTC_SIGNAL_MODE must be immediate or conditional")
+        if not 2 <= self.ready_min_confirmations <= 5:
+            raise ValueError("OTC_READY_MIN_CONFIRMATIONS must be 2..5")
 
 
 settings = Settings()

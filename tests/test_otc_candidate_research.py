@@ -237,7 +237,10 @@ class ReadySchedulingTests(unittest.IsolatedAsyncioTestCase):
             ready.observe({"A": []}, {"A": asset}, {"A": ENTRY - 20}, None)
             with (
                 patch("services.otc_ready.context_setup", return_value=setup()),
-                patch("services.otc_ready.select_ready", side_effect=select_ready),
+                patch(
+                    "services.otc_ready.select_ready",
+                    side_effect=lambda *args: select_ready(*args[:8]),
+                ),
             ):
                 task = asyncio.create_task(ready.run(None, 1))
                 try:
@@ -268,7 +271,10 @@ class ReadySchedulingTests(unittest.IsolatedAsyncioTestCase):
             ready.observe(*snapshot)
             with (
                 patch("services.otc_ready.context_setup", return_value=setup()),
-                patch("services.otc_ready.select_ready", side_effect=select_ready),
+                patch(
+                    "services.otc_ready.select_ready",
+                    side_effect=lambda *args: select_ready(*args[:8]),
+                ),
             ):
                 await ready.plan(None, 1, snapshot)
             ready.publish.assert_not_awaited()

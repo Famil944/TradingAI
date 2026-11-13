@@ -132,17 +132,25 @@ async def main(*, session_minutes=None, session_end=None):
     service.main_ready = ready
     ready_task = asyncio.create_task(ready.run(bot, settings.admin_chat_id))
     (ROOT / "logs").mkdir(exist_ok=True)
-    if os.getenv("OTC_ML_TRAINING", "true").lower() in ("1", "true", "yes"):
+    ml_processes = []
+    # Expensive offline collectors are optional, especially on Android.
+    if os.getenv("OTC_ML_TRAINING", "false").lower() in ("1", "true", "yes"):
         for name, extra in (("ml-collector", []), ("ml-preview-collector", ["--preview"])):
             with (
                 (ROOT / "logs" / f"{name}.stdout.log").open("a", encoding="utf-8") as out,
                 (ROOT / "logs" / f"{name}.stderr.log").open("a", encoding="utf-8") as err,
             ):
-                subprocess.Popen(
-                    [sys.executable, "-u", "-m", "services.otc_ml.collector", *extra],
-                    cwd=ROOT, stdout=out, stderr=err,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
+                try:
+                    child = subprocess.Popen(
+                        [sys.executable, "-u", "-m", "services.otc_ml.collector", *extra],
+                        cwd=ROOT, stdout=out, stderr=err,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                    ml_processes.append(child)
+                except OSError as exc:
+                    logging.getLogger(__name__).warning(
+                        "ML collector %s did not start: %s", name, type(exc).__name__
+                    )
     try:
         identity = await initialize_telegram(bot)
         logging.getLogger(__name__).info(
@@ -184,6 +192,21 @@ async def main(*, session_minutes=None, session_end=None):
         await service.stop()
         await service.provider.close()
         await bot.session.close()
+        # Reap children started by this process so restarting Termux does not
+        # leave expensive collector loops running in the background.
+        for child in ml_processes:
+            if child.poll() is None:
+                try:
+                    child.terminate()
+                except ProcessLookupError:
+                    pass
+        for child in ml_processes:
+            try:
+                await asyncio.to_thread(child.wait, timeout=3)
+            except subprocess.TimeoutExpired:
+                if child.poll() is None:
+                    child.kill()
+                await asyncio.to_thread(child.wait)
     return 0
 
 

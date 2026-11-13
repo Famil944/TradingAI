@@ -79,6 +79,13 @@ class MarketArchive:
             )
             db.commit()
 
+    def clean_bars_count(self):
+        """Use a cheap SQL count before exporting all archived OHLC rows."""
+        with closing(sqlite3.connect(self.path, timeout=20)) as db:
+            return db.execute(
+                "SELECT COUNT(*) FROM bars WHERE revisions=0"
+            ).fetchone()[0]
+
     def export(self, destination):
         with closing(sqlite3.connect(self.path, timeout=20)) as db:
             db.row_factory = sqlite3.Row
