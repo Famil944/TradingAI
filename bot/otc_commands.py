@@ -132,9 +132,9 @@ def strategy_status(current):
         count = len(read_journal(preview.journal, since, now)) if preview else 0
         icon, detail = "🔴", ""
         if label == "Основной":
-            if streaming and primary and primary.enabled:
+            if streaming:
                 icon = "🟢"
-                reasons = getattr(primary, "last_reasons", {}) or {}
+                reasons = getattr(primary, "last_reasons", {}) if primary else {}
                 if reasons:
                     reason, amount = max(reasons.items(), key=lambda item: item[1])
                     labels = {
