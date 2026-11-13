@@ -70,6 +70,27 @@ class PreviewJournal:
         with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
             return self._blocked(db, now, seconds)
 
+    def loss_cooldowns(self, now, cooldown_seconds=300):
+        if cooldown_seconds <= 0:
+            return {}
+        with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
+            rows = db.execute(
+                """SELECT symbol,outcome,resolved_at FROM predictions
+                WHERE sent_at IS NOT NULL
+                AND resolved_at IS NOT NULL
+                AND outcome IN ('WIN','LOSS','DRAW','UNKNOWN')
+                ORDER BY resolved_at DESC"""
+            ).fetchall()
+        latest = {}
+        for symbol, outcome, resolved_at in rows:
+            if symbol not in latest:
+                latest[symbol] = (outcome, resolved_at)
+        return {
+            symbol: max(0, cooldown_seconds - (now - resolved_at))
+            for symbol, (outcome, resolved_at) in latest.items()
+            if outcome == "LOSS" and 0 <= now - resolved_at < cooldown_seconds
+        }
+
     def reserve(self, selected, now):
         with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
             db.execute("BEGIN IMMEDIATE")

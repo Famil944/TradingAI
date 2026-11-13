@@ -64,6 +64,11 @@ class Settings:
     cooldown_seconds: int = field(
         default_factory=lambda: max(60, int(os.getenv("OTC_COOLDOWN_SECONDS", "120")))
     )
+    primary_loss_cooldown_seconds: int = field(
+        default_factory=lambda: max(
+            0, int(os.getenv("OTC_PRIMARY_LOSS_COOLDOWN_SECONDS", "300"))
+        )
+    )
     test_mode: bool = field(
         default_factory=lambda: (
             os.getenv("OTC_TEST_MODE", "false").lower() in ("1", "true", "yes", "on")

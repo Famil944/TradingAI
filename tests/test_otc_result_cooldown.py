@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from services.otc_ml.preview import PreviewJournal
-from services.otc_ready import best_expirations
+from services.otc_ready import best_expirations, setup_rank
 
 
 def signal(seconds=60, at=1200, symbol="A", count=3):
@@ -49,6 +49,60 @@ class CooldownTests(unittest.TestCase):
             # Duplicate callbacks cannot move the result timestamp forward.
             journal.finish(identifier, "LOSS", 2, 1, resolved_at=1700)
             self.assertIsNone(journal.blocked(1660, 300))
+
+    def test_latest_loss_blocks_only_that_pair_for_five_minutes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            journal = PreviewJournal(Path(folder) / "primary.db", per_horizon=True)
+            lost = journal.reserve(signal(60, symbol="AUDCHF"), 1180)
+            journal.sent(lost, 1180)
+            journal.finish(lost, "LOSS", 2, 1, resolved_at=1200)
+
+            cooldowns = journal.loss_cooldowns(1300, 300)
+            self.assertAlmostEqual(cooldowns["AUDCHF"], 200)
+            self.assertNotIn("MSFT", cooldowns)
+
+            # The state is persistent across process restarts.
+            reopened = PreviewJournal(journal.path, per_horizon=True)
+            self.assertIn("AUDCHF", reopened.loss_cooldowns(1499.9, 300))
+            self.assertNotIn("AUDCHF", reopened.loss_cooldowns(1500, 300))
+
+    def test_latest_non_loss_result_clears_old_pair_loss(self):
+        with tempfile.TemporaryDirectory() as folder:
+            journal = PreviewJournal(Path(folder) / "primary.db", per_horizon=True)
+            lost = journal.reserve(signal(60, at=1200, symbol="AUDCHF"), 1180)
+            journal.sent(lost, 1180)
+            journal.finish(lost, "LOSS", 2, 1, resolved_at=1260)
+
+            won = journal.reserve(signal(300, at=1500, symbol="AUDCHF"), 1440)
+            journal.sent(won, 1440)
+            journal.finish(won, "WIN", 1, 2, resolved_at=1800)
+            self.assertNotIn("AUDCHF", journal.loss_cooldowns(1810, 300))
+
+    def test_setup_rank_prefers_stronger_market_not_symbol_name(self):
+        def ranked(symbol, adx, ema, macd, body, payout=92):
+            item = signal(60, symbol=symbol, count=4)
+            item.update(
+                payout=payout,
+                confirmations={
+                    "count": 4,
+                    "checks": {"alignment": "agree"},
+                },
+                policy={"reason": "eligible"},
+                evidence={
+                    "features": {
+                        "atr14": 0.01,
+                        "adx14": adx,
+                        "ema_spread": ema,
+                        "macd_hist": macd,
+                        "body_atr": body,
+                    }
+                },
+            )
+            return item
+
+        stronger_a = ranked("AAA", 0.32, 0.004, 0.0015, 1.1)
+        weaker_z = ranked("ZZZ", 0.21, 0.001, 0.0002, 0.4)
+        self.assertIs(max([stronger_a, weaker_z], key=setup_rank), stronger_a)
 
     def test_best_timeframe_per_asset_uses_votes_then_shorter_duration(self):
         candidates = [
