@@ -77,6 +77,10 @@ class Settings:
             15, min(55, int(os.getenv("OTC_CATALOGUE_REFRESH_SECONDS", "50")))
         )
     )
+    m1_strict_enabled: bool = field(
+        default_factory=lambda: os.getenv("OTC_M1_STRICT_ENABLED", "true").lower()
+        in ("1", "true", "yes", "on")
+    )
     ready_min_confirmations: int = field(
         default_factory=lambda: int(os.getenv("OTC_READY_MIN_CONFIRMATIONS", "3"))
     )

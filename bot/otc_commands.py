@@ -234,6 +234,25 @@ async def filters_report(message: types.Message):
         await message.answer(text[offset:offset + 3400], parse_mode=None)
 
 
+@router.message(Command("otc_m1"))
+async def m1_shadow_report(message: types.Message):
+    from services.otc_m1_report import report as m1_report, format_report
+
+    args = (message.text or "").split()
+    period = args[1] if len(args) > 1 else "7d"
+    windows = {"24h": 86400, "7d": 604800, "30d": 2592000}
+    if period not in windows:
+        await message.answer("Используй /otc_m1 [24h|7d|30d]")
+        return
+    now = time.time()
+    result = await asyncio.to_thread(
+        m1_report, ROOT / "data", now - windows[period], now
+    )
+    text = format_report(result)
+    for offset in range(0, len(text), 3400):
+        await message.answer(text[offset:offset + 3400], parse_mode=None)
+
+
 @router.message(Command("otc_compare"))
 async def compare_strategies(message: types.Message):
     from services.otc_signal_report import report as compare_report

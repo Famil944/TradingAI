@@ -24,6 +24,10 @@ class ConfirmationGateTests(unittest.TestCase):
                     "services.otc_ready.evaluate_policy",
                     return_value={"reason": "eligible", "strategy": "trend_continuation", "gates": {"trend_aligned": True}},
                 ),
+                patch(
+                    "services.otc_ready.evaluate_m1",
+                    return_value={"passed": True, "reason": "eligible", "gates": {"closed_m5_trend": True}, "metrics": {}},
+                ),
             ):
                 return select_ready(*args)
         return select_ready(*args)
