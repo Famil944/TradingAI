@@ -1,0 +1,256 @@
+{
+  "schema": "tradingai-public-report-v1",
+  "device": "windows",
+  "generated_at": 1794556495.4125035,
+  "generated_utc": "2026-11-13T07:54:55.412503+00:00",
+  "virtual_only": true,
+  "sources": {
+    "primary": {
+      "groups": [
+        {
+          "period": "24h",
+          "version": "primary-ready-v5",
+          "seconds": 60,
+          "outcomes": {
+            "UNKNOWN": 1,
+            "WIN": 7,
+            "LOSS": 5
+          },
+          "resolved": 12,
+          "win_rate": 0.5833333333333334
+        },
+        {
+          "period": "24h",
+          "version": "primary-ready-v5",
+          "seconds": 300,
+          "outcomes": {
+            "UNKNOWN": 2,
+            "WIN": 6
+          },
+          "resolved": 6,
+          "win_rate": 1.0
+        },
+        {
+          "period": "24h",
+          "version": "primary-ready-v6-one-confirmation",
+          "seconds": 60,
+          "outcomes": {
+            "LOSS": 1,
+            "UNKNOWN": 1,
+            "WIN": 2,
+            "PENDING": 1
+          },
+          "resolved": 3,
+          "win_rate": 0.6666666666666666
+        },
+        {
+          "period": "24h",
+          "version": "primary-ready-v6-one-confirmation",
+          "seconds": 300,
+          "outcomes": {
+            "UNKNOWN": 1,
+            "PENDING": 1
+          },
+          "resolved": 0,
+          "win_rate": null
+        },
+        {
+          "period": "24h",
+          "version": "primary-ready-v6-one-confirmation",
+          "seconds": 900,
+          "outcomes": {
+            "PENDING": 1
+          },
+          "resolved": 0,
+          "win_rate": null
+        },
+        {
+          "period": "all",
+          "version": "primary-ready-v5",
+          "seconds": 60,
+          "outcomes": {
+            "UNKNOWN": 1,
+            "WIN": 7,
+            "LOSS": 5
+          },
+          "resolved": 12,
+          "win_rate": 0.5833333333333334
+        },
+        {
+          "period": "all",
+          "version": "primary-ready-v5",
+          "seconds": 300,
+          "outcomes": {
+            "UNKNOWN": 2,
+            "WIN": 6
+          },
+          "resolved": 6,
+          "win_rate": 1.0
+        },
+        {
+          "period": "all",
+          "version": "primary-ready-v6-one-confirmation",
+          "seconds": 60,
+          "outcomes": {
+            "LOSS": 1,
+            "UNKNOWN": 1,
+            "WIN": 2,
+            "PENDING": 1
+          },
+          "resolved": 3,
+          "win_rate": 0.6666666666666666
+        },
+        {
+          "period": "all",
+          "version": "primary-ready-v6-one-confirmation",
+          "seconds": 300,
+          "outcomes": {
+            "UNKNOWN": 1,
+            "PENDING": 1
+          },
+          "resolved": 0,
+          "win_rate": null
+        },
+        {
+          "period": "all",
+          "version": "primary-ready-v6-one-confirmation",
+          "seconds": 900,
+          "outcomes": {
+            "PENDING": 1
+          },
+          "resolved": 0,
+          "win_rate": null
+        }
+      ],
+      "late_deliveries": 0,
+      "overdue_pending": 0,
+      "latest_sent_at": 1794556420.7433677
+    },
+    "groq": {
+      "groups": [
+        {
+          "period": "24h",
+          "version": "a741d960ae90c248c448dc293f1cef49b1e18213e265c18384a36b5f6f7a458d",
+          "seconds": 60,
+          "outcomes": {
+            "LOSS": 5,
+            "WIN": 3,
+            "DRAW": 1
+          },
+          "resolved": 8,
+          "win_rate": 0.375
+        },
+        {
+          "period": "24h",
+          "version": "a741d960ae90c248c448dc293f1cef49b1e18213e265c18384a36b5f6f7a458d",
+          "seconds": 300,
+          "outcomes": {
+            "WIN": 3,
+            "LOSS": 4,
+            "UNKNOWN": 1
+          },
+          "resolved": 7,
+          "win_rate": 0.42857142857142855
+        },
+        {
+          "period": "24h",
+          "version": "a741d960ae90c248c448dc293f1cef49b1e18213e265c18384a36b5f6f7a458d",
+          "seconds": 900,
+          "outcomes": {
+            "WIN": 2,
+            "LOSS": 2
+          },
+          "resolved": 4,
+          "win_rate": 0.5
+        },
+        {
+          "period": "all",
+          "version": "a741d960ae90c248c448dc293f1cef49b1e18213e265c18384a36b5f6f7a458d",
+          "seconds": 60,
+          "outcomes": {
+            "WIN": 6,
+            "UNKNOWN": 1,
+            "LOSS": 5,
+            "DRAW": 1
+          },
+          "resolved": 11,
+          "win_rate": 0.5454545454545454
+        },
+        {
+          "period": "all",
+          "version": "a741d960ae90c248c448dc293f1cef49b1e18213e265c18384a36b5f6f7a458d",
+          "seconds": 300,
+          "outcomes": {
+            "LOSS": 5,
+            "NOT_DELIVERED": 1,
+            "WIN": 4,
+            "UNKNOWN": 1
+          },
+          "resolved": 9,
+          "win_rate": 0.4444444444444444
+        },
+        {
+          "period": "all",
+          "version": "a741d960ae90c248c448dc293f1cef49b1e18213e265c18384a36b5f6f7a458d",
+          "seconds": 900,
+          "outcomes": {
+            "LOSS": 3,
+            "WIN": 2
+          },
+          "resolved": 5,
+          "win_rate": 0.4
+        }
+      ],
+      "late_deliveries": 0,
+      "overdue_pending": 0,
+      "latest_sent_at": 1794553420.2191913
+    },
+    "xgboost": {
+      "groups": [
+        {
+          "period": "all",
+          "version": "9ff87f50b7b871244f5e7fe65df91dc214dc747be57a58212d21bcc82c5dfa0a",
+          "seconds": 900,
+          "outcomes": {
+            "LOSS": 1
+          },
+          "resolved": 1,
+          "win_rate": 0.0
+        }
+      ],
+      "late_deliveries": 0,
+      "overdue_pending": 0,
+      "latest_sent_at": 1794425622.4788897
+    }
+  },
+  "candidates": {
+    "period": "24h",
+    "count": 480,
+    "reasons": {
+      "no_context_or_insufficient_history": 225,
+      "asset_or_quote_ineligible": 108,
+      "eligible": 145,
+      "insufficient_indicator_history": 2
+    },
+    "confirmations": {
+      "2": 13,
+      "4": 52,
+      "3": 66,
+      "5": 14
+    },
+    "regimes": {
+      "transition": 58,
+      "uptrend": 42,
+      "range": 44,
+      "downtrend": 1
+    }
+  },
+  "runtime": {
+    "heartbeat_age_seconds": 10.0,
+    "stale": false,
+    "running": true,
+    "quote_age_seconds": 1.3954157829284668,
+    "error_present": false,
+    "user_stopped": false
+  }
+}
