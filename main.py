@@ -40,6 +40,7 @@ COMMANDS = [
     ("otc_research", "Качество фильтров и задержек"),
     ("otc_filters", "Проверка рыночных фильтров"),
     ("otc_compare", "Сравнить 3 стратегии"),
+    ("otc_m1", "M1: строгий фильтр и статистика"),
     ("otc_panel", "Панель Mini App"),
 ]
 
@@ -129,7 +130,7 @@ async def main(*, session_minutes=None, session_end=None):
     service.groq_preview = groq
     groq_task = asyncio.create_task(groq.run(bot, settings.admin_chat_id))
     ready_journal = PreviewJournal(
-        ROOT / "data" / "primary-ready.db", label="Основной v6", per_horizon=True
+        ROOT / "data" / "primary-ready.db", label="Основной M1 strict", per_horizon=True
     )
     ready = ReadyPrimary(ready_journal, settlement_provider=evaluator.provider)
     await asyncio.to_thread(ready_journal.cancel_future, time.time())
