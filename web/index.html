@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>TradingAI • OTC</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/app.js" defer></script>
+<style>
+:root{font:15px system-ui,-apple-system,sans-serif;color-scheme:dark;background:#0c1220;color:#ecf2fc}
+*{box-sizing:border-box} body{max-width:870px;margin:auto;padding:env(safe-area-inset-top) 16px 40px}
+header{display:flex;align-items:center;justify-content:space-between;padding:28px 0 18px}
+.brand{font-weight:800;font-size:23px;letter-spacing:-.9px}
+.brand b{color:#84baff}.status{font-size:12px;color:#d3e2f8;background:#233247;border-radius:30px;padding:8px 12px}
+.hero{background:linear-gradient(120deg,#233c60,#192b48 62%,#141f34);border:1px solid #385173;border-radius:22px;padding:24px}
+.tag{font-size:11px;letter-spacing:1.6px;color:#9ebbe1;font-weight:800}
+h1{font-size:23px;line-height:1.18;margin:10px 0} .sub{color:#bac9de;font-size:13px;line-height:1.6}
+.kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:15px 0}
+.metric{background:#172237;border:1px solid #2b3e56;border-radius:15px;padding:14px 10px}
+.metric small{color:#9bacbe;font-size:11px}.metric strong{display:block;font-size:20px;margin-top:8px}
+h2{font-size:17px;margin:26px 0 14px}
+.card{background:#172237;border:1px solid #2b3e56;border-radius:16px;padding:16px;margin-bottom:9px}
+.top{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.label{font-size:15px;font-weight:700}.muted{color:#93a4bf;font-size:12px}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin-top:14px}
+.stats strong{font-size:18px;display:block;margin-bottom:3px}.stats small{font-size:11px;color:#93a4bf}
+.up{color:#59dca4}.down{color:#ff8f9c}.warning{color:#fbc87e}
+button{border:none;border-radius:12px;color:#e9f4ff;background:#2861a4;font-weight:700;padding:12px 20px}
+footer{font-size:12px;color:#8593a9;line-height:1.6;margin-top:24px}
+</style>
+</head>
+<body>
+<header><div class="brand">Trading<b>AI</b> <span class="muted">OTC</span></div><span class="status" id="status">Подключение…</span></header>
+<div class="hero"><div class="tag">ИССЛЕДОВАТЕЛЬСКИЙ РЕЖИМ</div>
+<h1>Аналитика сигналов</h1>
+<div class="sub">M1 · M5 · M15. Основная стратегия, XGBoost и Groq.
+Виртуальные исходы по OTCharts — не подтверждение результата сделки на Pocket Option.</div>
+</div>
+<div class="kpis">
+<div class="metric"><small>Инструментов</small><strong id="monitored">—</strong></div>
+<div class="metric"><small>Возраст котировки</small><strong id="age">—</strong></div>
+<div class="metric"><small>Сигналов за 7 дней</small><strong id="total">—</strong></div>
+</div>
+<h2>Сравнение стратегий</h2><div id="strategies"></div>
+<h2>Последние сигналы</h2><div id="signals"></div>
+<button id="refresh" type="button">Обновить данные</button>
+<footer>Панель доступна только владельцу Telegram-бота. Она ничего не покупает и не совершает сделки. Показатели не являются вероятностями выигрыша.</footer>
+</body></html>
