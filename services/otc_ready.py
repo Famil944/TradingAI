@@ -24,7 +24,8 @@ def select_ready_v5(
     histories, assets, quotes, now, seconds, end=None, audit=None, recent_ticks=None
 ):
     entry = int(now) // 60 * 60 + 60
-    if seconds not in (60, 300, 900) or not 15 <= entry - now <= 20:
+    if (seconds not in (60, 300, 900) or entry % seconds != 0
+            or not 15 <= entry - now <= 20):
         return None
     if end and entry + seconds + 60 > end:
         return None
@@ -149,7 +150,8 @@ def select_ready(
     if not isinstance(min_confirmations, int) or not 2 <= min_confirmations <= 5:
         raise ValueError("min_confirmations must be 2..5")
     entry = int(now) // 60 * 60 + 60
-    if seconds not in (60, 300, 900) or not 15 <= entry - now <= 20:
+    if (seconds not in (60, 300, 900) or entry % seconds != 0
+            or not 15 <= entry - now <= 20):
         return None
     if end and entry + seconds + 60 > end:
         return None
@@ -314,7 +316,10 @@ class ReadyPrimary(MLPreview):
         offered = []
         for seconds in self.allowed_timeframes:
             now = self.clock()
-            if not self.enabled or not 15 <= (int(now) // 60 * 60 + 60) - now <= 20:
+            next_entry = int(now) // 60 * 60 + 60
+            if next_entry % seconds:
+                continue
+            if not self.enabled or not 15 <= next_entry - now <= 20:
                 continue
             unavailable = await asyncio.to_thread(self.journal.blocked, now, seconds)
             audit = []

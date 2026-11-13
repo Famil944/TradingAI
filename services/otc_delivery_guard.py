@@ -57,6 +57,7 @@ def delivery_snapshot(selected, snapshot, now, max_quote_age=8):
         or not 0 <= now - asset.observed_at <= 60
         or not 0 <= now - last_quote <= max_quote_age
         or not 15 <= entry - now <= 20
+        or (expiry - entry in (300, 900) and entry % (expiry - entry) != 0)
         or (end is not None and expiry + 60 > end)
     ):
         return None
