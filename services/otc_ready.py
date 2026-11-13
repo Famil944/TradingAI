@@ -306,6 +306,7 @@ def best_expirations(candidates):
 class ReadyPrimary(MLPreview):
     label = "Основной · готовый"
     icon = "🔵"
+    require_payout = True
     planning_window = (15, 20)
 
     def __init__(self, journal, clock=time.time, settlement_provider=None):
@@ -315,6 +316,9 @@ class ReadyPrimary(MLPreview):
         self.m1_strict_enabled = settings.m1_strict_enabled
         self.policy_enforced = settings.primary_policy_enforced
         self.sent_count = 0
+        self.last_reasons = {}
+        self.last_attempt_at = None
+        self.last_selected = None
         self.research = CandidateJournal(journal.path.with_name("ready-candidates.db"))
         self.sampler = TickSampler()
         self.recent_ticks = {}
@@ -392,6 +396,12 @@ class ReadyPrimary(MLPreview):
             )
             for record in audit:
                 record["operational_block"] = unavailable
+            reason_counts = {}
+            for record in audit:
+                reason = record.get("reason", "unknown")
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            self.last_attempt_at = now
+            self.last_reasons = reason_counts
             try:
                 await asyncio.to_thread(self.research.record, audit)
                 self.sampler.register(audit, self.clock())
@@ -400,7 +410,14 @@ class ReadyPrimary(MLPreview):
             if unavailable:
                 continue
             if not selected or not self.enabled or not self.snapshot:
+                if reason_counts:
+                    logger.info(
+                        "Primary skipped M%d: %s",
+                        seconds // 60,
+                        reason_counts,
+                    )
                 continue
+            self.last_selected = selected["symbol"]
             offered.append(selected)
         for selected in best_expirations(offered):
             if not self.enabled or not self.snapshot:
