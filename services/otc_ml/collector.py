@@ -21,11 +21,13 @@ def run_once(archive, output, minimum_new=1000, *, preview=False):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     path = output / "provider-history.jsonl"
-    count = archive.export(path)
     state_path = output / "collection-state.json"
     previous = json.loads(state_path.read_text()) if state_path.exists() else {}
-    if count < 1000 or count - previous.get("rows", 0) < minimum_new and previous:
+    # Avoid a costly full SQLite export every cycle when history is unchanged.
+    count = archive.clean_bars_count()
+    if count < 1000 or (previous and count - previous.get("rows", 0) < minimum_new):
         return {"status": "collecting", "rows": count}
+    count = archive.export(path)
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     datasets, counts = build_provider_dataset(rows, preview=preview)
     experiment = uuid.uuid4().hex
@@ -120,7 +122,7 @@ def main():
                 print("XGBoost collector:", result["status"], flush=True)
             except Exception as exc:
                 print("XGBoost collector retry:", type(exc).__name__, flush=True)
-            time.sleep(60)
+            time.sleep(max(60, int(os.getenv("OTC_ML_COLLECT_SECONDS", "300"))))
     finally:
         lock.close()
 
