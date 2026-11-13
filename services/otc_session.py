@@ -86,8 +86,15 @@ class OTCSession:
                     a for a in instruments
                     if a.is_otc is True
                     and a.open is not False
-                    and getattr(a, "observed_at", None) is not None
-                    and 0 <= now - a.observed_at <= max_age
+                    and (
+                        getattr(a, "observed_at", None) is not None
+                        or getattr(a, "payout_at", None) is not None
+                    )
+                    and 0 <= now - (
+                        a.observed_at
+                        if getattr(a, "observed_at", None) is not None
+                        else a.payout_at
+                    ) <= max_age
                 ),
                 key=lambda a: (
                     0
