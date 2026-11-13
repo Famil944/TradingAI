@@ -20,6 +20,10 @@ class ConfirmationGateTests(unittest.TestCase):
                     "services.otc_ready.context_setup",
                     side_effect=AssertionError("old gates used"),
                 ),
+                patch(
+                    "services.otc_ready.evaluate_policy",
+                    return_value={"reason": "eligible", "strategy": "trend_continuation", "gates": {"trend_aligned": True}},
+                ),
             ):
                 return select_ready(*args)
         return select_ready(*args)

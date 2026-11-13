@@ -13,6 +13,7 @@ from services.otc_confirmations import build
 from services.otc_groq import fresh
 from services.otc_ml.features import FEATURE_NAMES, indicators
 from services.otc_ml.preview import MLPreview
+from services.otc_policy import evaluate as evaluate_policy
 from services.otc_strategy import aggregate
 
 VERSION = "primary-ready-v7-confirmation-gate"
@@ -186,18 +187,28 @@ def select_ready(
                     direction = "UP" if up["checks"][key] == "agree" else "DOWN"
                     break
         confirmations = up if direction == "UP" else down
-        if confirmations["count"] < min_confirmations:
-            row["reason"] = "insufficient_directional_confirmations"
-            row["gates"] = {"min_confirmations": False}
-            continue
+        row.update(direction=direction, confirmation_count=confirmations["count"],
+                   regime=confirmations.get("market_state", {}).get("state", "unknown"))
         bars = aggregate([b for b in minutes if b.time + 60 <= asof], seconds)[-250:]
         values = indicators(bars)
         if values is None:
             row["reason"] = "insufficient_indicator_history"
             continue
+        features = dict(zip(FEATURE_NAMES, values))
+        policy = evaluate_policy(bars, features, direction,
+                                 confirmations.get("market_state", {}))
+        row.update(policy=policy, strategy=policy["strategy"],
+                   gates=dict(policy["gates"], min_confirmations=confirmations["count"] >= min_confirmations))
+        if confirmations["count"] < min_confirmations:
+            row["reason"] = "insufficient_directional_confirmations"
+            continue
+        if policy["reason"] != "eligible":
+            row["reason"] = policy["reason"]
+            continue
         evidence = dict(
             confirmations=confirmations,
-            features=dict(zip(FEATURE_NAMES, values)),
+            features=features,
+            policy=policy,
             last_closed_candle=asdict(bars[-1]),
             advantage_confirmed=False,
         )
@@ -206,7 +217,7 @@ def select_ready(
             evidence=evidence,
             reason="eligible",
             regime=confirmations.get("market_state", {}).get("state", "unknown"),
-            gates={"min_confirmations": True},
+            gates=row["gates"],
             quality_score=confirmations["count"],
             confirmation_count=confirmations["count"],
         )
@@ -223,6 +234,7 @@ def select_ready(
                 feature_asof=asof,
                 evidence=evidence,
                 confirmations=confirmations,
+                policy=policy,
                 condition_required=False,
                 quality_score=confirmations["count"],
             )
