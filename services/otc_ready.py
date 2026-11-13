@@ -363,15 +363,55 @@ class ReadyPrimary(MLPreview):
             self.sampler.observe(tick, received_at)
 
     async def settle_pending(self, history):
-        if self.clock() >= self.next_research_flush:
-            self.next_research_flush = self.clock() + 5
-            samples = self.sampler.drain(self.clock())
+        now = self.clock()
+        if now >= self.next_research_flush:
+            self.next_research_flush = now + 5
+            samples = self.sampler.drain(now)
             if samples:
                 try:
                     await asyncio.to_thread(self.research.samples, samples)
                 except Exception:
                     self.sampler.restore(samples)
                     logger.exception("Candidate tick journal unavailable; will retry")
+
+        # Primary has prospective live samples at the exact entry/expiry targets.
+        # Use them first so M1/M5/M15 results can settle within seconds instead
+        # of waiting another full candle. Canonical HTTP candles remain fallback.
+        for row in await asyncio.to_thread(self.journal.pending):
+            if row.get("sent_at") is None or now < row["expires_at"]:
+                continue
+            prices = await asyncio.to_thread(
+                self.research.settlement_prices,
+                row["symbol"],
+                row["entry_at"],
+                row["expires_at"],
+            )
+            if prices is None:
+                continue
+            entry_price, expiry_price = prices
+            delta = expiry_price - entry_price
+            outcome = (
+                "DRAW"
+                if delta == 0
+                else "WIN"
+                if (delta > 0) == (row["direction"] == "UP")
+                else "LOSS"
+            )
+            await asyncio.to_thread(
+                self.journal.finish,
+                row["id"],
+                outcome,
+                entry_price,
+                expiry_price,
+                None,
+                resolved_at=now,
+            )
+            logger.info(
+                "Primary settled from live samples: %s %s",
+                row["symbol"],
+                outcome,
+            )
+
         await super().settle_pending(history)
 
     async def stop(self):
