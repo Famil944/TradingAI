@@ -62,6 +62,26 @@ class CandidateJournal:
             db.executemany("INSERT OR IGNORE INTO samples VALUES(?,?,?,?,?)", samples)
             db.commit()
 
+    def settlement_prices(self, symbol, entry_at, expires_at):
+        with closing(sqlite3.connect(self.path, timeout=0.5)) as db:
+            rows = db.execute(
+                """SELECT target,price FROM samples
+                WHERE symbol=? AND target IN (?,?)""",
+                (symbol, entry_at, expires_at),
+            ).fetchall()
+        prices = {target: price for target, price in rows}
+        if entry_at not in prices or expires_at not in prices:
+            return None
+        entry, expiry = prices[entry_at], prices[expires_at]
+        if not all(
+            isinstance(value, (int, float))
+            and math.isfinite(value)
+            and value > 0
+            for value in (entry, expiry)
+        ):
+            return None
+        return entry, expiry
+
 
 class TickSampler:
     """Sample first observed eligible ticks at targets, with a two-second tolerance.
