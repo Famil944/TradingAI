@@ -36,7 +36,11 @@ def fresh(asset, quote, now):
 
 def market_packet(history, assets, quotes, now, end):
     entry = int(now) // 60 * 60 + 60
-    durations = [n for n in DURATIONS if not end or entry + n * 60 + 60 <= end]
+    durations = [
+        n for n in DURATIONS
+        if (n not in (5, 15) or entry % (n * 60) == 0)
+        and (not end or entry + n * 60 + 60 <= end)
+    ]
     result = dict(asof=now, entry_at=entry, durations_minutes=durations, assets=[])
     for symbol, bars in history.items():
         asset = assets.get(symbol)

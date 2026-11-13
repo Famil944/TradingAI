@@ -7,10 +7,12 @@ from zoneinfo import ZoneInfo
 
 from aiogram import BaseMiddleware, F, Router, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from config.settings import ROOT, settings
 from services.otc_cycles import format_cycles, read_stats
+from services.otc_filter_report import format_report as format_filter_report
+from services.otc_filter_report import report as filter_report
 from services.otc_evaluation import compact_stats
 from services.otc_market import TIMEFRAMES
 from services.otc_signal_report import read_journal, report as signal_quality_report
@@ -103,6 +105,13 @@ def menu(chat_id, expanded=False):
             ),
         ]
     )
+    if settings.mini_app_enabled and settings.mini_app_url:
+        rows.append([
+            InlineKeyboardButton(
+                text="📊 Аналитика Mini App",
+                web_app=WebAppInfo(url=settings.mini_app_url),
+            )
+        ])
     if expanded:
         rows.append([InlineKeyboardButton(text="Обновить", callback_data="otc:panel:show")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -134,6 +143,17 @@ MENU_TITLE = "OTC · тестовые сигналы"
 @router.message(Command("start", "help", "otc"))
 async def show_menu(message: types.Message):
     await message.answer(MENU_TITLE, reply_markup=menu(message.chat.id))
+
+
+@router.message(Command("otc_panel"))
+async def mini_app_panel(message: types.Message):
+    if not settings.mini_app_enabled or not settings.mini_app_url:
+        await message.answer(
+            "Mini App готов в коде, но публичный HTTPS-адрес пока не настроен. "
+            "Инструкция: MINI_APP_SETUP.md. Данные и команды остаются доступны в Telegram."
+        )
+        return
+    await message.answer("Панель TradingAI", reply_markup=menu(message.chat.id))
 
 
 @router.message(Command("otc_status"))
@@ -195,6 +215,44 @@ async def research_quality(message: types.Message):
     text = format_report(data)
     for offset in range(0, len(text), 3500):
         await message.answer(text[offset:offset + 3500], parse_mode=None)
+
+
+@router.message(Command("otc_filters"))
+async def filters_report(message: types.Message):
+    args = (message.text or "").split()
+    period = args[1] if len(args) > 1 else "7d"
+    windows = {"24h": 86400, "7d": 604800, "30d": 2592000}
+    if period not in windows:
+        await message.answer("Используй /otc_filters [24h|7d|30d]")
+        return
+    now = time.time()
+    result = await asyncio.to_thread(
+        filter_report, ROOT / "data", now - windows[period], now
+    )
+    text = format_filter_report(result)
+    for offset in range(0, len(text), 3400):
+        await message.answer(text[offset:offset + 3400], parse_mode=None)
+
+
+@router.message(Command("otc_compare"))
+async def compare_strategies(message: types.Message):
+    from services.otc_signal_report import report as compare_report
+
+    args = (message.text or "").split()
+    period = args[1] if len(args) > 1 else "7d"
+    windows = {"24h": 86400, "7d": 604800, "30d": 2592000}
+    if period not in windows:
+        await message.answer("Используй /otc_compare [24h|7d|30d]")
+        return
+    now = time.time()
+    journals = {
+        label: getattr(service, attr).journal for label, attr in SOURCES
+        if getattr(service, attr, None) is not None
+    }
+    lines = await asyncio.to_thread(compare_report, journals, now - windows[period], now)
+    text = "\n".join(lines)
+    for offset in range(0, len(text), 3400):
+        await message.answer(text[offset:offset + 3400], parse_mode=None)
 
 
 @router.message(Command("otc_stats"))

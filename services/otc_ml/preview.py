@@ -214,6 +214,11 @@ def select_forecast(
             reasons["asset_or_quote_ineligible"] += 1
             continue
         for seconds in DURATIONS:
+            # M5/M15 only on their actual next candle-open boundary; using
+            # the current unfinished higher-timeframe candle would leak data.
+            if seconds in (300, 900) and entry % seconds != 0:
+                reasons["not_timeframe_boundary"] += 1
+                continue
             if session_end and entry + seconds + 60 > session_end:
                 continue
             row = dict(
@@ -378,6 +383,7 @@ class MLPreview:
                 await asyncio.to_thread(self.journal.finish, row["id"], *result)
 
     async def plan(self, bot, chat_id, snapshot):
+        self.snapshot = snapshot
         if await asyncio.to_thread(self.journal.blocked, self.clock()):
             return
         history, assets, quotes, end = snapshot
@@ -430,8 +436,14 @@ class MLPreview:
 
     async def publish(self, selected, bot, chat_id):
         from services.otc_confirmations import build
+        from services.otc_delivery_guard import delivery_snapshot
 
         selected = dict(selected)
+        final_check = delivery_snapshot(selected, self.snapshot, self.clock())
+        if final_check is None:
+            logger.info("%s skipped at final quote/latency check", self.label)
+            return False
+        selected["timing"] = final_check
         evidence = selected.get("evidence") or {}
         confirmations = evidence.get("confirmations")
         if confirmations is None:

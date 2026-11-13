@@ -59,6 +59,9 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 "otc",
                 "otc_stats",
                 "otc_research",
+                "otc_filters",
+                "otc_compare",
+                "otc_panel",
             },
         )
         commands.choices[1] = (300,)
