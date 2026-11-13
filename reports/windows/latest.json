@@ -1,8 +1,8 @@
 {
   "schema": "tradingai-public-report-v1",
   "device": "windows",
-  "generated_at": 1794557438.2213295,
-  "generated_utc": "2026-11-13T08:10:38.221329+00:00",
+  "generated_at": 1794558342.6882203,
+  "generated_utc": "2026-11-13T08:25:42.688220+00:00",
   "virtual_only": true,
   "sources": {
     "primary": {
@@ -24,8 +24,8 @@
           "version": "primary-ready-v5",
           "seconds": 300,
           "outcomes": {
-            "UNKNOWN": 2,
-            "WIN": 6
+            "WIN": 6,
+            "UNKNOWN": 1
           },
           "resolved": 6,
           "win_rate": 1.0
@@ -35,13 +35,13 @@
           "version": "primary-ready-v6-one-confirmation",
           "seconds": 60,
           "outcomes": {
-            "LOSS": 1,
-            "UNKNOWN": 2,
-            "WIN": 5,
-            "NOT_DELIVERED": 2,
+            "LOSS": 2,
+            "WIN": 10,
+            "UNKNOWN": 1,
+            "NOT_DELIVERED": 3,
             "PENDING": 1
           },
-          "resolved": 6,
+          "resolved": 12,
           "win_rate": 0.8333333333333334
         },
         {
@@ -49,23 +49,23 @@
           "version": "primary-ready-v6-one-confirmation",
           "seconds": 300,
           "outcomes": {
-            "UNKNOWN": 1,
+            "WIN": 4,
             "LOSS": 1,
-            "WIN": 1,
+            "DRAW": 1,
             "PENDING": 1
           },
-          "resolved": 2,
-          "win_rate": 0.5
+          "resolved": 5,
+          "win_rate": 0.8
         },
         {
           "period": "24h",
           "version": "primary-ready-v6-one-confirmation",
           "seconds": 900,
           "outcomes": {
-            "WIN": 1,
+            "WIN": 2,
             "PENDING": 1
           },
-          "resolved": 1,
+          "resolved": 2,
           "win_rate": 1.0
         },
         {
@@ -96,13 +96,13 @@
           "version": "primary-ready-v6-one-confirmation",
           "seconds": 60,
           "outcomes": {
-            "LOSS": 1,
-            "UNKNOWN": 2,
-            "WIN": 5,
-            "NOT_DELIVERED": 2,
+            "LOSS": 2,
+            "WIN": 10,
+            "UNKNOWN": 1,
+            "NOT_DELIVERED": 3,
             "PENDING": 1
           },
-          "resolved": 6,
+          "resolved": 12,
           "win_rate": 0.8333333333333334
         },
         {
@@ -110,29 +110,29 @@
           "version": "primary-ready-v6-one-confirmation",
           "seconds": 300,
           "outcomes": {
-            "UNKNOWN": 1,
+            "WIN": 4,
             "LOSS": 1,
-            "WIN": 1,
+            "DRAW": 1,
             "PENDING": 1
           },
-          "resolved": 2,
-          "win_rate": 0.5
+          "resolved": 5,
+          "win_rate": 0.8
         },
         {
           "period": "all",
           "version": "primary-ready-v6-one-confirmation",
           "seconds": 900,
           "outcomes": {
-            "WIN": 1,
+            "WIN": 2,
             "PENDING": 1
           },
-          "resolved": 1,
+          "resolved": 2,
           "win_rate": 1.0
         }
       ],
       "late_deliveries": 0,
       "overdue_pending": 0,
-      "latest_sent_at": 1794557380.9625888
+      "latest_sent_at": 1794558340.8533378
     },
     "groq": {
       "groups": [
@@ -141,12 +141,12 @@
           "version": "a741d960ae90c248c448dc293f1cef49b1e18213e265c18384a36b5f6f7a458d",
           "seconds": 60,
           "outcomes": {
-            "LOSS": 5,
             "WIN": 3,
+            "LOSS": 4,
             "DRAW": 1
           },
-          "resolved": 8,
-          "win_rate": 0.375
+          "resolved": 7,
+          "win_rate": 0.42857142857142855
         },
         {
           "period": "24h",
@@ -233,31 +233,31 @@
   },
   "candidates": {
     "period": "24h",
-    "count": 705,
+    "count": 945,
     "reasons": {
       "no_context_or_insufficient_history": 225,
-      "asset_or_quote_ineligible": 153,
-      "eligible": 305,
-      "insufficient_indicator_history": 22
+      "asset_or_quote_ineligible": 198,
+      "eligible": 488,
+      "insufficient_indicator_history": 34
     },
     "confirmations": {
-      "2": 40,
-      "4": 83,
-      "3": 158,
-      "5": 24
+      "2": 77,
+      "4": 127,
+      "3": 249,
+      "5": 35
     },
     "regimes": {
-      "transition": 112,
-      "uptrend": 82,
-      "range": 102,
-      "downtrend": 9
+      "transition": 162,
+      "uptrend": 142,
+      "range": 162,
+      "downtrend": 22
     }
   },
   "runtime": {
-    "heartbeat_age_seconds": 7.2,
+    "heartbeat_age_seconds": 11.8,
     "stale": false,
     "running": true,
-    "quote_age_seconds": 1.9801886081695557,
+    "quote_age_seconds": 0.9198224544525146,
     "error_present": false,
     "user_stopped": false
   }
