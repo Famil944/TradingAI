@@ -30,6 +30,7 @@ from services.otc_preflight import PreflightChecks
 from services.otc_ready import ReadyPrimary
 from services.otc_session import OTCSession
 from services.otc_supervisor import heartbeat
+from web.mini_app import start_server
 
 COMMANDS = [
     ("start", "Начать"),
@@ -39,6 +40,7 @@ COMMANDS = [
     ("otc_research", "Качество фильтров и задержек"),
     ("otc_filters", "Проверка рыночных фильтров"),
     ("otc_compare", "Сравнить 3 стратегии"),
+    ("otc_panel", "Панель Mini App"),
 ]
 
 
@@ -153,7 +155,19 @@ async def main(*, session_minutes=None, session_end=None):
                     logging.getLogger(__name__).warning(
                         "ML collector %s did not start: %s", name, type(exc).__name__
                     )
+    mini_app_runner = None
     try:
+        if settings.mini_app_enabled:
+            mini_app_runner = await start_server(
+                service,
+                settings.telegram_bot_token,
+                settings.admin_chat_id,
+                settings.mini_app_port,
+            )
+            logging.getLogger(__name__).info(
+                "Read-only Mini App listening on loopback port %d",
+                settings.mini_app_port,
+            )
         identity = await initialize_telegram(bot)
         logging.getLogger(__name__).info(
             "Telegram bot @%s initialized; waiting for /otc (test mode: %s).",
@@ -177,6 +191,8 @@ async def main(*, session_minutes=None, session_end=None):
             await service._notify(bot, text + "\n\n" + indicators)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        if mini_app_runner is not None:
+            await mini_app_runner.cleanup()
         ready_task.cancel()
         await asyncio.gather(ready_task, return_exceptions=True)
         heartbeat_task.cancel()

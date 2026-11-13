@@ -12,6 +12,16 @@ load_dotenv(ROOT / ".env", override=False)
 
 @dataclass(frozen=True)
 class Settings:
+    mini_app_enabled: bool = field(
+        default_factory=lambda: os.getenv("OTC_MINI_APP_ENABLED", "false").lower()
+        in ("1", "true", "yes", "on")
+    )
+    mini_app_url: str = field(
+        default_factory=lambda: os.getenv("OTC_MINI_APP_URL", "").strip()
+    )
+    mini_app_port: int = field(
+        default_factory=lambda: int(os.getenv("OTC_MINI_APP_PORT", "8091"))
+    )
     primary_mode: str = field(
         default_factory=lambda: os.getenv("OTC_PRIMARY_MODE", "conditional")
     )
@@ -94,6 +104,14 @@ class Settings:
     settlement_tolerance: float = 2.0
 
     def __post_init__(self):
+        if not 1 <= self.mini_app_port <= 65535:
+            raise ValueError("OTC_MINI_APP_PORT must be 1..65535")
+        if self.mini_app_url:
+            from urllib.parse import urlsplit
+            url = urlsplit(self.mini_app_url)
+            if (url.scheme != "https" or not url.hostname
+                    or url.username or url.password or url.fragment):
+                raise ValueError("OTC_MINI_APP_URL must be a public HTTPS URL")
         if self.primary_mode not in ("conditional", "ready"):
             raise ValueError("OTC_PRIMARY_MODE must be conditional or ready")
         if self.signal_mode not in ("immediate", "conditional"):

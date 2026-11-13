@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import BaseMiddleware, F, Router, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from config.settings import ROOT, settings
 from services.otc_cycles import format_cycles, read_stats
@@ -105,6 +105,13 @@ def menu(chat_id, expanded=False):
             ),
         ]
     )
+    if settings.mini_app_enabled and settings.mini_app_url:
+        rows.append([
+            InlineKeyboardButton(
+                text="📊 Аналитика Mini App",
+                web_app=WebAppInfo(url=settings.mini_app_url),
+            )
+        ])
     if expanded:
         rows.append([InlineKeyboardButton(text="Обновить", callback_data="otc:panel:show")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -136,6 +143,17 @@ MENU_TITLE = "OTC · тестовые сигналы"
 @router.message(Command("start", "help", "otc"))
 async def show_menu(message: types.Message):
     await message.answer(MENU_TITLE, reply_markup=menu(message.chat.id))
+
+
+@router.message(Command("otc_panel"))
+async def mini_app_panel(message: types.Message):
+    if not settings.mini_app_enabled or not settings.mini_app_url:
+        await message.answer(
+            "Mini App готов в коде, но публичный HTTPS-адрес пока не настроен. "
+            "Инструкция: MINI_APP_SETUP.md. Данные и команды остаются доступны в Telegram."
+        )
+        return
+    await message.answer("Панель TradingAI", reply_markup=menu(message.chat.id))
 
 
 @router.message(Command("otc_status"))
