@@ -17,7 +17,7 @@ from services.otc_m1_policy import evaluate as evaluate_m1, live_check as check_
 from services.otc_policy import evaluate as evaluate_policy
 from services.otc_strategy import aggregate
 
-VERSION = "primary-ready-v8-m1-strict-shadow"
+VERSION = "primary-ready-v9-policy-shadow"
 logger = logging.getLogger(__name__)
 
 
@@ -146,7 +146,7 @@ def select_ready_v5(
 
 def select_ready(
     histories, assets, quotes, now, seconds, end=None, audit=None, recent_ticks=None,
-    min_confirmations=3, m1_strict_enabled=True,
+    min_confirmations=3, m1_strict_enabled=True, policy_enforced=False,
 ):
     if not isinstance(min_confirmations, int) or not 2 <= min_confirmations <= 5:
         raise ValueError("min_confirmations must be 2..5")
@@ -202,12 +202,19 @@ def select_ready(
         features = dict(zip(FEATURE_NAMES, values))
         policy = evaluate_policy(bars, features, direction,
                                  confirmations.get("market_state", {}))
-        row.update(policy=policy, strategy=policy["strategy"],
-                   gates=dict(policy["gates"], min_confirmations=confirmations["count"] >= min_confirmations))
+        row.update(
+            policy=policy,
+            policy_reason=policy["reason"],
+            strategy=policy["strategy"],
+            gates=dict(
+                policy["gates"],
+                min_confirmations=confirmations["count"] >= min_confirmations,
+            ),
+        )
         if confirmations["count"] < min_confirmations:
             row["reason"] = "insufficient_directional_confirmations"
             continue
-        if policy["reason"] != "eligible":
+        if policy_enforced and policy["reason"] != "eligible":
             row["reason"] = policy["reason"]
             continue
         # Historical v7 decision: keep this candidate for paired shadow
@@ -232,6 +239,7 @@ def select_ready(
             confirmations=confirmations,
             features=features,
             policy=policy,
+            policy_enforced=bool(policy_enforced),
             m1_policy=m1,
             last_closed_candle=asdict(bars[-1]),
             advantage_confirmed=False,
@@ -259,6 +267,7 @@ def select_ready(
                 evidence=evidence,
                 confirmations=confirmations,
                 policy=policy,
+                policy_enforced=bool(policy_enforced),
                 m1_policy=m1,
                 m1_strict_active=bool(seconds == 60 and m1_strict_enabled),
                 condition_required=False,
@@ -304,6 +313,7 @@ class ReadyPrimary(MLPreview):
         self.allowed_timeframes = (60, 300, 900)
         self.min_confirmations = settings.ready_min_confirmations
         self.m1_strict_enabled = settings.m1_strict_enabled
+        self.policy_enforced = settings.primary_policy_enforced
         self.sent_count = 0
         self.research = CandidateJournal(journal.path.with_name("ready-candidates.db"))
         self.sampler = TickSampler()
@@ -378,6 +388,7 @@ class ReadyPrimary(MLPreview):
                 dict(self.recent_ticks),
                 self.min_confirmations,
                 self.m1_strict_enabled,
+                self.policy_enforced,
             )
             for record in audit:
                 record["operational_block"] = unavailable
