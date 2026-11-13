@@ -44,7 +44,7 @@
       show(title, element("strong", s.direction === "UP" ? "up" : "down", s.direction === "UP" ? "↑ ВВЕРХ" : "↓ ВНИЗ"));
       show(c, title);
       show(c, element("div", "muted", s.source + " · " + new Date(s.entry_at * 1000).toLocaleString("ru-RU", { timeZone: "Europe/Moscow", hour12: false }) + " МСК"));
-      show(c, element("div", "muted", "Исход: " + s.outcome + " · Индикаторы: " + (s.confirmations === null ? "—" : s.confirmations) + " · Рынок: " + (s.regime || "не определён")));
+      show(c, element("div", "muted", "Исход: " + s.outcome + " · Метод: " + (s.result_source || "неизвестен") + " · Индикаторы: " + (s.confirmations === null ? "—" : s.confirmations) + " · Рынок: " + (s.regime || "не определён")));
       show(recent, c);
     }
   }

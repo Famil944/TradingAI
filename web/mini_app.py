@@ -72,6 +72,7 @@ def read_dashboard(service, now):
                 "direction": row["direction"], "entry_at": row["entry_at"],
                 "minutes": int((row["expires_at"] - row["entry_at"]) / 60),
                 "payout": row["payout"], "outcome": row["outcome"],
+                "result_source": row["result_source"] or "legacy_unattributed",
                 "confirmations": conf.get("count") if conf.get("available") else None,
                 "regime": (conf.get("market_state") or {}).get("label"),
                 "quote_age_s": (evidence.get("timing") or {}).get("quote_age_s"),

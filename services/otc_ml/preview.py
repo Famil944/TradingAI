@@ -46,6 +46,10 @@ class PreviewJournal:
                 db.execute("ALTER TABLE predictions ADD COLUMN message_id INTEGER")
             if "resolved_at" not in columns:
                 db.execute("ALTER TABLE predictions ADD COLUMN resolved_at REAL")
+            # Existing WIN/LOSS rows cannot be assigned a reliable origin
+            # retrospectively; NULL means legacy/unattributed.
+            if "result_source" not in columns:
+                db.execute("ALTER TABLE predictions ADD COLUMN result_source TEXT")
             db.commit()
 
     def _blocked(self, db, now, seconds=None):
@@ -126,16 +130,18 @@ class PreviewJournal:
         sent_at=None,
         *,
         resolved_at=None,
+        result_source=None,
     ):
         with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
             db.execute(
-                "UPDATE predictions SET outcome=?,entry_price=?,expiry_price=?,sent_at=COALESCE(?,sent_at),resolved_at=? WHERE id=? AND outcome='PENDING'",
+                "UPDATE predictions SET outcome=?,entry_price=?,expiry_price=?,sent_at=COALESCE(?,sent_at),resolved_at=?,result_source=? WHERE id=? AND outcome='PENDING'",
                 (
                     outcome,
                     entry,
                     expiry,
                     sent_at,
                     time.time() if resolved_at is None else resolved_at,
+                    result_source,
                     identifier,
                 ),
             )
@@ -188,6 +194,13 @@ class PreviewJournal:
                 "SELECT outcome,count(*) FROM predictions WHERE (? IS NULL OR expires_at-entry_at=?) AND entry_at>=? GROUP BY outcome",
                 (seconds, seconds, since),
             ).fetchall()
+            provenance = db.execute(
+                """SELECT COALESCE(result_source, 'legacy_unattributed'), COUNT(*)
+                FROM predictions WHERE (? IS NULL OR expires_at-entry_at=?)
+                AND entry_at>=? AND outcome IN ('WIN','LOSS','DRAW','UNKNOWN')
+                GROUP BY COALESCE(result_source, 'legacy_unattributed')""",
+                (seconds, seconds, since),
+            ).fetchall()
         counts = dict(rows)
         wins = counts.get("WIN", 0)
         losses = counts.get("LOSS", 0)
@@ -208,6 +221,9 @@ class PreviewJournal:
             f"{title}\nВин {wins} (+)\nЛос {losses} (−)\nПропуск {sum(counts.get(k, 0) for k in ('CANCELLED', 'NOT_DELIVERED', 'LATE'))}\nВинрейт {rate}"
             + (f"\nНет данных {counts['UNKNOWN']}" if counts.get("UNKNOWN") else "")
             + (f"\nОжидают {counts['PENDING']}" if counts.get("PENDING") else "")
+            + ("\nРасчёт по источникам: " + ", ".join(
+                f"{source} {count}" for source, count in provenance
+            ) if provenance else "")
         )
 
 
@@ -436,7 +452,20 @@ class MLPreview:
                 bars = self.settlement_cache.get(symbol, [])
             result = settle_preview(row, bars, self.clock())
             if result:
-                await asyncio.to_thread(self.journal.finish, row["id"], *result)
+                source = (
+                    "otcharts_history_open" if self.settlement_provider is not None
+                    else "otcharts_session_ohlc"
+                )
+                if result[0] == "UNKNOWN":
+                    source = (
+                        "missing_otcharts_history" if self.settlement_provider is not None
+                        else "missing_session_ohlc"
+                    )
+                elif result[0] == "NOT_DELIVERED":
+                    source = "not_delivered"
+                await asyncio.to_thread(
+                    self.journal.finish, row["id"], *result, result_source=source
+                )
 
     async def plan(self, bot, chat_id, snapshot):
         self.snapshot = snapshot

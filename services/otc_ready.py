@@ -405,6 +405,7 @@ class ReadyPrimary(MLPreview):
                 expiry_price,
                 None,
                 resolved_at=now,
+                result_source="otcharts_live_tick",
             )
             logger.info(
                 "Primary settled from live samples: %s %s",

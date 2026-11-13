@@ -18,7 +18,7 @@ class DirectionGateTests(unittest.TestCase):
         class Fake:
             def predict(self, rows):
                 return [SimpleNamespace(tolist=lambda: probabilities)]
-        runtime.models[("model", ("hash", "calhash"))] = Fake()
+        runtime.models[("/unused/model", ("hash", "calhash"))] = Fake()
         row = dict(entry_at=1800000060, expires_at=1800000120,
                    direction="UP", feature_asof=1800000042, decision_lead_seconds=20)
         with (
@@ -50,7 +50,7 @@ class DirectionGateTests(unittest.TestCase):
         self.assertFalse(result["threshold_applied"])
 
     def test_zero_implicit_probability_floor(self):
-        result = self.inspect([0.5, 0.1, 0.4], certified=True, floor=None)
+        result = self.inspect([0.55, 0.1, 0.35], certified=True, floor=None)
         self.assertEqual(result["selected_direction"], "DOWN")
         self.assertIsNone(result["probability_floor"])
         self.assertTrue(result["accept"])

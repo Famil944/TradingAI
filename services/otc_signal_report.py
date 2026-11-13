@@ -18,9 +18,19 @@ def summarize(rows):
         and 0 <= row["payout"] <= 100
     ]
     result = f"{sum(net):+.2f} ед. (n={len(net)})" if net else "—"
+    sources = Counter(
+        (row["result_source"] or "legacy_unattributed")
+        for row in rows
+        if row["outcome"] in ("WIN", "LOSS", "DRAW", "UNKNOWN")
+        and "result_source" in row.keys()
+    )
+    source_text = ", ".join(
+        f"{name}: {n}" for name, n in sorted(sources.items())
+    ) or "нет атрибуции"
     return (
         f"{len(rows)} сигн. · +{wins} / −{losses} · {rate} · итог {result}"
         f" · ничьи {counts['DRAW']} · без исхода {len(rows) - wins - losses - counts['DRAW']}"
+        f" · происхождение: {source_text}"
     )
 
 
@@ -28,7 +38,7 @@ def read_journal(journal, since, until):
     with closing(sqlite3.connect(journal.path, timeout=3)) as db:
         db.row_factory = sqlite3.Row
         return db.execute(
-            """SELECT symbol, entry_at, expires_at, direction, payout, outcome, evidence
+            """SELECT symbol, entry_at, expires_at, direction, payout, outcome, evidence, result_source
                FROM predictions WHERE sent_at >= ? AND sent_at < ?
                AND outcome NOT IN ('LATE', 'CANCELLED', 'NOT_DELIVERED')""",
             (since, until),

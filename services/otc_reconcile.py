@@ -106,16 +106,27 @@ def reconcile(journal, archive, *, since=0, apply=False, now=None):
                     source="local_canonical_archive",
                     bars=item["bars"],
                 )
-                db.execute(
-                    "UPDATE predictions SET outcome=?,entry_price=?,expiry_price=?,evidence=? WHERE id=? AND outcome='UNKNOWN'",
-                    (
-                        item["outcome"],
-                        item["entry_price"],
-                        item["expiry_price"],
-                        json.dumps(evidence, allow_nan=False),
-                        item["id"],
-                    ),
-                )
+                has_source = "result_source" in {
+                    column[1] for column in db.execute("PRAGMA table_info(predictions)")
+                }
+                if has_source:
+                    db.execute(
+                        "UPDATE predictions SET outcome=?,entry_price=?,expiry_price=?,evidence=?,result_source=? WHERE id=? AND outcome='UNKNOWN'",
+                        (
+                            item["outcome"], item["entry_price"], item["expiry_price"],
+                            json.dumps(evidence, allow_nan=False),
+                            "otcharts_canonical_reconciliation", item["id"],
+                        ),
+                    )
+                else:
+                    # Compatibility for legacy external journal schemas.
+                    db.execute(
+                        "UPDATE predictions SET outcome=?,entry_price=?,expiry_price=?,evidence=? WHERE id=? AND outcome='UNKNOWN'",
+                        (
+                            item["outcome"], item["entry_price"], item["expiry_price"],
+                            json.dumps(evidence, allow_nan=False), item["id"],
+                        ),
+                    )
                 item["status"] = "recovered"
             db.commit()
     return results
