@@ -30,7 +30,9 @@ class CanonicalSettlementTests(unittest.IsolatedAsyncioTestCase):
         await preview.settle_pending(
             {"A": [Candle(600, 1, 1, 1, 1), Candle(660, 2, 2, 2, 2)]}
         )
-        journal.finish.assert_called_once_with("p", "LOSS", 2, 1)
+        journal.finish.assert_called_once_with(
+            "p", "LOSS", 2, 1, result_source="otcharts_history_open"
+        )
 
     async def test_missing_history_never_falls_back_to_ticks(self):
         row = dict(
@@ -53,4 +55,6 @@ class CanonicalSettlementTests(unittest.IsolatedAsyncioTestCase):
         journal.finish.assert_not_called()
         clock[0] = 840
         await preview.settle_pending(ticks)
-        journal.finish.assert_called_once_with("p", "UNKNOWN", None, None)
+        journal.finish.assert_called_once_with(
+            "p", "UNKNOWN", None, None, result_source="missing_otcharts_history"
+        )
