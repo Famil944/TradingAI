@@ -1,8 +1,8 @@
 {
   "schema": "tradingai-public-report-v1",
   "device": "windows",
-  "generated_at": 1794558342.6882203,
-  "generated_utc": "2026-11-13T08:25:42.688220+00:00",
+  "generated_at": 1794558381.7894008,
+  "generated_utc": "2026-11-13T08:26:21.789401+00:00",
   "virtual_only": true,
   "sources": {
     "primary": {
@@ -254,10 +254,10 @@
     }
   },
   "runtime": {
-    "heartbeat_age_seconds": 11.8,
+    "heartbeat_age_seconds": 5.9,
     "stale": false,
     "running": true,
-    "quote_age_seconds": 0.9198224544525146,
+    "quote_age_seconds": 0.9253506660461426,
     "error_present": false,
     "user_stopped": false
   }
