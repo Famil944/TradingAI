@@ -131,6 +131,48 @@ class M1SelectionIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         self.assertFalse(selected["m1_strict_active"])
 
+    def test_loss_cooldown_excludes_pair_and_uses_alternative(self):
+        bars = history()
+        now = bars[-1].time + 100
+        assets = {
+            "AUDCHF": Asset("AUDCHF", True, True, 92, None, "AUDCHF", now),
+            "MSFT": Asset("MSFT", True, True, 92, None, "MSFT", now),
+        }
+        with (
+            patch("services.otc_ready.build", side_effect=[
+                fake_checks("UP", 4), fake_checks("DOWN", 0),
+                fake_checks("UP", 4), fake_checks("DOWN", 0),
+            ]),
+            patch(
+                "services.otc_ready.evaluate_policy",
+                return_value={
+                    "reason": "eligible",
+                    "strategy": "trend_continuation",
+                    "gates": {"trend_aligned": True},
+                },
+            ),
+            patch(
+                "services.otc_ready.evaluate_m1",
+                return_value={
+                    "passed": True,
+                    "reason": "eligible",
+                    "gates": {"fresh_tick": True},
+                    "metrics": {},
+                },
+            ),
+        ):
+            selected = select_ready(
+                {"AUDCHF": bars, "MSFT": bars},
+                assets,
+                {"AUDCHF": now, "MSFT": now},
+                now,
+                60,
+                m1_strict_enabled=False,
+                excluded_symbols={"AUDCHF"},
+            )
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["symbol"], "MSFT")
+
     def test_m5_does_not_call_m1_policy(self):
         bars = history()
         now = bars[-1].time + 40  # entry index 1000, a 5m boundary
