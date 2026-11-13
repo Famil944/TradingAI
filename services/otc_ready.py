@@ -6,6 +6,7 @@ import math
 import time
 from dataclasses import asdict
 
+from config.settings import settings
 from services.otc_candidate_research import CandidateJournal, TickSampler
 from services.otc_conditional import context_setup
 from services.otc_confirmations import build
@@ -14,7 +15,7 @@ from services.otc_ml.features import FEATURE_NAMES, indicators
 from services.otc_ml.preview import MLPreview
 from services.otc_strategy import aggregate
 
-VERSION = "primary-ready-v6-one-confirmation"
+VERSION = "primary-ready-v7-confirmation-gate"
 logger = logging.getLogger(__name__)
 
 
@@ -141,8 +142,11 @@ def select_ready_v5(
 
 
 def select_ready(
-    histories, assets, quotes, now, seconds, end=None, audit=None, recent_ticks=None
+    histories, assets, quotes, now, seconds, end=None, audit=None, recent_ticks=None,
+    min_confirmations=3,
 ):
+    if not isinstance(min_confirmations, int) or not 2 <= min_confirmations <= 5:
+        raise ValueError("min_confirmations must be 2..5")
     entry = int(now) // 60 * 60 + 60
     if seconds not in (60, 300, 900) or not 15 <= entry - now <= 20:
         return None
@@ -182,8 +186,9 @@ def select_ready(
                     direction = "UP" if up["checks"][key] == "agree" else "DOWN"
                     break
         confirmations = up if direction == "UP" else down
-        if confirmations["count"] < 1:
-            row["reason"] = "no_directional_confirmation"
+        if confirmations["count"] < min_confirmations:
+            row["reason"] = "insufficient_directional_confirmations"
+            row["gates"] = {"min_confirmations": False}
             continue
         bars = aggregate([b for b in minutes if b.time + 60 <= asof], seconds)[-250:]
         values = indicators(bars)
@@ -201,7 +206,7 @@ def select_ready(
             evidence=evidence,
             reason="eligible",
             regime=confirmations.get("market_state", {}).get("state", "unknown"),
-            gates={"min_confirmation": True},
+            gates={"min_confirmations": True},
             quality_score=confirmations["count"],
             confirmation_count=confirmations["count"],
         )
@@ -259,6 +264,7 @@ class ReadyPrimary(MLPreview):
     def __init__(self, journal, clock=time.time, settlement_provider=None):
         super().__init__(journal, None, clock, settlement_provider)
         self.allowed_timeframes = (60, 300, 900)
+        self.min_confirmations = settings.ready_min_confirmations
         self.sent_count = 0
         self.research = CandidateJournal(journal.path.with_name("ready-candidates.db"))
         self.sampler = TickSampler()
@@ -310,6 +316,7 @@ class ReadyPrimary(MLPreview):
                 end,
                 audit,
                 dict(self.recent_ticks),
+                self.min_confirmations,
             )
             for record in audit:
                 record["operational_block"] = unavailable

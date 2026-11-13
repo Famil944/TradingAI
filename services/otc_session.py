@@ -526,6 +526,11 @@ class OTCSession:
 
     async def _poll(self, bot, plan):
         """Small bounded REST sample for plans without streaming; never emulate ticks."""
+        if getattr(self.config, "primary_mode", "conditional") == "ready":
+            raise AccessUnavailable(
+                "Основной режим ready требует live-потока; "
+                "снимки свечей не заменяют свежую цену входа."
+            )
         self.transport = "snapshot"
         self.phase = "получение списка для теста"
         budget = max(2, getattr(self.config, "poll_request_budget", 12))
@@ -671,7 +676,7 @@ class OTCSession:
 
     async def _refresh_stream_assets(self, active, chosen):
         while True:
-            await asyncio.sleep(getattr(self.config, "catalogue_refresh_seconds", 30))
+            await asyncio.sleep(getattr(self.config, "catalogue_refresh_seconds", 50))
             try:
                 # The symbols response enforces API access/quota itself. A failure
                 # of the separate usage endpoint must not prevent refreshing payouts.
@@ -804,12 +809,11 @@ class OTCSession:
                                 )
                                 continue
                             closed_at = bar.time + 60
+                            if getattr(self.config, "primary_mode", "conditional") == "ready":
+                                # ReadyPrimary already consumed fresh ticks above.
+                                # Never emit legacy immediate/conditional signals too.
+                                continue
                             if self.conditional_mode:
-                                if (
-                                    getattr(self.config, "primary_mode", "conditional")
-                                    == "ready"
-                                ):
-                                    continue
                                 for seconds in self.timeframes:
                                     await self._consider_plan(
                                         bot, values, tick, asset, closed_at, seconds
