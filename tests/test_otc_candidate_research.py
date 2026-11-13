@@ -229,24 +229,33 @@ class ReadySchedulingTests(unittest.IsolatedAsyncioTestCase):
     async def test_loop_waits_for_actual_ready_window_and_publishes(self):
         with tempfile.TemporaryDirectory() as folder:
             journal = PreviewJournal(Path(folder) / "ready.db", per_horizon=True)
-            clock = [ENTRY - 22]
+            clock = [ENTRY - 24]
             ready = ReadyPrimary(journal, clock=lambda: clock[0])
             ready.allowed_timeframes = (60,)
             ready.publish = AsyncMock(return_value=True)
-            asset = Asset("A", True, True, 90, None, "A", ENTRY - 20)
-            ready.observe({"A": []}, {"A": asset}, {"A": ENTRY - 20}, None)
+            asset = Asset("A", True, True, 90, None, "A", ENTRY - 24)
+            ready.observe({"A": []}, {"A": asset}, {"A": ENTRY - 24}, None)
+
+            async def enter_delivery_window(_entry):
+                clock[0] = ENTRY - 19
+
             with (
                 patch("services.otc_ready.context_setup", return_value=setup()),
                 patch(
                     "services.otc_ready.select_ready",
                     side_effect=lambda *args: select_ready(*args[:8]),
                 ),
+                patch.object(
+                    ready,
+                    "_wait_for_delivery_window",
+                    side_effect=enter_delivery_window,
+                ),
             ):
                 task = asyncio.create_task(ready.run(None, 1))
                 try:
                     await asyncio.sleep(0.05)
                     self.assertIsNone(ready.attempted)
-                    clock[0] = ENTRY - 19
+                    clock[0] = ENTRY - 22
                     for _ in range(30):
                         if ready.publish.await_count:
                             break

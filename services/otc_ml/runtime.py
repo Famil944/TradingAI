@@ -150,11 +150,9 @@ class RuntimeML:
             config = report.get("configuration", {})
             p = probabilities[2 if row["direction"] == "UP" else 0]
             ev = expected_return(probabilities, row["direction"], payout)
-            passed = (
-                p >= config.get("probability_floor", 0.60)
-                and ev is not None
-                and ev >= config.get("min_expected_return", 0.05)
-            )
+            probability_ok = p >= config.get("probability_floor", 0.60)
+            ev_ok = ev is None or ev >= config.get("min_expected_return", 0.05)
+            passed = probability_ok and ev_ok
             return dict(
                 status="validated_filter" if certified else "shadow",
                 live=certified,

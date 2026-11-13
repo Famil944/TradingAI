@@ -79,7 +79,33 @@ class OTCSession:
     def test_mode(self):
         return bool(getattr(self.config, "test_mode", False))
 
-    def _eligible(self, instruments, now, max_age):
+    def _eligible(self, instruments, now, max_age, *, require_payout=True):
+        if not require_payout:
+            return sorted(
+                (
+                    a for a in instruments
+                    if a.is_otc is True
+                    and a.open is not False
+                    and (
+                        getattr(a, "observed_at", None) is not None
+                        or getattr(a, "payout_at", None) is not None
+                    )
+                    and 0 <= now - (
+                        a.observed_at
+                        if getattr(a, "observed_at", None) is not None
+                        else a.payout_at
+                    ) <= max_age
+                ),
+                key=lambda a: (
+                    0
+                    if a.payout is not None
+                    and isinstance(a.payout, (int, float))
+                    and math.isfinite(a.payout)
+                    and 90 <= a.payout <= 100
+                    else 1,
+                    a.symbol,
+                ),
+            )
         if getattr(self.config, "require_paid_metadata", False):
             instruments = [
                 a
@@ -485,13 +511,15 @@ class OTCSession:
                 "Нет доступа к потоковым котировкам/выплатам или нет свободного потока."
             )
         assets = self._eligible(
-            await self._catalogue_with_retry(), self.clock(), self.config.payout_max_age
+            await self._catalogue_with_retry(),
+            self.clock(),
+            self.config.payout_max_age,
+            require_payout=False,
         )
         self.available = len(assets)
         if not assets:
             raise AccessUnavailable(
-                "Нет открытых OTC с подтверждённой свежей выплатой ≥90%. "
-                "OTCharts 0.7.0 не передаёт timestamp выплаты; open для Pocket Option может быть неизвестен. Сигналы заблокированы."
+                "Нет свежих открытых OTC-инструментов для live-потока."
             )
         cap = self.config.max_instruments
         if plan.instruments_per_stream is not None:
@@ -687,6 +715,7 @@ class OTCSession:
                     await self.provider.symbols(),
                     self.clock(),
                     self.config.payout_max_age,
+                    require_payout=False,
                 )
                 updated = {a.symbol: a for a in catalogue if a.symbol in chosen}
                 active.clear()
@@ -809,17 +838,17 @@ class OTCSession:
                             ):
                                 await self._event("instrument_closed", tick.symbol)
                                 continue
+                            closed_at = bar.time + 60
+                            if getattr(self.config, "primary_mode", "conditional") == "ready":
+                                # ReadyPrimary and XGBoost already consumed the live tick above.
+                                # Payout is a primary/Groq gate, not a transport gate.
+                                continue
                             if not asset or not self._eligible(
                                 [asset], now, self.config.payout_max_age
                             ):
                                 await self._event(
                                     "unknown_or_stale_payout", tick.symbol
                                 )
-                                continue
-                            closed_at = bar.time + 60
-                            if getattr(self.config, "primary_mode", "conditional") == "ready":
-                                # ReadyPrimary already consumed fresh ticks above.
-                                # Never emit legacy immediate/conditional signals too.
                                 continue
                             if self.conditional_mode:
                                 for seconds in self.timeframes:
@@ -900,7 +929,10 @@ class OTCSession:
                 return {
                     a.symbol: a
                     for a in self._eligible(
-                        catalogue, self.clock(), self.config.payout_max_age
+                        catalogue,
+                        self.clock(),
+                        self.config.payout_max_age,
+                        require_payout=False,
                     )
                     if a.symbol in chosen
                 }

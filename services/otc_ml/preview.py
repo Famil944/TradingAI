@@ -203,10 +203,7 @@ def select_forecast(
         asset = assets.get(symbol)
         if (
             not asset
-            or asset.open is not True
-            or asset.payout is None
-            or not math.isfinite(asset.payout)
-            or not 90 <= asset.payout <= 100
+            or asset.open is False
             or asset.observed_at is None
             or not 0 <= now - asset.observed_at <= 60
             or not 0 <= now - quotes.get(symbol, float("-inf")) <= 8
@@ -228,16 +225,25 @@ def select_forecast(
                 feature_asof=now,
                 decision_lead_seconds=20,
             )
-            result = runtime.inspect(row, bars, asset.payout)
+            payout = (
+                asset.payout
+                if isinstance(asset.payout, (int, float))
+                and not isinstance(asset.payout, bool)
+                and math.isfinite(asset.payout)
+                and 0 <= asset.payout <= 100
+                else None
+            )
+            result = runtime.inspect(row, bars, payout)
             probabilities = result.get("probabilities")
             if probabilities is None:
                 reasons[result.get("status", "no_prediction")] += 1
                 continue
             direction = "UP" if probabilities[2] >= probabilities[0] else "DOWN"
-            ev = expected_return(probabilities, direction, asset.payout)
-            if ev is None:
-                reasons["invalid_model_probabilities"] += 1
+            direction_probability = probabilities[2 if direction == "UP" else 0]
+            if result.get("accept") is False:
+                reasons["model_threshold_rejected"] += 1
                 continue
+            ev = expected_return(probabilities, direction, payout)
             confirmations = build(bars, direction, seconds, now)
             if not confirmations["available"] or confirmations["count"] < 1:
                 reasons["no_directional_confirmation"] += 1
@@ -248,22 +254,33 @@ def select_forecast(
                 entry_at=entry,
                 expires_at=entry + seconds,
                 direction=direction,
-                payout=asset.payout,
+                payout=payout,
                 model_sha256=result["model_sha256"],
                 model_role="unqualified_experimental",
                 selection_policy="xgboost-one-confirmation-v1",
                 evidence=dict(confirmations=confirmations),
                 confirmations=confirmations,
                 estimated_ev=ev,
+                direction_probability=direction_probability,
                 probabilities=probabilities,
                 feature_asof=now,
                 decision_lead_seconds=20,
             )
-            if best is None or (ev, -seconds, symbol) > (
-                best["estimated_ev"],
+            rank = (
+                direction_probability,
+                ev if ev is not None else float("-inf"),
+                -seconds,
+                symbol,
+            )
+            best_rank = (
+                best.get("direction_probability", 0),
+                best.get("estimated_ev")
+                if best.get("estimated_ev") is not None
+                else float("-inf"),
                 -int(best["expires_at"] - entry),
                 best["symbol"],
-            ):
+            ) if best is not None else None
+            if best is None or rank > best_rank:
                 best = candidate
     return best
 
@@ -331,6 +348,7 @@ def signal_card(selected, outcome=None, *, source):
 class MLPreview:
     icon = "🟠"
     label = "XGBoost"
+    require_payout = False
     # The last closed minute is already available here. Start inference
     # before the delivery window so a cold model load can finish in time.
     planning_window = (20, 23)
@@ -416,22 +434,24 @@ class MLPreview:
         now = self.clock()
         if (
             current is None
-            or current.open is not True
-            or current.payout is None
-            or not 90 <= current.payout <= 100
+            or current.open is False
             or current.observed_at is None
             or not 0 <= now - current.observed_at <= 60
             or not 0 <= now - quotes.get(selected["symbol"], float("-inf")) <= 8
         ):
             logger.info("XGBoost skipped: asset or quote changed before delivery")
             return
-        selected["payout"] = current.payout
-        selected["estimated_ev"] = expected_return(
-            selected["probabilities"], selected["direction"], current.payout
+        selected["payout"] = (
+            current.payout
+            if isinstance(current.payout, (int, float))
+            and not isinstance(current.payout, bool)
+            and math.isfinite(current.payout)
+            and 0 <= current.payout <= 100
+            else None
         )
-        if selected["estimated_ev"] is None:
-            logger.info("XGBoost skipped: invalid probabilities at delivery")
-            return
+        selected["estimated_ev"] = expected_return(
+            selected["probabilities"], selected["direction"], selected["payout"]
+        )
         await self.publish(selected, bot, chat_id)
 
     async def publish(self, selected, bot, chat_id):
@@ -443,6 +463,7 @@ class MLPreview:
         final_check = delivery_snapshot(
             selected, self.snapshot, self.clock(),
             max_quote_age=3 if horizon == 60 else 8,
+            require_payout=self.require_payout,
         )
         if final_check is None:
             logger.info("%s skipped at final quote/latency check", self.label)

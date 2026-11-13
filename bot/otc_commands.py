@@ -120,20 +120,46 @@ def menu(chat_id, expanded=False):
 def strategy_status(current):
     streaming = bool(current and current.running() and current.phase == "поток активен")
     boost = getattr(current, "ml_preview", None)
+    primary = getattr(current, "main_ready", None)
     groq = getattr(current, "groq_preview", None)
     groq_health = groq.client.health() if groq else (False, "не запущен")
-    active = {
-        "Основной": streaming,
-        "XGBoost": bool(streaming and boost and boost.enabled and boost.runtime.preview_ready()),
-        "Groq": bool(streaming and groq and groq.enabled and groq_health[0]),
-    }
+    boost_ready = bool(boost and boost.enabled and boost.runtime.preview_ready())
+
     since, now = stats_epoch(), time.time()
     lines = []
     for label, attr in SOURCES:
         preview = getattr(current, attr, None)
         count = len(read_journal(preview.journal, since, now)) if preview else 0
-        detail = f" · {groq_health[1]}" if label == "Groq" and not groq_health[0] else ""
-        lines.append(f"{'🟢' if active[label] else '🔴'} {label} · {count}{detail}")
+        icon, detail = "🔴", ""
+        if label == "Основной":
+            if streaming:
+                icon = "🟢"
+                reasons = getattr(primary, "last_reasons", {}) if primary else {}
+                if reasons:
+                    reason, amount = max(reasons.items(), key=lambda item: item[1])
+                    labels = {
+                        "asset_or_quote_ineligible": "ждёт свежие данные/выплату",
+                        "insufficient_indicator_history": "накапливает историю",
+                        "insufficient_directional_confirmations": "мало подтверждений",
+                    }
+                    detail = f" · {labels.get(reason, reason)} ({amount})"
+            elif current and current.running():
+                icon, detail = "🟠", f" · {current.phase}"
+        elif label == "XGBoost":
+            if streaming and boost and boost.enabled:
+                if boost_ready:
+                    icon = "🟢"
+                else:
+                    icon, detail = "🟠", " · ждёт обученную модель"
+            elif current and current.running() and boost and boost.enabled:
+                icon, detail = "🟠", " · ждёт свежий поток"
+        elif label == "Groq":
+            if streaming and groq and groq.enabled and groq_health[0]:
+                icon = "🟢"
+            elif groq and groq.enabled:
+                icon = "🔴" if "лимит исчерпан" in groq_health[1] else "🟠"
+                detail = f" · {groq_health[1]}"
+        lines.append(f"{icon} {label} · {count}{detail}")
     return "\n".join(lines)
 
 
@@ -362,7 +388,7 @@ async def callback(query: types.CallbackQuery):
     action = parts[1]
     chat = query.message.chat.id
     if action == "panel" and len(parts) == 3 and parts[2] in ("show", "hide"):
-        await query.answer()
+        await query.answer("Обновлено")
         expanded = parts[2] == "show"
         text = MENU_TITLE
         if expanded:

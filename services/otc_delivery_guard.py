@@ -33,8 +33,8 @@ def claim(path, selected, source, now=None):
 
 
 
-def delivery_snapshot(selected, snapshot, now, max_quote_age=8):
-    """Final fail-closed quote/payout check immediately before Telegram delivery.
+def delivery_snapshot(selected, snapshot, now, max_quote_age=8, require_payout=True):
+    """Final fail-closed market-data check immediately before Telegram delivery.
 
     Evidence is observational only. It cannot establish independent broker
     settlement or that the signal will arrive on the recipient's device.
@@ -49,9 +49,19 @@ def delivery_snapshot(selected, snapshot, now, max_quote_age=8):
     last_quote = quotes.get(symbol)
     entry = selected.get("entry_at")
     expiry = selected.get("expires_at")
+    payout_ok = (
+        asset is not None
+        and asset.payout is not None
+        and isinstance(asset.payout, (int, float))
+        and math.isfinite(asset.payout)
+        and 90 <= asset.payout <= 100
+    )
+    open_ok = asset is not None and (
+        asset.open is True if require_payout else asset.open is not False
+    )
     if (
-        asset is None or asset.open is not True
-        or asset.payout is None or not 90 <= asset.payout <= 100
+        not open_ok
+        or (require_payout and not payout_ok)
         or asset.observed_at is None or last_quote is None
         or not all(math.isfinite(value) for value in (last_quote, asset.observed_at, entry, expiry))
         or not 0 <= now - asset.observed_at <= 60

@@ -332,6 +332,7 @@ class GroqClient:
 class GroqPreview(MLPreview):
     icon = "🟣"
     label = "Groq"
+    require_payout = True
     planning_window = (30, 35)
 
     def __init__(self, journal, client, clock=time.time, settlement_provider=None):

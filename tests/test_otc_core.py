@@ -455,6 +455,18 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             except asyncio.CancelledError:
                 pass
 
+    async def test_stream_eligibility_is_independent_from_payout(self):
+        now = self.clock[0]
+        no_payout = Asset("A", True, True, None, None, "A", now)
+        self.config.require_paid_metadata = True
+        self.assertEqual(
+            self.session._eligible(
+                [no_payout], now, 60, require_payout=False
+            ),
+            [no_payout],
+        )
+        self.assertEqual(self.session._eligible([no_payout], now, 60), [])
+
     async def test_missing_access_fails_closed(self):
         self.provider.symbols = AsyncMock(
             return_value=[Asset("A", True, None, 95, None)]
@@ -462,7 +474,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         await self.session.start(self.bot, 1, 0, (60,))
         await self.session.task
         self.assertFalse(self.session.running())
-        self.assertIn("Сигналы заблокированы", self.session.last_error)
+        self.assertIn("Нет свежих открытых OTC-инструментов", self.session.last_error)
         self.assertEqual(self.db.stats(), [])
 
     async def test_delivery_failure_is_unknown_and_not_retried(self):
