@@ -78,7 +78,7 @@ class Settings:
         )
     )
     m1_strict_enabled: bool = field(
-        default_factory=lambda: os.getenv("OTC_M1_STRICT_ENABLED", "true").lower()
+        default_factory=lambda: os.getenv("OTC_M1_STRICT_ENABLED", "false").lower()
         in ("1", "true", "yes", "on")
     )
     primary_policy_enforced: bool = field(
