@@ -236,7 +236,7 @@ class ReadySchedulingTests(unittest.IsolatedAsyncioTestCase):
             asset = Asset("A", True, True, 90, None, "A", ENTRY - 24)
             ready.observe({"A": []}, {"A": asset}, {"A": ENTRY - 24}, None)
 
-            async def enter_delivery_window(_delay):
+            async def enter_delivery_window(_entry):
                 clock[0] = ENTRY - 19
 
             with (
@@ -245,8 +245,9 @@ class ReadySchedulingTests(unittest.IsolatedAsyncioTestCase):
                     "services.otc_ready.select_ready",
                     side_effect=lambda *args: select_ready(*args[:8]),
                 ),
-                patch(
-                    "services.otc_ready.asyncio.sleep",
+                patch.object(
+                    ready,
+                    "_wait_for_delivery_window",
                     side_effect=enter_delivery_window,
                 ),
             ):
