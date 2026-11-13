@@ -54,10 +54,11 @@ def report(data_dir, since=0, until=None, limit=10000):
     with closing(sqlite3.connect(journal.resolve().as_uri() + "?mode=ro", uri=True)) as db:
         records = [
             json.loads(r[0]) for r in db.execute(
-                "SELECT payload FROM candidates WHERE version IN (?,?) AND observed_at>=? "
+                "SELECT payload FROM candidates WHERE version IN (?,?,?) AND observed_at>=? "
                 "AND observed_at<=? ORDER BY observed_at DESC LIMIT ?",
                 ("primary-ready-v7-confirmation-gate",
-                 "primary-ready-v8-m1-strict-shadow", since, now, limit + 1),
+                 "primary-ready-v8-m1-strict-shadow",
+                 "primary-ready-v9-policy-shadow", since, now, limit + 1),
             )
         ]
     if len(records) > limit:
@@ -100,7 +101,8 @@ def report(data_dir, since=0, until=None, limit=10000):
         groups[("reason", r.get("reason", "unknown"))].append(item)
         groups[("regime", r.get("regime", "unknown"))].append(item)
         groups[("timeframe", "M" + str(int((r["expires_at"] - r["entry_at"]) / 60)))].append(item)
-        groups[("policy", "eligible" if r.get("reason") == "eligible" else "rejected")].append(item)
+        policy_reason = r.get("policy_reason", r.get("reason"))
+        groups[("policy", "eligible" if policy_reason == "eligible" else "rejected")].append(item)
         for name, gate in r.get("gates", {}).items():
             if gate is False:
                 groups[("rejected_filters", name)].append(item)

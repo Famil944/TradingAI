@@ -81,6 +81,11 @@ class Settings:
         default_factory=lambda: os.getenv("OTC_M1_STRICT_ENABLED", "true").lower()
         in ("1", "true", "yes", "on")
     )
+    primary_policy_enforced: bool = field(
+        default_factory=lambda: os.getenv(
+            "OTC_PRIMARY_POLICY_ENFORCED", "false"
+        ).lower() in ("1", "true", "yes", "on")
+    )
     ready_min_confirmations: int = field(
         default_factory=lambda: int(os.getenv("OTC_READY_MIN_CONFIRMATIONS", "3"))
     )

@@ -62,6 +62,38 @@ class M1SelectionIntegrationTests(unittest.TestCase):
             self.assertIsNotNone(old)
             self.assertFalse(old["m1_strict_active"])
 
+    def test_experimental_market_policy_is_shadow_only_by_default(self):
+        bars = history()
+        now = bars[-1].time + 40  # next entry is a 5m boundary
+        asset = Asset("A", True, True, 92, None, "A", now)
+        rejected_policy = {
+            "reason": "filter_not_doji",
+            "strategy": "trend_continuation",
+            "gates": {"not_doji": False},
+        }
+        with (
+            patch("services.otc_ready.build", side_effect=[
+                fake_checks("UP", 4), fake_checks("DOWN", 0),
+            ]),
+            patch("services.otc_ready.evaluate_policy", return_value=rejected_policy),
+        ):
+            selected = select_ready(
+                {"A": bars}, {"A": asset}, {"A": now}, now, 300
+            )
+            self.assertIsNotNone(selected)
+            self.assertFalse(selected["policy_enforced"])
+        with (
+            patch("services.otc_ready.build", side_effect=[
+                fake_checks("UP", 4), fake_checks("DOWN", 0),
+            ]),
+            patch("services.otc_ready.evaluate_policy", return_value=rejected_policy),
+        ):
+            blocked = select_ready(
+                {"A": bars}, {"A": asset}, {"A": now}, now, 300,
+                policy_enforced=True,
+            )
+            self.assertIsNone(blocked)
+
     def test_m5_does_not_call_m1_policy(self):
         bars = history()
         now = bars[-1].time + 40  # entry index 1000, a 5m boundary
