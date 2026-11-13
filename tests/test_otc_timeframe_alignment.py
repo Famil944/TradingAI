@@ -54,7 +54,7 @@ class AlignmentTests(unittest.TestCase):
         self.assertIsNone(delivery_snapshot(off, snapshot, now))
         at = self.anchor + 300
         now = at - 18
-        self.asset.observed_at = now
+        self.asset = replace(self.asset, observed_at=now)
         snapshot = ({}, {"A": self.asset}, {"A": now}, None)
         good = {"symbol": "A", "entry_at": at, "expires_at": at + 300}
         self.assertIsNotNone(delivery_snapshot(good, snapshot, now))
