@@ -165,12 +165,12 @@ def setup_rank(candidate):
     return (
         confirmations.get("count", candidate.get("quality_score", 0)),
         1 if checks.get("alignment") == "agree" else 0,
-        1 if (candidate.get("policy") or {}).get("reason") == "eligible" else 0,
         finite("adx14"),
         ema_strength,
         macd_strength,
-        body_strength,
+        min(body_strength, 2.0),
         payout,
+        1 if (candidate.get("policy") or {}).get("reason") == "eligible" else 0,
         candidate.get("symbol", ""),
     )
 
