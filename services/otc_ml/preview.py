@@ -439,7 +439,11 @@ class MLPreview:
         from services.otc_delivery_guard import delivery_snapshot
 
         selected = dict(selected)
-        final_check = delivery_snapshot(selected, self.snapshot, self.clock())
+        horizon = selected["expires_at"] - selected["entry_at"]
+        final_check = delivery_snapshot(
+            selected, self.snapshot, self.clock(),
+            max_quote_age=3 if horizon == 60 else 8,
+        )
         if final_check is None:
             logger.info("%s skipped at final quote/latency check", self.label)
             return False

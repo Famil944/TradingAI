@@ -13,10 +13,11 @@ from services.otc_confirmations import build
 from services.otc_groq import fresh
 from services.otc_ml.features import FEATURE_NAMES, indicators
 from services.otc_ml.preview import MLPreview
+from services.otc_m1_policy import evaluate as evaluate_m1, live_check as check_m1_tick
 from services.otc_policy import evaluate as evaluate_policy
 from services.otc_strategy import aggregate
 
-VERSION = "primary-ready-v7-confirmation-gate"
+VERSION = "primary-ready-v8-m1-strict-shadow"
 logger = logging.getLogger(__name__)
 
 
@@ -145,7 +146,7 @@ def select_ready_v5(
 
 def select_ready(
     histories, assets, quotes, now, seconds, end=None, audit=None, recent_ticks=None,
-    min_confirmations=3,
+    min_confirmations=3, m1_strict_enabled=True,
 ):
     if not isinstance(min_confirmations, int) or not 2 <= min_confirmations <= 5:
         raise ValueError("min_confirmations must be 2..5")
@@ -171,6 +172,8 @@ def select_ready(
             selected=False,
             gates={},
             reason="asset_or_quote_ineligible",
+            m1_baseline_eligible=False,
+            m1_strict_eligible=False,
         )
         if audit is not None:
             audit.append(row)
@@ -207,10 +210,29 @@ def select_ready(
         if policy["reason"] != "eligible":
             row["reason"] = policy["reason"]
             continue
+        # Historical v7 decision: keep this candidate for paired shadow
+        # comparison even when the new M1 rule intentionally skips it.
+        if seconds == 60:
+            row["m1_baseline_eligible"] = True
+            m1 = evaluate_m1(
+                minutes, features, direction, confirmations.get("market_state", {}),
+                asof, (recent_ticks or {}).get(symbol), now,
+            )
+            row["m1_policy"] = m1
+            row["m1_strict_eligible"] = bool(m1["passed"])
+            row["gates"].update(
+                {"m1_" + key: passed for key, passed in m1["gates"].items()}
+            )
+            if m1_strict_enabled and not m1["passed"]:
+                row["reason"] = m1["reason"]
+                continue
+        else:
+            m1 = None
         evidence = dict(
             confirmations=confirmations,
             features=features,
             policy=policy,
+            m1_policy=m1,
             last_closed_candle=asdict(bars[-1]),
             advantage_confirmed=False,
         )
@@ -237,6 +259,8 @@ def select_ready(
                 evidence=evidence,
                 confirmations=confirmations,
                 policy=policy,
+                m1_policy=m1,
+                m1_strict_active=bool(seconds == 60 and m1_strict_enabled),
                 condition_required=False,
                 quality_score=confirmations["count"],
             )
@@ -279,6 +303,7 @@ class ReadyPrimary(MLPreview):
         super().__init__(journal, None, clock, settlement_provider)
         self.allowed_timeframes = (60, 300, 900)
         self.min_confirmations = settings.ready_min_confirmations
+        self.m1_strict_enabled = settings.m1_strict_enabled
         self.sent_count = 0
         self.research = CandidateJournal(journal.path.with_name("ready-candidates.db"))
         self.sampler = TickSampler()
@@ -310,6 +335,24 @@ class ReadyPrimary(MLPreview):
         if samples:
             await asyncio.to_thread(self.research.samples, samples)
 
+    async def publish(self, selected, bot, chat_id):
+        # M1 changes within the still-forming minute; check actual latest
+        # observed tick once more before committing a Telegram notification.
+        if selected["expires_at"] - selected["entry_at"] == 60 and selected.get("m1_strict_active"):
+            metrics = (selected.get("m1_policy") or {}).get("metrics", {})
+            checked = check_m1_tick(
+                metrics.get("m1_reference_close"),
+                metrics.get("m1_atr_price"),
+                selected["direction"],
+                self.recent_ticks.get(selected["symbol"]),
+                self.clock(),
+            )
+            if not checked["passed"]:
+                logger.info("Strict M1 final tick veto: %s", checked["reason"])
+                return False
+            selected["m1_final_tick"] = checked
+        return await super().publish(selected, bot, chat_id)
+
     async def plan(self, bot, chat_id, snapshot):
         history, assets, quotes, end = snapshot
         histories = {s: list(b) for s, b in history.items()}
@@ -334,6 +377,7 @@ class ReadyPrimary(MLPreview):
                 audit,
                 dict(self.recent_ticks),
                 self.min_confirmations,
+                self.m1_strict_enabled,
             )
             for record in audit:
                 record["operational_block"] = unavailable
