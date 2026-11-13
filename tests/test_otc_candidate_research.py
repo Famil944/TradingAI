@@ -225,6 +225,90 @@ class ResearchReportTests(unittest.TestCase):
         self.assertFalse(stats["automatic_promotion"])
 
 
+class ReadySettlementTests(unittest.IsolatedAsyncioTestCase):
+    async def test_primary_settles_from_live_entry_and_expiry_samples(self):
+        with tempfile.TemporaryDirectory() as folder:
+            journal = PreviewJournal(
+                Path(folder) / "primary-ready.db",
+                label="Основной",
+                per_horizon=True,
+            )
+            clock = [ENTRY + 63]
+            provider = SimpleNamespace(
+                usage=AsyncMock(side_effect=AssertionError("HTTP fallback used")),
+                candles=AsyncMock(side_effect=AssertionError("HTTP fallback used")),
+            )
+            ready = ReadyPrimary(
+                journal,
+                clock=lambda: clock[0],
+                settlement_provider=provider,
+            )
+            selected = {
+                "symbol": "AUDCHF",
+                "name": "AUD/CHF OTC",
+                "direction": "UP",
+                "entry_at": ENTRY,
+                "expires_at": ENTRY + 60,
+                "payout": 92,
+                "model_sha256": "test",
+                "evidence": {},
+            }
+            identifier = journal.reserve(selected, ENTRY - 20)
+            journal.sent(identifier, ENTRY - 19, message_id=123)
+            ready.research.samples(
+                [
+                    ("AUDCHF", ENTRY, ENTRY, ENTRY + 0.2, 1.0000),
+                    (
+                        "AUDCHF",
+                        ENTRY + 60,
+                        ENTRY + 60,
+                        ENTRY + 60.2,
+                        1.0010,
+                    ),
+                ]
+            )
+
+            await ready.settle_pending({})
+
+            self.assertEqual(journal.pending(), [])
+            with closing(sqlite3.connect(journal.path)) as db:
+                outcome, entry_price, expiry_price = db.execute(
+                    "SELECT outcome,entry_price,expiry_price FROM predictions WHERE id=?",
+                    (identifier,),
+                ).fetchone()
+            self.assertEqual(outcome, "WIN")
+            self.assertEqual(entry_price, 1.0000)
+            self.assertEqual(expiry_price, 1.0010)
+            provider.usage.assert_not_awaited()
+            provider.candles.assert_not_awaited()
+
+    async def test_primary_keeps_http_fallback_when_live_sample_missing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            journal = PreviewJournal(
+                Path(folder) / "primary-ready.db",
+                label="Основной",
+                per_horizon=True,
+            )
+            clock = [ENTRY + 63]
+            ready = ReadyPrimary(journal, clock=lambda: clock[0])
+            selected = {
+                "symbol": "AUDCHF",
+                "name": "AUD/CHF OTC",
+                "direction": "UP",
+                "entry_at": ENTRY,
+                "expires_at": ENTRY + 60,
+                "payout": 92,
+                "model_sha256": "test",
+                "evidence": {},
+            }
+            identifier = journal.reserve(selected, ENTRY - 20)
+            journal.sent(identifier, ENTRY - 19)
+
+            await ready.settle_pending({})
+
+            self.assertEqual(len(journal.pending()), 1)
+
+
 class ReadySchedulingTests(unittest.IsolatedAsyncioTestCase):
     async def test_loop_waits_for_actual_ready_window_and_publishes(self):
         with tempfile.TemporaryDirectory() as folder:
