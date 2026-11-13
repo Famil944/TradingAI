@@ -62,7 +62,7 @@ def report(journals, since, until):
         same = [a for a, b in matched if a["direction"] == b["direction"]]
         different = [a for a, b in matched if a["direction"] != b["direction"]]
         lines.append(
-            f"\\n{left} / {right} · одинаковый актив, вход и экспирация: "
+            f"\n{left} / {right} · одинаковый актив, вход и экспирация: "
             f"пересечений {len(matched)}, согласны {len(same)}, против {len(different)}"
         )
         if matched:

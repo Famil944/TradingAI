@@ -250,7 +250,7 @@ async def compare_strategies(message: types.Message):
         if getattr(service, attr, None) is not None
     }
     lines = await asyncio.to_thread(compare_report, journals, now - windows[period], now)
-    text = "\\n".join(lines)
+    text = "\n".join(lines)
     for offset in range(0, len(text), 3400):
         await message.answer(text[offset:offset + 3400], parse_mode=None)
 

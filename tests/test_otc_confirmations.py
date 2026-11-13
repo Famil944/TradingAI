@@ -10,6 +10,7 @@ from database.db import Database
 from services.otc_confirmation_report import format_report, read_records, summarize
 from services.otc_confirmations import VERSION, build, format_confirmations
 from services.otc_ml.preview import MLPreview, PreviewJournal
+from services.otc_market import Asset
 from services.otc_strategy import Candle
 
 
@@ -109,7 +110,7 @@ class ConfirmationDeliveryTests(unittest.IsolatedAsyncioTestCase):
             asof = bars[-1].time + 60
             now = asof + 42
             preview = MLPreview(journal, None, lambda: now)
-            preview.snapshot = ({"A": bars}, {}, {}, None)
+            preview.snapshot = ({"A": bars}, {"A": Asset("A", True, True, 92, None, "Asset", now)}, {"A": now}, None)
             selected = dict(
                 symbol="A",
                 name="Asset",

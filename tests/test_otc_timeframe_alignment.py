@@ -1,6 +1,7 @@
 """M5/M15 predictions are delivered only 15–20s before candle boundaries."""
 import unittest
 from types import SimpleNamespace
+from dataclasses import replace
 from unittest.mock import patch
 
 from services.otc_groq import market_packet
@@ -31,7 +32,7 @@ class AlignmentTests(unittest.TestCase):
                 seconds = row["expires_at"] - row["entry_at"]
                 calls.append(seconds)
                 return {"probabilities": None}
-        self.asset.observed_at = now
+        self.asset = replace(self.asset, observed_at=now)
         select_forecast(Runtime(), {"A": []}, {"A": self.asset}, {"A": now}, now)
         self.assertNotIn(300, calls)
         self.assertNotIn(900, calls)
@@ -47,7 +48,7 @@ class AlignmentTests(unittest.TestCase):
 
     def test_delivery_rejects_out_of_boundary_m5_m15(self):
         now = self.anchor + 42
-        self.asset.observed_at = now
+        self.asset = replace(self.asset, observed_at=now)
         snapshot = ({}, {"A": self.asset}, {"A": now}, None)
         off = {"symbol": "A", "entry_at": self.anchor + 60, "expires_at": self.anchor + 360}
         self.assertIsNone(delivery_snapshot(off, snapshot, now))
