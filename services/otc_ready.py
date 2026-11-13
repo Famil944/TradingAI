@@ -367,6 +367,11 @@ class ReadyPrimary(MLPreview):
             selected["m1_final_tick"] = checked
         return await super().publish(selected, bot, chat_id)
 
+    async def _wait_for_delivery_window(self, entry_at):
+        delay = entry_at - self.clock() - 20
+        if delay > 0:
+            await asyncio.sleep(delay)
+
     async def plan(self, bot, chat_id, snapshot):
         history, assets, quotes, end = snapshot
         histories = {s: list(b) for s, b in history.items()}
@@ -422,9 +427,7 @@ class ReadyPrimary(MLPreview):
         for selected in best_expirations(offered):
             if not self.enabled or not self.snapshot:
                 break
-            delay = selected["entry_at"] - self.clock() - 20
-            if delay > 0:
-                await asyncio.sleep(delay)
+            await self._wait_for_delivery_window(selected["entry_at"])
             if not self.enabled or not 15 <= selected["entry_at"] - self.clock() <= 20:
                 logger.info("Primary skipped: analysis missed delivery window")
                 continue
