@@ -157,7 +157,8 @@ def strategy_status(current):
             if streaming and groq and groq.enabled and groq_health[0]:
                 icon = "🟢"
             elif groq and groq.enabled:
-                icon, detail = "🟠", f" · {groq_health[1]}"
+                icon = "🔴" if "лимит исчерпан" in groq_health[1] else "🟠"
+                detail = f" · {groq_health[1]}"
         lines.append(f"{icon} {label} · {count}{detail}")
     return "\n".join(lines)
 
