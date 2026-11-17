@@ -165,7 +165,7 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
             for row in community.home(owner=False).inline_keyboard
             for x in row
         ]
-        self.assertTrue(any("Винрейт" in x for x in buttons))
+        self.assertTrue(any("винрейт" in x.lower() for x in buttons))
         for x in buttons:
             self.assertNotIn("Запустить", x)
             self.assertNotIn("Остановить", x)
