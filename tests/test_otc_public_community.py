@@ -219,6 +219,89 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
 
 
 
+class BatchRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_late_unknown_does_not_rewrite_sent_batch_or_repeat_it(self):
+        class FakeBot:
+            def __init__(self):
+                self.sent = []
+                self.edited = []
+            async def send_message(self, chat_id, text, parse_mode=None):
+                self.sent.append(text)
+                class Ack:
+                    message_id = len(self.sent)
+                return Ack()
+            async def edit_message_text(self, text, chat_id, message_id, parse_mode=None):
+                self.edited.append(text)
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "data").mkdir()
+            publisher = PublicPublisher(root, -1001234567)
+            initial = publisher.enabled_at + 1
+            journal = root / "data/bollinger-cycles.db"
+            with sqlite3.connect(journal) as db:
+                db.execute("""
+                    CREATE TABLE predictions(
+                        id TEXT PRIMARY KEY,symbol TEXT,created_at REAL,entry_at REAL,
+                        expires_at REAL,direction TEXT,model_sha TEXT,evidence TEXT,
+                        sent_at REAL,outcome TEXT,resolved_at REAL
+                    )
+                """)
+                for index in range(11):
+                    at = initial + index * 600
+                    outcome = "UNKNOWN" if index == 0 else "WIN"
+                    db.execute("INSERT INTO predictions VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
+                        f"b{index}", "BTC", at, at+20, at+380, "UP", "v1",
+                        json.dumps({
+                            "name": "Bitcoin OTC", "cycle_seconds": 120,
+                            "attempt_outcomes": ["WIN"] if outcome == "WIN" else [],
+                        }), at+1, outcome, at+380,
+                    ))
+            bot = FakeBot()
+            await publisher.update(bot)
+            with sqlite3.connect(publisher.path) as db:
+                initial_reports = db.execute("SELECT COUNT(*) FROM sent_batches").fetchone()[0]
+            self.assertEqual(initial_reports, 3)  # A, B, C x 10 wins
+            await publisher.update(bot)
+            with sqlite3.connect(publisher.path) as db:
+                self.assertEqual(
+                    db.execute("SELECT COUNT(*) FROM sent_batches").fetchone()[0], 3
+                )
+            with sqlite3.connect(journal) as db:
+                db.execute("UPDATE predictions SET outcome='WIN',evidence=? WHERE id='b0'", (
+                    json.dumps({
+                        "name": "Bitcoin OTC", "cycle_seconds": 120,
+                        "attempt_outcomes": ["WIN"],
+                    }),
+                ))
+                for index in range(11, 20):
+                    at = initial + index * 600
+                    db.execute("INSERT INTO predictions VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
+                        f"b{index}", "BTC", at, at+20, at+380, "UP", "v1",
+                        json.dumps({
+                            "name": "Bitcoin OTC", "cycle_seconds": 120,
+                            "attempt_outcomes": ["WIN"],
+                        }), at+1, "WIN", at+380,
+                    ))
+            await publisher.update(bot)
+            with sqlite3.connect(publisher.path) as db:
+                self.assertEqual(
+                    db.execute("SELECT COUNT(*) FROM sent_batches").fetchone()[0], 6
+                )
+            await publisher.update(bot)
+            with sqlite3.connect(publisher.path) as db:
+                self.assertEqual(
+                    db.execute("SELECT COUNT(*) FROM sent_batches").fetchone()[0], 6
+                )
+
+    async def test_publisher_refuses_non_channel_destinations(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(ValueError):
+                PublicPublisher(folder, 1234567)
+            with self.assertRaises(ValueError):
+                PublicPublisher(folder, -12345)
+
+
 class PublicationFlagsTests(unittest.TestCase):
     def test_owner_shadow_switch_is_durable(self):
         with tempfile.TemporaryDirectory() as folder:
