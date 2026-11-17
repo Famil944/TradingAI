@@ -202,6 +202,11 @@ async def main(*, session_minutes=None, session_end=None):
     cycles = BollingerCycles(cycle_journal)
     service.cycle_preview = cycles
     cycle_task = asyncio.create_task(cycles.run(bot, settings.admin_chat_id))
+    from services.otc_strategies_live import LiveStrategyPublisher
+    strategy_engine = LiveStrategyPublisher(ROOT)
+    strategy_task = asyncio.create_task(
+        strategy_engine.run(bot, settings.admin_chat_id, service, cycles)
+    )
     # Subscribers receive safe forecast cards automatically after /start.
     # This relay does not start/stop the owner's trading strategy.
     from services.otc_subscribers import SubscriberRelay
@@ -262,6 +267,8 @@ async def main(*, session_minutes=None, session_end=None):
             await service._notify(bot, text + "\n\n" + indicators)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        strategy_task.cancel()
+        await asyncio.gather(strategy_task, return_exceptions=True)
         subscriber_task.cancel()
         await asyncio.gather(subscriber_task, return_exceptions=True)
         if public_task is not None:

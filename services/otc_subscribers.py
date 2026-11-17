@@ -16,6 +16,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from services.otc_public_broadcast import safe_card
 from services.otc_public_stats import main_signals
+from services.otc_strategies_live import load_live_signals
 
 LOG = logging.getLogger(__name__)
 
@@ -129,9 +130,11 @@ class SubscriberRelay:
         since = self.store.min_active_since()
         if since is None:
             return []
-        return main_signals(
-            self.root / "data" / "bollinger-cycles.db",
-            max(0, since - 120, self.clock() - 7200),
+        cutoff = max(0, since - 120, self.clock() - 7200)
+        return sorted(
+            main_signals(self.root / "data" / "bollinger-cycles.db", cutoff)
+            + load_live_signals(self.root / "data" / "community-live.db", cutoff),
+            key=lambda row: (row["created_at"], row["id"]),
         )
 
     async def update(self, bot):
@@ -151,9 +154,8 @@ class SubscriberRelay:
                     current_time = self.clock()
                     safe_text = safe_card(row, self.live_cycle)
                     content_sha = hashlib.sha256(safe_text.encode("utf-8")).hexdigest()
-                    # Only explicitly delivered main Bollinger forecasts; background
-                    # research stays in the read-only stats, not a live signal feed.
-                    if row["origin"] != "main":
+                    # All four published strategies, never legacy research rows.
+                    if row["origin"] not in ("main", "live"):
                         continue
                     already = await asyncio.to_thread(
                         self.store.delivered, chat_id, row["id"]

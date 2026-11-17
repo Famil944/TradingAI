@@ -13,6 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from services.otc_public_stats import main_signals, metric_units, metrics, shadow_signals
+from services.otc_strategies_live import load_live_signals
 
 MSK = ZoneInfo("Europe/Moscow")
 FIELDS = (
@@ -30,10 +31,11 @@ def iso(at):
     return datetime.fromtimestamp(at, MSK).isoformat(timespec="seconds")
 
 
-def export(root, output, since=0, now=None, with_shadow=True):
+def export(root, output, since=0, now=None, with_shadow=False):
     root, output = Path(root), Path(output)
     now = time.time() if now is None else now
     rows = main_signals(root / "data" / "bollinger-cycles.db", since)
+    rows += load_live_signals(root / "data" / "community-live.db", since)
     if with_shadow:
         rows += shadow_signals(root / "data" / "community-cycles.db", since, now)
     rows = [row for row in rows if row["created_at"] <= now]
@@ -90,10 +92,14 @@ def main():
     parser.add_argument("--root", default=".")
     parser.add_argument("--output", default="data/exports")
     parser.add_argument("--since", type=float, default=0)
-    parser.add_argument("--without-shadow", action="store_true")
+    parser.add_argument("--include-research-archive", action="store_true",
+                        help="Explicitly include older unpublished research separately.")
+    parser.add_argument("--without-shadow", action="store_true",
+                        help="Deprecated compatibility flag; research is excluded by default.")
     args = parser.parse_args()
     result = export(
-        args.root, args.output, args.since, with_shadow=not args.without_shadow
+        args.root, args.output, args.since,
+        with_shadow=args.include_research_archive and not args.without_shadow
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
