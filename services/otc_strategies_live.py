@@ -33,6 +33,18 @@ def _connect(path):
     return db
 
 
+def display_name(symbol, name=None):
+    """Prefer OTCharts catalogue name; prettify legacy technical symbols."""
+    if name and str(name).strip() and str(name).strip() != str(symbol).strip():
+        return str(name).strip()
+    raw = str(symbol or "").strip().lstrip("#")
+    if raw.lower().endswith("_otc"):
+        raw = raw[:-4]
+    if len(raw) == 6 and raw.isalpha():
+        raw = raw[:3] + "/" + raw[3:]
+    return (raw or str(symbol or "OTC")) + " OTC"
+
+
 class LiveStrategyJournal:
     def __init__(self, path):
         self.path = Path(path)
@@ -85,7 +97,7 @@ class LiveStrategyJournal:
                 (ident, method, candidate["symbol"], seconds, now,
                  candidate["entry_at"], candidate["expires_at"],
                  candidate["direction"], LIVE_VERSION,
-                 candidate.get("name") or candidate["symbol"]),
+                 display_name(candidate["symbol"], candidate.get("name"))),
             )
             db.commit()
             return ident if cursor.rowcount else None
@@ -169,7 +181,7 @@ def load_live_signals(path, since=0):
             id=row["id"], origin="live", strategy=row["strategy"],
             version=row["version"], seconds=row["seconds"],
             label=METHOD_LABELS.get(row["strategy"], row["strategy"]),
-            symbol=row["display_name"] or row["symbol"],
+            symbol=display_name(row["symbol"], row["display_name"]),
             direction=row["direction"],
             created_at=row["created_at"], sent_at=row["sent_at"],
             entry_at=row["entry_at"], expires_at=row["expires_at"],
@@ -355,7 +367,8 @@ class LiveStrategyPublisher:
             from services.otc_public_stats import METHOD_LABELS
             signal = dict(
                 id=ident, origin="live", label=METHOD_LABELS[method],
-                seconds=seconds, symbol=row.get("name") or row["symbol"],
+                seconds=seconds,
+                symbol=display_name(row["symbol"], row.get("name")),
                 direction=row["direction"], entry_at=row["entry_at"],
                 outcome="PENDING", attempts=[],
             )
@@ -441,7 +454,7 @@ class LiveStrategyPublisher:
                     id=row["id"], origin="live",
                     label=METHOD_LABELS.get(row["strategy"], row["strategy"]),
                     seconds=row["seconds"],
-                    symbol=row.get("display_name") or row["symbol"],
+                    symbol=display_name(row["symbol"], row.get("display_name")),
                     direction=row["direction"], entry_at=row["entry_at"],
                     outcome=row["outcome"], attempts=attempts,
                 )
