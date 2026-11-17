@@ -117,7 +117,8 @@ class LiveStrategyJournal:
         with closing(_connect(self.path)) as db:
             db.execute(
                 "UPDATE signals SET attempts_json=?,attempt_sources_json=?,"
-                "outcome=?,resolved_at=? WHERE id=? AND sent_at IS NOT NULL",
+                "outcome=?,resolved_at=?,card_sha=NULL "
+                "WHERE id=? AND sent_at IS NOT NULL",
                 (json.dumps(attempts), json.dumps(sources), state, when, ident),
             )
             db.commit()
@@ -126,8 +127,8 @@ class LiveStrategyJournal:
         with closing(_connect(self.path)) as db:
             return [dict(r) for r in db.execute(
                 "SELECT * FROM signals WHERE message_id IS NOT NULL "
-                "AND created_at>=? ORDER BY created_at LIMIT 300",
-                (time.time() - 24 * 3600,),
+                "AND (outcome='PENDING' OR card_sha IS NULL) "
+                "ORDER BY created_at DESC LIMIT 300",
             )]
 
     def card_edited(self, ident, signature):
