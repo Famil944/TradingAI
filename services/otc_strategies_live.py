@@ -61,6 +61,9 @@ class LiveStrategyJournal:
                 CREATE INDEX IF NOT EXISTS live_sent ON signals(sent_at);
                 CREATE INDEX IF NOT EXISTS live_active ON signals(outcome,expires_at);
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(signals)")}
+            if "display_name" not in columns:
+                db.execute("ALTER TABLE signals ADD COLUMN display_name TEXT")
             db.commit()
 
     def reserve(self, candidate, now):
@@ -77,11 +80,12 @@ class LiveStrategyJournal:
             db.execute("BEGIN IMMEDIATE")
             cursor = db.execute(
                 "INSERT OR IGNORE INTO signals"
-                "(id,strategy,symbol,seconds,created_at,entry_at,expires_at,direction,version)"
-                " VALUES(?,?,?,?,?,?,?,?,?)",
+                "(id,strategy,symbol,seconds,created_at,entry_at,expires_at,direction,version,display_name)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (ident, method, candidate["symbol"], seconds, now,
                  candidate["entry_at"], candidate["expires_at"],
-                 candidate["direction"], LIVE_VERSION),
+                 candidate["direction"], LIVE_VERSION,
+                 candidate.get("name") or candidate["symbol"]),
             )
             db.commit()
             return ident if cursor.rowcount else None
@@ -148,7 +152,7 @@ def load_live_signals(path, since=0):
 
     with closing(_connect(path)) as db:
         raw = db.execute(
-            "SELECT id,strategy,symbol,seconds,created_at,entry_at,expires_at,"
+            "SELECT id,strategy,symbol,display_name,seconds,created_at,entry_at,expires_at,"
             "direction,version,sent_at,outcome,attempts_json,resolved_at,"
             "attempt_sources_json FROM signals WHERE sent_at IS NOT NULL "
             "AND sent_at>=? ORDER BY created_at,id", (since,),
@@ -165,7 +169,8 @@ def load_live_signals(path, since=0):
             id=row["id"], origin="live", strategy=row["strategy"],
             version=row["version"], seconds=row["seconds"],
             label=METHOD_LABELS.get(row["strategy"], row["strategy"]),
-            symbol=row["symbol"], direction=row["direction"],
+            symbol=row["display_name"] or row["symbol"],
+            direction=row["direction"],
             created_at=row["created_at"], sent_at=row["sent_at"],
             entry_at=row["entry_at"], expires_at=row["expires_at"],
             resolved_at=row["resolved_at"] or row["expires_at"],
@@ -350,7 +355,7 @@ class LiveStrategyPublisher:
             from services.otc_public_stats import METHOD_LABELS
             signal = dict(
                 id=ident, origin="live", label=METHOD_LABELS[method],
-                seconds=seconds, symbol=row["symbol"],
+                seconds=seconds, symbol=row.get("name") or row["symbol"],
                 direction=row["direction"], entry_at=row["entry_at"],
                 outcome="PENDING", attempts=[],
             )
@@ -435,7 +440,8 @@ class LiveStrategyPublisher:
                 signal = dict(
                     id=row["id"], origin="live",
                     label=METHOD_LABELS.get(row["strategy"], row["strategy"]),
-                    seconds=row["seconds"], symbol=row["symbol"],
+                    seconds=row["seconds"],
+                    symbol=row.get("display_name") or row["symbol"],
                     direction=row["direction"], entry_at=row["entry_at"],
                     outcome=row["outcome"], attempts=attempts,
                 )
