@@ -60,7 +60,9 @@ class OwnerOnly(BaseMiddleware):
                 await event.answer("Нет доступа", show_alert=True)
             elif isinstance(event, types.Message):
                 await event.answer(
-                    "Нет доступа. Укажите ID владельца в OTC_ADMIN_CHAT_ID локального .env."
+                    "Команды управления доступны только владельцу. "
+                    "Подписчики могут смотреть /signal_stats и писать /suggest.",
+                    parse_mode=None,
                 )
             return
         return await handler(event, data)
