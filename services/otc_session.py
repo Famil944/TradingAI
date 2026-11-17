@@ -21,6 +21,9 @@ from services.otc_conditional import (
 )
 from services.otc_data import AccessUnavailable, OTChartsProvider, RetryableFeedError
 from services.otc_market import TIMEFRAMES, MinuteBuilder, Tick, eligible, settle
+from services.otc_pair_rotation import (
+    choose_pair_swap, journal_activity, usable_history,
+)
 from services.otc_strategy import candidate, normalize_candles
 from services.otc_stream import reconnect_delay
 
@@ -71,6 +74,13 @@ class OTCSession:
         self._repair_last = {}
         self._repair_count = 0
         self._repair_window = self.clock()
+        self._rotation_selected_at = {}
+        self._rotation_last_removed = {}
+        self._rotation_last_candle = {}
+        self._rotation_pending = None
+        self._rotation_next_at = 0
+        self.active_symbols = ()
+        self.rotations = 0
 
     @property
     def conditional_mode(self):
@@ -200,6 +210,13 @@ class OTCSession:
             self._repair_last.clear()
             self._repair_count = 0
             self._repair_window = self.clock()
+            self._rotation_selected_at.clear()
+            self._rotation_last_removed.clear()
+            self._rotation_last_candle.clear()
+            self._rotation_pending = None
+            self._rotation_next_at = 0
+            self.active_symbols = ()
+            self.rotations = 0
             self.available = 0
             self.phase = "подключение"
             self.task = asyncio.create_task(self._timed_run(bot))
@@ -226,6 +243,8 @@ class OTCSession:
                 self.phase = "остановлен"
                 self.monitored = 0
                 self.last_tick = None
+                self.active_symbols = ()
+                self._rotation_pending = None
                 self._clear_quotes()
                 await self.provider.close()
                 if self.db:
@@ -262,7 +281,9 @@ class OTCSession:
             f"\nРежим: {'тестовый · текущая выплата ≥90% при включённом отборе' if self.test_mode else 'строгий — открытие и выплата ≥90% подтверждены'}"
             f"\nДанные: { {'snapshot': 'снимки свечей без live-потока', 'live': 'поток', 'pending': 'ещё не определены (проверка доступа)'}.get(self.transport, 'нет данных') }\nЭкспирации: {', '.join(f'M{x // 60}' for x in self.timeframes)}"
             f"\nСигналов за сеанс: {self.session_signal_count}; пауза по паре/экспирации {self.config.cooldown_seconds} с."
-            f"\nДо: {end}\nОтслеживается: {monitored} из {self.available}.\n{'С закрытия свечи' if self.transport == 'snapshot' else 'Возраст котировки'}: {age}"
+            f"\nДо: {end}\nОтслеживается: {monitored} из {self.available}."
+            + (f"\nПары в потоке: {', '.join(self.active_symbols)} · замен за сеанс: {self.rotations}" if self.active_symbols else "")
+            + f"\n{'С закрытия свечи' if self.transport == 'snapshot' else 'Возраст котировки'}: {age}"
             "\nЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ. Совпадение с платформой не подтверждено."
             + (
                 f"\nТариф: {self.plan.plan_name}; запросы: {self.plan.remaining}/{self.plan.quota} за {self.plan.per}; потоки: {self.plan.streams_open}/{self.plan.streams_limit}; активов/поток: {self.plan.instruments_per_stream if self.plan.instruments_per_stream is not None else 'без лимита'}. Лимиты получены при последней проверке."
@@ -464,6 +485,8 @@ class OTCSession:
             await asyncio.gather(watchdog, health_watchdog, return_exceptions=True)
             self.phase = "остановлен"
             self.monitored = 0
+            self.active_symbols = ()
+            self._rotation_pending = None
             self._clear_quotes()
             self.last_tick = None
             try:
@@ -490,6 +513,16 @@ class OTCSession:
 
     async def _wait_stream_release(self):
         await asyncio.sleep(5)
+
+    async def _wait_rotation_slot(self):
+        """Never open a replacement SSE until the old tariff slot is released."""
+        for _ in range(3):
+            await self._wait_stream_release()
+            plan = await self._usage_with_retry()
+            self.plan = plan
+            if plan.streams_open < plan.streams_limit:
+                return
+        raise RetryableFeedError()
 
     async def _catalogue_with_retry(self):
         for attempt in range(3):
@@ -543,6 +576,12 @@ class OTCSession:
         if cap <= 0:
             raise AccessUnavailable("Нет доступных инструментов на поток.")
         chosen = assets[:cap]
+        now = self.clock()
+        self._rotation_selected_at = {a.symbol: now for a in chosen}
+        self._rotation_next_at = now + max(
+            300, getattr(self.config, "pair_rotation_seconds", 600)
+        )
+        self.active_symbols = tuple(a.symbol for a in chosen)
         logger.info("OTC selected: %d of %d instruments", len(chosen), len(assets))
         # One catalogue, one stream, history per instrument; leave a reserve.
         if plan.remaining < len(chosen) + 3:
@@ -717,6 +756,105 @@ class OTCSession:
         self._repair_count += 1
         tasks[symbol] = asyncio.create_task(self._repair_history(symbol, history))
 
+    async def _rotation_activity(self, now):
+        paths = []
+        for name, table in (
+            ("cycle_preview", "predictions"),
+            ("main_ready", "predictions"),
+            ("main_broad", "predictions"),
+            ("live_strategies", "signals"),
+        ):
+            journal = getattr(getattr(self, name, None), "journal", None)
+            if journal is not None and getattr(journal, "path", None):
+                paths.append((journal.path, table))
+        activity = await asyncio.to_thread(journal_activity, paths, now)
+        if activity is None:
+            return None
+        protected, recent = activity
+        if self.db:
+            protected.update(r["symbol"] for r in await db_call(self.db.pending))
+        return protected, recent
+
+    async def _prepare_rotation(self, catalogue, chosen):
+        now = self.clock()
+        if (
+            not getattr(self.config, "pair_rotation_enabled", True)
+            or not self._rotation_selected_at
+            or self._rotation_pending is not None
+            or now < self._rotation_next_at
+            or len(catalogue) <= len(chosen)
+        ):
+            return
+        interval = max(300, getattr(self.config, "pair_rotation_seconds", 600))
+        self._rotation_next_at = now + interval
+        activity = await self._rotation_activity(now)
+        if activity is None:
+            return
+        protected, recent = activity
+        swap = choose_pair_swap(
+            catalogue, chosen, now, self._rotation_selected_at,
+            self._quotes, self._rotation_last_candle, protected, recent,
+            self._rotation_last_removed,
+        )
+        if swap is None:
+            return
+        victim, asset, reason = swap
+        try:
+            # Usage inspection is documented as free. Never spend the last
+            # portion of the daily request allowance on exploring other pairs.
+            quota = await self.provider.usage()
+            if quota.remaining < max(
+                100, getattr(self.config, "pair_rotation_quota_reserve", 100)
+            ):
+                logger.info("OTC pair rotation deferred: request reserve is low")
+                return
+            candles = await self.provider.candles(asset.symbol, self.clock())
+            if not usable_history(candles, self.clock()):
+                logger.info("OTC pair rotation skipped %s: history not current", asset.symbol)
+                return
+            self._rotation_pending = (victim, asset, candles, reason, self.clock())
+            logger.info("OTC pair rotation prepared: %s -> %s (%s)",
+                        victim, asset.symbol, reason)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("OTC pair rotation deferred: %s", type(exc).__name__)
+
+    async def _commit_rotation(self, chosen, history):
+        proposal = self._rotation_pending
+        if proposal is None:
+            return None
+        victim, asset, candles, reason, prepared_at = proposal
+        now = self.clock()
+        if now - prepared_at > 60 or victim not in chosen or asset.symbol in chosen:
+            self._rotation_pending = None
+            return None
+        # Avoid the 15-20s pre-entry publishing window and keep stream swaps
+        # away from the close/open of a minute where an expiry tick is needed.
+        if not 5 <= now % 60 <= 25:
+            return None
+        activity = await self._rotation_activity(now)
+        if activity is None or victim in activity[0]:
+            return None
+        if not usable_history(candles, now):
+            self._rotation_pending = None
+            return None
+        replacement = dict(chosen)
+        replacement.pop(victim)
+        replacement[asset.symbol] = asset
+        history.pop(victim, None)
+        history[asset.symbol] = list(candles)
+        self._rotation_selected_at.pop(victim, None)
+        self._rotation_selected_at[asset.symbol] = now
+        self._rotation_last_removed[victim] = now
+        self._rotation_last_candle.pop(victim, None)
+        self._rotation_pending = None
+        self.active_symbols = tuple(replacement)
+        self.rotations += 1
+        logger.info("OTC pair rotated: %s -> %s (%s); active=%s",
+                    victim, asset.symbol, reason, ",".join(replacement))
+        return replacement
+
     async def _refresh_stream_assets(self, active, chosen):
         while True:
             await asyncio.sleep(getattr(self.config, "catalogue_refresh_seconds", 30))
@@ -732,6 +870,7 @@ class OTCSession:
                 active.clear()
                 active.update(updated)
                 self.available = len(catalogue)
+                await self._prepare_rotation(catalogue, chosen)
             except AccessUnavailable:
                 active.clear()
                 raise
@@ -835,6 +974,15 @@ class OTCSession:
                                         self._queue_history_repair(
                                             tick.symbol, history, repair_tasks
                                         )
+                                replacement = await self._commit_rotation(chosen, history)
+                                if replacement is not None:
+                                    chosen = replacement
+                                    active = dict(chosen)
+                                    builder.clear()
+                                    self._clear_quotes()
+                                    self.last_tick = None
+                                    self.monitored = 0
+                                    break
                                 continue
                             if hasattr(self.provider, "record_closed"):
                                 await self.provider.record_closed(
@@ -848,6 +996,7 @@ class OTCSession:
                             if not values or values[-1].time < bar.time:
                                 values.append(bar)
                                 del values[:-1200]
+                                self._rotation_last_candle[tick.symbol] = now
                             asset = active.get(tick.symbol)
                             now = self.clock()
                             if tick.symbol in getattr(
@@ -899,6 +1048,10 @@ class OTCSession:
                     await asyncio.gather(
                         refresh_task, *repair_tasks.values(), return_exceptions=True
                     )
+                # A planned change closes the old SSE connection before the
+                # next one is opened. Give a single-stream tariff time to
+                # release its connection slot; this is not an error reconnect.
+                await self._wait_rotation_slot()
             except asyncio.CancelledError:
                 raise
             except AccessUnavailable:

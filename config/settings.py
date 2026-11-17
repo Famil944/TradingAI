@@ -76,6 +76,16 @@ class Settings:
     max_instruments: int = field(
         default_factory=lambda: max(1, int(os.getenv("OTC_MAX_INSTRUMENTS", "5")))
     )
+    pair_rotation_enabled: bool = field(
+        default_factory=lambda: os.getenv("OTC_PAIR_ROTATION_ENABLED", "true").lower()
+        in ("1", "true", "yes", "on")
+    )
+    pair_rotation_seconds: int = field(
+        default_factory=lambda: max(300, int(os.getenv("OTC_PAIR_ROTATION_SECONDS", "600")))
+    )
+    pair_rotation_quota_reserve: int = field(
+        default_factory=lambda: max(100, int(os.getenv("OTC_PAIR_ROTATION_QUOTA_RESERVE", "100")))
+    )
     cooldown_seconds: int = field(
         default_factory=lambda: max(60, int(os.getenv("OTC_COOLDOWN_SECONDS", "120")))
     )
