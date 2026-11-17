@@ -12,11 +12,11 @@ from pathlib import Path
 
 OUTCOMES = frozenset(("WIN", "LOSS", "DRAW", "UNKNOWN", "PENDING"))
 METHOD_LABELS = {
-    "bb_reentry": "ФОН · Боллинджер — возврат внутрь",
-    "break_retest": "ФОН · Пробой и ретест",
-    "ema_pullback": "ФОН · Откат EMA9/19",
+    "bb_reentry": "Боллинджер · возврат",
+    "break_retest": "Пробой и ретест",
+    "ema_pullback": "Откат EMA9/19",
 }
-MAIN_LABEL = "ОСНОВНОЙ · Боллинджер ×3"
+MAIN_LABEL = "Боллинджер ×3"
 
 
 def _db(path):
