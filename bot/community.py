@@ -13,6 +13,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from bot import otc_commands
 from config.settings import ROOT, settings
 from services.otc_feedback import FeedbackStore, LABELS, STATUSES
+from services.otc_subscribers import Subscribers
 from services.otc_public_stats import (
     METHOD_LABELS, describe, main_signals, shadow_signals,
 )
@@ -26,6 +27,11 @@ SECONDS = {"2": 120, "5": 300, "15": 900, "all": None}
 @lru_cache(maxsize=1)
 def feedback():
     return FeedbackStore(ROOT / "data" / "community-feedback.db")
+
+
+@lru_cache(maxsize=1)
+def subscribers():
+    return Subscribers(ROOT / "data" / "subscribers.db")
 
 
 def is_owner(user):
@@ -51,6 +57,8 @@ def home(owner=False):
         [("📊 Проверить винрейт", "c:sources")],
         [("💡 Предложить улучшение", "c:suggest")],
     ]
+    if not owner:
+        rows.append([("🔕 Отписаться от сигналов", "c:unsubscribe")])
     if owner:
         rows.append([("📥 Предложения пользователей", "c:queue")])
         rows.append([("📡 Публикация фоновых тестов", "c:shadow")])
@@ -186,20 +194,51 @@ def timestamp(value):
     return datetime.fromtimestamp(value, MZ).strftime("%d.%m %H:%M МСК")
 
 
-@router.message(Command("start", "help"))
+@router.message(Command("start"))
 async def start(message: types.Message):
+    if not private(message):
+        return
+    if is_owner(message.from_user):
+        await otc_commands.show_menu(message)
+        return
+    await asyncio.to_thread(subscribers().subscribe, message.chat.id)
+    await message.answer(
+        "✅ Подписка на сигналы включена.\n"
+        "Когда владелец запустит бота и появится новый сигнал, "
+        "ты получишь его автоматически — нажимать «Запустить» не нужно.\n"
+        "Прогнозы OTCharts не являются подтверждёнными сделками брокера.",
+        reply_markup=home(), parse_mode=None,
+    )
+
+
+@router.message(Command("help"))
+async def help_menu(message: types.Message):
     if not private(message):
         return
     if is_owner(message.from_user):
         await otc_commands.show_menu(message)
     else:
         await message.answer(
-            "TradingAI · прогнозы OTC\n"
-            "Просматривай результаты по каждой стратегии отдельно. "
-            "Это статистика прогнозов OTCharts, не подтверждённых брокером сделок.",
-            reply_markup=home(),
-            parse_mode=None,
+            "Здесь можно смотреть результаты и предлагать улучшения. "
+            "Чтобы получать новые сигналы автоматически — /start.",
+            reply_markup=home(), parse_mode=None,
         )
+
+
+@router.message(Command("stop_signals"))
+async def stop_signals(message: types.Message):
+    if not private(message) or is_owner(message.from_user):
+        return
+    await asyncio.to_thread(subscribers().unsubscribe, message.chat.id)
+    await message.answer(
+        "🔕 Подписка отключена. Новые личные сигналы больше не отправляются. "
+        "Чтобы подписаться снова, используй /start.",
+        reply_markup=keyboard([
+            [("🔔 Подписаться снова", "c:subscribe")],
+            [("📊 Винрейт", "c:sources")],
+            [("💡 Предложение", "c:suggest")],
+        ]), parse_mode=None,
+    )
 
 
 @router.message(Command("signal_stats"))
@@ -269,6 +308,24 @@ async def callbacks(query: types.CallbackQuery):
     if target == "home":
         await query.answer()
         await query.message.answer("Меню:", reply_markup=home(owner))
+        return
+    if target == "unsubscribe" and not owner:
+        await asyncio.to_thread(subscribers().unsubscribe, query.message.chat.id)
+        await query.answer("Личные сигналы отключены")
+        await query.message.answer(
+            "🔕 Новые личные сигналы отключены. "
+            "Чтобы снова получать их, нажми кнопку:",
+            reply_markup=keyboard([[("🔔 Подписаться", "c:subscribe")]]),
+            parse_mode=None,
+        )
+        return
+    if target == "subscribe" and not owner:
+        await asyncio.to_thread(subscribers().subscribe, query.message.chat.id)
+        await query.answer("Подписка включена")
+        await query.message.answer(
+            "✅ Подписка включена. Запускает торговую систему только владелец.",
+            reply_markup=home(), parse_mode=None,
+        )
         return
     if target == "sources":
         await query.answer()
