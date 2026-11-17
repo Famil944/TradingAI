@@ -216,17 +216,14 @@ class PublicPublisher:
         return sqlite3.connect(self.path, timeout=5)
 
     def _snapshot(self):
+        # Four independent published strategies; do NOT turn archived research
+        # candidates into actionable cards or silently backfill old test history.
+        from services.otc_strategies_live import load_live_signals
+
         rows = main_signals(self.root / "data" / "bollinger-cycles.db", self.enabled_at)
-        windows = self._flag_windows()
-        if windows:
-            oldest = min(max(self.enabled_at, t) for t in windows.values())
-            rows.extend(
-                row for row in shadow_signals(
-                    self.root / "data" / "community-cycles.db", oldest
-                )
-                if row["strategy"] in windows
-                and row["created_at"] >= max(self.enabled_at, windows[row["strategy"]])
-            )
+        rows.extend(
+            load_live_signals(self.root / "data" / "community-live.db", self.enabled_at)
+        )
         return sorted(rows, key=lambda r: (r["created_at"], r["id"]))
 
     def _sent(self, identifier):
