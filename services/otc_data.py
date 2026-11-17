@@ -74,6 +74,10 @@ class OTChartsProvider:
         self.closed_symbols = set()
         self.catalogue = {}
         self.usage_snapshot = {}
+        # Concurrent REST downloads are fine; SQLite still has one writer.
+        # Serialize all price-archive writes to avoid competing 5000-bar
+        # transactions and blocking the live minute-close path on DB locks.
+        self._archive_write_lock = asyncio.Lock()
 
     async def _http(self):
         if not self._key:
@@ -171,7 +175,8 @@ class OTChartsProvider:
             )
         self.catalogue = {a.symbol: a for a in result}
         if self.archive is not None:
-            await asyncio.to_thread(self.archive.assets, result, observed_at)
+            async with self._archive_write_lock:
+                await asyncio.to_thread(self.archive.assets, result, observed_at)
         return result
 
     async def candles(self, symbol, now):
@@ -194,18 +199,23 @@ class OTChartsProvider:
                 continue
         bars = normalize_candles(rows, int(now))
         if self.archive is not None:
-            await asyncio.to_thread(self.archive.bars, symbol, bars, time.time())
+            async with self._archive_write_lock:
+                await asyncio.to_thread(self.archive.bars, symbol, bars, time.time())
         return bars[-1200:]
 
     async def record_closed(self, symbol, bar, now):
         if self.archive is not None:
-            await asyncio.to_thread(
-                self.archive.bars, symbol, [bar], now, "otcharts_ticks"
-            )
+            async with self._archive_write_lock:
+                await asyncio.to_thread(
+                    self.archive.bars, symbol, [bar], now, "otcharts_ticks"
+                )
 
     async def ticks(self, symbols):
         session = await self._http()
-        timeout = aiohttp.ClientTimeout(total=None, connect=15, sock_read=15)
+        # OTCharts may send SSE heartbeat comments only every ~20 seconds.
+        # The independent fresh-quote watchdog decides when to reconnect;
+        # transport inactivity must not close a healthy quiet socket first.
+        timeout = aiohttp.ClientTimeout(total=None, connect=15, sock_read=40)
         try:
             async with session.get(
                 "https://otcharts.com/v1/stream",

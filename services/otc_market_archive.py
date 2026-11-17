@@ -29,15 +29,23 @@ class MarketArchive:
             db.commit()
 
     def bars(self, symbol, bars, now, source="otcharts_history"):
+        # A history request may return up to 5000 candles. Fetch the current
+        # rows once instead of issuing a SELECT per candle on a slow phone.
+        valid = [bar for bar in bars if bar.time + 60 <= now]
+        if not valid:
+            return
         with closing(sqlite3.connect(self.path, timeout=20)) as db:
-            for bar in bars:
-                if bar.time + 60 > now:
-                    continue
+            original = {
+                at: (op, hi, lo, cl, src)
+                for at, op, hi, lo, cl, src in db.execute(
+                    "SELECT time,open,high,low,close,source FROM bars "
+                    "WHERE symbol=? AND time BETWEEN ? AND ?",
+                    (symbol, min(bar.time for bar in valid), max(bar.time for bar in valid)),
+                )
+            }
+            for bar in valid:
                 values = (bar.open, bar.high, bar.low, bar.close)
-                old = db.execute(
-                    "SELECT open,high,low,close,source FROM bars WHERE symbol=? AND time=?",
-                    (symbol, bar.time),
-                ).fetchone()
+                old = original.get(bar.time)
                 if (
                     old is not None
                     and old[4] == "otcharts_history"
@@ -49,6 +57,7 @@ class MarketArchive:
                         "INSERT INTO bars VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (symbol, bar.time, *values, now, now, 0, source),
                     )
+                    original[bar.time] = (*values, source)
                 elif tuple(old[:4]) != values:
                     # Tick-built bars are provisional; official history replaces them without inventing platform proof.
                     revision = (
@@ -60,12 +69,14 @@ class MarketArchive:
                         "UPDATE bars SET open=?,high=?,low=?,close=?,last_observed=?,revisions=revisions+?,source=? WHERE symbol=? AND time=?",
                         (*values, now, revision, source, symbol, bar.time),
                     )
+                    original[bar.time] = (*values, source)
                 elif old[4] == "otcharts_ticks" and source == "otcharts_history":
                     # Identical OHLC still gains canonical provenance on confirmation.
                     db.execute(
                         "UPDATE bars SET source=?,last_observed=? WHERE symbol=? AND time=?",
                         (source, now, symbol, bar.time),
                     )
+                    original[bar.time] = (*values, source)
             db.commit()
 
     def assets(self, assets, now):

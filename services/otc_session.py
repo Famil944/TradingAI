@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import math
+import sqlite3
 import time
 from collections import Counter
 from dataclasses import replace
@@ -31,14 +32,27 @@ logger = logging.getLogger(__name__)
 MOSCOW = ZoneInfo("Europe/Moscow")
 
 
+def sqlite_busy(exc):
+    """Retry only transient SQLite contention, never missing schema/corrupt DB."""
+    return isinstance(exc, sqlite3.OperationalError) and any(
+        marker in str(exc).lower() for marker in ("locked", "busy")
+    )
+
+
 async def db_call(function, *args, **kwargs):
     """Drain SQLite work on cancellation before shutdown or another session."""
-    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await task
-        raise
+    for attempt in range(3):
+        task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+        except sqlite3.OperationalError as exc:
+            if not sqlite_busy(exc) or attempt == 2:
+                raise
+            logger.warning("OTC SQLite is temporarily busy; retry %d/3", attempt + 2)
+            await asyncio.sleep((attempt + 1) * 0.5)
 
 
 class OTCSession:
@@ -387,6 +401,7 @@ class OTCSession:
             "incomplete_candle": "неполные свечи",
             "stream_no_fresh_ticks": "поток без свежих цен",
             "stream_disconnected": "разрывы потока",
+            "sqlite_busy": "временная занятость SQLite",
             "cooldown": "пауза между сигналами",
             "late_signal": "запоздалый расчёт",
             "unknown_or_stale_payout": "нет подтверждённой выплаты",
@@ -477,7 +492,9 @@ class OTCSession:
             self.last_error = (
                 f"OTC остановлен: {type(exc).__name__}. Подробности /otc_diagnostics."
             )
-            logger.warning("OTC stopped: %s", type(exc).__name__)
+            # Diagnostic traceback is local and redacted by SecretFormatter.
+            # The owner sees a safe error category, never private SQL values.
+            logger.exception("OTC stopped by unexpected failure: %s", type(exc).__name__)
             await self._notify(bot, self.last_error)
         finally:
             watchdog.cancel()
@@ -1057,6 +1074,11 @@ class OTCSession:
             except AccessUnavailable:
                 raise
             except Exception as exc:
+                if isinstance(exc, sqlite3.OperationalError):
+                    if not sqlite_busy(exc):
+                        logger.exception("OTC SQLite schema/storage failure; stop safely")
+                        raise
+                    logger.warning("OTC stream hit a temporary SQLite lock; recovering")
                 if refresh_task.done() and not refresh_task.cancelled():
                     refresh_error = refresh_task.exception()
                     if isinstance(refresh_error, AccessUnavailable):
@@ -1068,17 +1090,24 @@ class OTCSession:
                 self._clear_quotes()
                 active = {}
                 # Broken continuity invalidates outstanding observations.
-                if self.db:
+                if self.db and not sqlite_busy(exc):
                     await db_call(self.db.recover)
                 reason = (
-                    "stream_no_fresh_ticks"
+                    "sqlite_busy"
+                    if sqlite_busy(exc)
+                    else "stream_no_fresh_ticks"
                     if isinstance(exc, TimeoutError)
                     else "stream_disconnected"
                 )
                 logger.warning("OTC reconnect: %s (%s)", reason, type(exc).__name__)
                 if hasattr(self, "data_readiness"):
                     self.data_readiness.reset(self.clock(), reason)
-                await self._event(reason)
+                if sqlite_busy(exc):
+                    # If SQLite is busy, do not require an event write to
+                    # succeed before the feed is allowed to reconnect.
+                    self._health_counts[reason] += 1
+                else:
+                    await self._event(reason)
                 delay = reconnect_delay(attempt, getattr(exc, "retry_after", 0))
                 attempt += 1
                 await asyncio.sleep(delay)
@@ -1090,15 +1119,64 @@ class OTCSession:
             try:
                 plan = await self._usage_with_retry()
                 self.plan = plan
-                if plan.remaining < len(chosen) + 2:
+                now = self.clock()
+                # The archive remains valid across short disconnects within
+                # the same minute. Do not spend 5 candle calls every reconnect.
+                missing = [
+                    symbol for symbol in chosen
+                    if not self._can_reuse_stream_history(history.get(symbol), now)
+                ]
+                if plan.remaining < len(missing) + 2:
                     raise AccessUnavailable(
                         "Недостаточно запросов для восстановления истории."
                     )
                 catalogue = await self.provider.symbols()
-                restored = {}
-                for symbol in chosen:
-                    restored[symbol] = await self.provider.candles(symbol, self.clock())
-                history.update(restored)
+                if missing:
+                    # Bound network parallelism, cancel siblings on failure,
+                    # and never open another SSE while a fetch is incomplete.
+                    gate = asyncio.Semaphore(2)
+
+                    async def restore_one(symbol):
+                        async with gate:
+                            return await self.provider.candles(symbol, self.clock())
+
+                    try:
+                        async with asyncio.TaskGroup() as group:
+                            tasks = {
+                                symbol: group.create_task(restore_one(symbol))
+                                for symbol in missing
+                            }
+                    except ExceptionGroup as errors:
+                        # Do not hide permission/quota refusals inside a generic
+                        # task-group error and retry them forever.
+                        errors_list = list(errors.exceptions)
+                        denial = next(
+                            (exc for exc in errors_list if isinstance(exc, AccessUnavailable)),
+                            None,
+                        )
+                        if denial is not None:
+                            raise denial from None
+                        transient = next(
+                            (exc for exc in errors_list if isinstance(exc, (RetryableFeedError, TimeoutError))),
+                            None,
+                        )
+                        if transient is not None:
+                            raise transient from None
+                        lock = next(
+                            (exc for exc in errors_list if sqlite_busy(exc)), None
+                        )
+                        if lock is not None:
+                            raise lock from None
+                        raise
+                    history.update({symbol: task.result() for symbol, task in tasks.items()})
+                    logger.info(
+                        "OTC reconnect history refreshed: %d/%d instruments",
+                        len(missing), len(chosen),
+                    )
+                else:
+                    logger.info("OTC reconnect: reused current continuous history")
+                if plan.streams_open >= plan.streams_limit:
+                    await self._wait_rotation_slot()
                 return {
                     a.symbol: a
                     for a in self._eligible(
@@ -1114,6 +1192,22 @@ class OTCSession:
                     reconnect_delay(attempt, getattr(exc, "retry_after", 0))
                 )
                 attempt += 1
+            except sqlite3.OperationalError as exc:
+                if not sqlite_busy(exc):
+                    raise
+                self.phase = "Переподключение"
+                logger.warning("OTC reconnect history: SQLite busy; deferring safely")
+                self._health_counts["history_sqlite_retry"] += 1
+                await asyncio.sleep(reconnect_delay(attempt))
+                attempt += 1
+
+    @staticmethod
+    def _can_reuse_stream_history(bars, now):
+        """Reuse only complete continuous history ending this minute."""
+        return bool(
+            bars and usable_history(bars, now)
+            and 0 <= now - (bars[-1].time + 60) <= 60
+        )
 
     async def _consider_plan(self, bot, history, tick, asset, closed_at, seconds=60):
         now = self.clock()
