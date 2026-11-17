@@ -31,10 +31,20 @@ def public_text(row):
         f"{heading} · M{row['seconds'] // 60} {arrow}",
         row["symbol"], "Прогноз · OTC · " + _ts(row["entry_at"]) + " МСК",
     ]
-    for i, state in enumerate(row.get("attempts") or []):
-        lines.append(
-            f"{i+1}. {_ts(row['entry_at']+i*row['seconds'])[6:]} · {ICONS.get(state, '❔')}"
+    attempts = row.get("attempts") or []
+    stopped = False
+    for i in range(3):
+        state = attempts[i] if i < len(attempts) else None
+        marker = (
+            ICONS.get(state, "❔") if state is not None
+            else "— остановлено" if stopped else "⏳"
+            if row["outcome"] == "PENDING" else "—"
         )
+        lines.append(
+            f"{i+1}. {_ts(row['entry_at']+i*row['seconds'])[6:]} · {marker}"
+        )
+        if state in ("WIN", "DRAW", "UNKNOWN"):
+            stopped = True
     lines.append("Результат: " + ICONS.get(row["outcome"], "⏳") + " " + row["outcome"])
     lines.append("Источник: OTCharts · не подтверждено брокером")
     if row["origin"] == "shadow":
