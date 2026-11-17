@@ -126,6 +126,9 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 "otc",
                 "otc_stats",
                 "otc_research",
+                "signal_stats",
+                "suggest",
+                "suggestions",
             },
         )
         commands.choices[1] = (300,)
