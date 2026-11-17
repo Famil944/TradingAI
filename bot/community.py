@@ -75,7 +75,8 @@ def metrics_menu(source, timeframe="2", metric="B", limit=10, period="all"):
     return keyboard([
         [("M2", f"c:source_tf:{source}:2"),
          ("M5", f"c:source_tf:{source}:5"),
-         ("M15", f"c:source_tf:{source}:15")],
+         ("M15", f"c:source_tf:{source}:15"),
+         ("Все", f"c:source_tf:{source}:all")],
         [("Входы A", action("A")),
          ("Сигналы ×3 B", action("B"))],
         [("Циклы ×6 C", action("C"))],
@@ -113,6 +114,23 @@ async def show_shadow_flags(message):
     )
 
 
+def source_health(source):
+    current = otc_commands.service
+    if current is None or not current.running():
+        return "Остановлен / нет работающего сеанса"
+    age = time.time() - current.last_tick if current.last_tick is not None else None
+    threshold = getattr(getattr(current, "config", None), "max_tick_age", 8.0)
+    if age is None or age < 0 or age > threshold:
+        return "Нет свежих котировок"
+    if getattr(current, "phase", "") != "поток активен":
+        return "Подключение / ожидание данных"
+    if source == "main":
+        strategy = getattr(current, "cycle_preview", None)
+        if not strategy or not getattr(strategy, "enabled", False):
+            return "Основной алгоритм не активен"
+    return "Данные свежие · исследовательский режим" if source != "main" else "Данные свежие"
+
+
 def source_title(source):
     return "ОСНОВНОЙ · Боллинджер ×3" if source == "main" else METHOD_LABELS[source]
 
@@ -138,7 +156,7 @@ def report_for(source, timeframe, metric, limit=10, period="all"):
     seconds = SECONDS[timeframe]
     label = source_title(source)
     versions = sorted({row["version"] for row in rows})
-    text = label + ("\nФОН · ТЕСТ, сигналы не отправлялись в реальный рынок."
+    text = label + "\nСтатус: " + source_health(source) + ("\nФОН · ТЕСТ, сигналы не отправлялись в реальный рынок."
                     if source != "main" else "\nПрогнозы, не подтверждённые сделки.")
     text += "\nПериод: " + {"today": "сегодня МСК", "7d": "7 дней", "all": "вся история"}[period]
     if not rows:
