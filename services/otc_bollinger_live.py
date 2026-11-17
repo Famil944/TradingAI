@@ -176,8 +176,9 @@ class BollingerCycles(MLPreview):
     label = "Боллинджер ×3"
     planning_window = (15, 20)
 
-    def __init__(self, journal, clock=time.time):
+    def __init__(self, journal, clock=time.time, subscriber_relay=None):
         super().__init__(journal, None, clock)
+        self.subscriber_relay = subscriber_relay
         self.allowed_timeframes = (120, 300, 900)
         self.research = CandidateJournal(
             journal.path.with_name("bollinger-live-ticks.db")
@@ -305,15 +306,37 @@ class BollingerCycles(MLPreview):
                     bot.send_message(chat_id, card(plan), parse_mode=None), timeout
                 )
                 late = not 15 <= plan["entry_at"] - self.clock() <= 20
+                sent_at = self.clock()
                 await asyncio.to_thread(
                     self.journal.sent,
                     identifier,
-                    self.clock(),
+                    sent_at,
                     message.message_id,
                     late,
                 )
                 if late:
                     await asyncio.to_thread(self.wallet.cancel, identifier)
+                elif self.subscriber_relay is not None:
+                    await self.subscriber_relay.publish_now(
+                        bot,
+                        dict(
+                            id="main:" + identifier,
+                            origin="main",
+                            strategy="bollinger_live",
+                            version=plan["model_sha256"],
+                            label=self.label,
+                            seconds=plan["cycle_seconds"],
+                            symbol=plan["name"],
+                            direction=plan["direction"],
+                            created_at=plan.get("observed_at", sent_at),
+                            sent_at=sent_at,
+                            entry_at=plan["entry_at"],
+                            expires_at=plan["expires_at"],
+                            resolved_at=plan["expires_at"],
+                            outcome="PENDING",
+                            attempts=[],
+                        ),
+                    )
                 logger.info(
                     "Bollinger cycle sent: %s M%d lead=%.1f",
                     plan["symbol"],

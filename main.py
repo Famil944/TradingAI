@@ -194,24 +194,27 @@ async def main(*, session_minutes=None, session_end=None):
     service.main_broad = broad
     broad_task = asyncio.create_task(broad.run(bot, settings.admin_chat_id))
     from services.otc_bollinger_live import BollingerCycles, CycleJournal
+    from services.otc_subscribers import SubscriberRelay
 
+    subscriber_relay = SubscriberRelay(ROOT)
     cycle_journal = CycleJournal(
         ROOT / "data" / "bollinger-cycles.db", label="Боллинджер ×3", per_horizon=True
     )
     await asyncio.to_thread(cycle_journal.cancel_future, time.time())
-    cycles = BollingerCycles(cycle_journal)
+    cycles = BollingerCycles(cycle_journal, subscriber_relay=subscriber_relay)
+    subscriber_relay.live_cycle = cycles
     service.cycle_preview = cycles
     cycle_task = asyncio.create_task(cycles.run(bot, settings.admin_chat_id))
     from services.otc_strategies_live import LiveStrategyPublisher
-    strategy_engine = LiveStrategyPublisher(ROOT)
+    strategy_engine = LiveStrategyPublisher(
+        ROOT, subscriber_relay=subscriber_relay
+    )
     strategy_task = asyncio.create_task(
         strategy_engine.run(bot, settings.admin_chat_id, service, cycles)
     )
-    # Subscribers receive safe forecast cards automatically after /start.
-    # This relay does not start/stop the owner's trading strategy.
-    from services.otc_subscribers import SubscriberRelay
-
-    subscriber_task = asyncio.create_task(SubscriberRelay(ROOT, live_cycle=cycles).run(bot))
+    # New signals are mirrored immediately after the owner's send succeeds.
+    # The relay loop remains a fallback and mirrors later WIN/LOSS edits.
+    subscriber_task = asyncio.create_task(subscriber_relay.run(bot))
     # Opt-in public reporting; independent from the private virtual wallet.
     public_task = None
     public_channel = os.getenv("OTC_PUBLIC_CHANNEL_ID", "").strip()

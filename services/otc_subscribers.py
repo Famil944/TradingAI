@@ -24,7 +24,7 @@ LOG = logging.getLogger(__name__)
 # A subscriber is never sent a stale, already-entered signal as a new entry.
 MIN_ENTRY_LEAD_SECONDS = 3
 MAX_SEND_AGE_SECONDS = 90
-POLL_SECONDS = 2
+POLL_SECONDS = 2  # fallback/reconciliation only; new signals are pushed immediately
 MAX_USERS_PER_TICK = 200
 
 
@@ -137,6 +137,66 @@ class SubscriberRelay:
             key=lambda row: (row["created_at"], row["id"]),
         )
 
+    async def publish_now(self, bot, row):
+        """Push one newly owner-delivered signal to all current subscribers now.
+
+        This is the primary delivery path. The polling loop remains a fallback
+        and later mirrors WIN/LOSS edits. Subscription age is compared with
+        sent_at, not candidate created_at: a candidate may have been calculated
+        before /start but only becomes an actionable signal when the owner card
+        is actually delivered.
+        """
+        if row.get("origin") not in ("main", "live"):
+            return
+        current_time = self.clock()
+        sent_at = row.get("sent_at")
+        if (
+            sent_at is None
+            or sent_at > current_time
+            or current_time - sent_at > MAX_SEND_AGE_SECONDS
+            or row["entry_at"] - current_time < MIN_ENTRY_LEAD_SECONDS
+        ):
+            return
+
+        safe_text = safe_card(row, self.live_cycle)
+        content_sha = hashlib.sha256(safe_text.encode("utf-8")).hexdigest()
+        offset = 0
+        while True:
+            subscribers = await asyncio.to_thread(
+                self.store.active, MAX_USERS_PER_TICK, offset
+            )
+            if not subscribers:
+                break
+            offset += len(subscribers)
+
+            async def deliver(chat_id, joined_at):
+                if sent_at < joined_at:
+                    return
+                already = await asyncio.to_thread(
+                    self.store.delivered, chat_id, row["id"]
+                )
+                if already:
+                    return
+                try:
+                    msg = await bot.send_message(chat_id, safe_text, parse_mode=None)
+                    await asyncio.to_thread(
+                        self.store.saved, chat_id, row["id"],
+                        msg.message_id, row["outcome"], content_sha,
+                    )
+                except TelegramForbiddenError:
+                    await asyncio.to_thread(self.store.unsubscribe, chat_id)
+                except TelegramBadRequest:
+                    LOG.warning("Subscriber message rejected for %d", chat_id)
+                except Exception as exc:
+                    LOG.warning(
+                        "Subscriber immediate delivery failed: %s",
+                        type(exc).__name__,
+                    )
+
+            await asyncio.gather(
+                *(deliver(chat_id, joined_at) for chat_id, joined_at in subscribers)
+            )
+
     async def update(self, bot):
         rows = await asyncio.to_thread(self._signals)
         if not rows:
@@ -187,8 +247,7 @@ class SubscriberRelay:
                             LOG.warning("Subscriber edit failed: %s", type(exc).__name__)
                         continue
                     if (
-                        row["created_at"] < joined_at
-                        or row["sent_at"] < joined_at
+                        row["sent_at"] < joined_at
                         or row["sent_at"] > current_time
                         or current_time - row["sent_at"] > MAX_SEND_AGE_SECONDS
                         or row["entry_at"] - current_time < MIN_ENTRY_LEAD_SECONDS

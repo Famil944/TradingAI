@@ -105,6 +105,69 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(bot.edited), 1)
             self.assertIn("✅", bot.edited[0][2])
 
+    async def test_candidate_created_before_join_but_sent_after_join_is_delivered(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = Subscribers(root / "data" / "subscribers.db")
+            store.subscribe(41, now=1005)
+            journal(root / "data" / "bollinger-cycles.db", [
+                {"id": "new_after_join", "created": 1000, "outcome": "PENDING"}
+            ])
+            with sqlite3.connect(root / "data" / "bollinger-cycles.db") as db:
+                db.execute(
+                    "UPDATE predictions SET sent_at=? WHERE id=?",
+                    (1006, "new_after_join"),
+                )
+            relay = SubscriberRelay(root, store=store, clock=lambda: 1007)
+            bot = FakeBot()
+            await relay.update(bot)
+            self.assertEqual(len(bot.sent), 1)
+            self.assertEqual(bot.sent[0][0], 41)
+
+    async def test_publish_now_sends_all_new_strategy_signals_without_poll_wait(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = Subscribers(root / "data" / "subscribers.db")
+            store.subscribe(41, now=990)
+            relay = SubscriberRelay(root, store=store, clock=lambda: 1005)
+            bot = FakeBot()
+            for index, label in enumerate((
+                "Боллинджер ×3",
+                "Возврат внутрь",
+                "Пробой/ретест",
+                "Откат EMA9/19",
+            )):
+                await relay.publish_now(
+                    bot,
+                    {
+                        "id": f"signal-{index}",
+                        "origin": "main" if index == 0 else "live",
+                        "strategy": "bollinger_live" if index == 0 else "test",
+                        "version": "v1",
+                        "label": label,
+                        "seconds": 120,
+                        "symbol": "TEST OTC",
+                        "direction": "UP",
+                        "created_at": 980,
+                        "sent_at": 1004,
+                        "entry_at": 1020,
+                        "expires_at": 1380,
+                        "resolved_at": 1380,
+                        "outcome": "PENDING",
+                        "attempts": [],
+                    },
+                )
+            self.assertEqual(len(bot.sent), 4)
+            self.assertEqual(
+                {text.split(" · M", 1)[0] for _, text in bot.sent},
+                {
+                    "Боллинджер ×3",
+                    "Возврат внутрь",
+                    "Пробой/ретест",
+                    "Откат EMA9/19",
+                },
+            )
+
     async def test_no_backfill_and_disabled_user_cannot_receive(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
