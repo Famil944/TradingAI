@@ -92,7 +92,7 @@ class ConditionalRuleTests(unittest.TestCase):
             b.callback_data for b in buttons if b.callback_data.startswith("otc:tf:")
         ]
         self.assertEqual(
-            timeframes, ["otc:tf:all", "otc:tf:1", "otc:tf:5", "otc:tf:15"]
+            timeframes, ["otc:tf:all", "otc:tf:2", "otc:tf:5", "otc:tf:15"]
         )
 
     def test_replay_uses_future_colour_only_for_evaluation_not_scheduling(self):
@@ -305,6 +305,14 @@ class ConditionalSessionTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*tasks.values())
         self.session._queue_history_repair("A", cache, tasks)
         self.assertEqual(self.provider.candles.await_count, 1)
+        self.assertEqual(self.session._repair_count, 1)
+        self.session._repair_count = 50
+        self.session._queue_history_repair("B", cache, tasks)
+        self.assertNotIn("B", tasks)
+        self.session._repair_window = self.session.clock() - 3600
+        self.session._queue_history_repair("B", cache, tasks)
+        await asyncio.gather(*tasks.values())
+        self.assertEqual(self.provider.candles.await_count, 2)
         self.assertEqual(self.session._repair_count, 1)
 
     async def test_snapshot_mode_still_waits_between_requests(self):

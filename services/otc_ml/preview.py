@@ -18,7 +18,13 @@ from services.otc_confirmations import build
 from .quality import expected_return
 
 logger = logging.getLogger(__name__)
-DURATIONS = (60, 120, 180, 300, 900)
+DURATIONS = (120, 300, 900)
+MIN_MODEL_EV = 0.02
+
+
+def aligned_entry(entry, seconds):
+    """M5/M15 enter only when their corresponding candle closes."""
+    return seconds not in (300, 900) or entry % seconds == 0
 
 
 class PreviewJournal:
@@ -70,10 +76,33 @@ class PreviewJournal:
         with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
             return self._blocked(db, now, seconds)
 
+    def loss_cooldowns(self, now):
+        # All horizons of this source share a symbol pause. A later WIN must
+        # not erase a still-active LOSS pause; other sources remain independent.
+        with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
+            return dict(
+                db.execute(
+                    "SELECT symbol, max(resolved_at)+300 FROM predictions "
+                    "WHERE sent_at IS NOT NULL AND outcome='LOSS' "
+                    "AND resolved_at>? GROUP BY symbol",
+                    (now - 300,),
+                ).fetchall()
+            )
+
     def reserve(self, selected, now):
         with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
             db.execute("BEGIN IMMEDIATE")
             if self._blocked(db, now, selected["expires_at"] - selected["entry_at"]):
+                return None
+            if not aligned_entry(
+                selected["entry_at"], selected["expires_at"] - selected["entry_at"]
+            ):
+                return None
+            if db.execute(
+                "SELECT 1 FROM predictions WHERE symbol=? AND outcome='LOSS' "
+                "AND sent_at IS NOT NULL AND resolved_at>? LIMIT 1",
+                (selected["symbol"], now - 300),
+            ).fetchone():
                 return None
             identifier = uuid.uuid4().hex
             try:
@@ -162,36 +191,21 @@ class PreviewJournal:
             db.commit()
 
     def stats(self, seconds=None, since=0):
-        with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
-            rows = db.execute(
-                "SELECT outcome,count(*) FROM predictions WHERE (? IS NULL OR expires_at-entry_at=?) AND entry_at>=? GROUP BY outcome",
-                (seconds, seconds, since),
-            ).fetchall()
-        counts = dict(rows)
-        wins = counts.get("WIN", 0)
-        losses = counts.get("LOSS", 0)
-        rate = f"{100 * wins / (wins + losses):.1f}%" if wins + losses else "—"
-        title = (
-            (
-                "🟣 "
-                if self.label == "Groq"
-                else "🔵 "
-                if self.label.startswith("Основной")
-                else "🟠 "
-            )
-            + self.label
-            + " · отдельный тест"
-            + (f" · {seconds // 60} мин" if seconds else "")
-        )
-        return (
-            f"{title}\nВин {wins} (+)\nЛос {losses} (−)\nПропуск {sum(counts.get(k, 0) for k in ('CANCELLED', 'NOT_DELIVERED', 'LATE'))}\nВинрейт {rate}"
-            + (f"\nНет данных {counts['UNKNOWN']}" if counts.get("UNKNOWN") else "")
-            + (f"\nОжидают {counts['PENDING']}" if counts.get("PENDING") else "")
-        )
+        from services.otc_signal_report import journal_stats
+
+        return journal_stats(self, seconds, since)
 
 
 def select_forecast(
-    runtime, histories, assets, quotes, now, session_end=None, reasons=None
+    runtime,
+    histories,
+    assets,
+    quotes,
+    now,
+    session_end=None,
+    reasons=None,
+    audit=None,
+    excluded_symbols=None,
 ):
     entry = int(now) // 60 * 60 + 60
     if not 15 <= entry - now <= 23:
@@ -214,6 +228,9 @@ def select_forecast(
             reasons["asset_or_quote_ineligible"] += 1
             continue
         for seconds in DURATIONS:
+            if not aligned_entry(entry, seconds):
+                reasons["waiting_candle_boundary"] += 1
+                continue
             if session_end and entry + seconds + 60 > session_end:
                 continue
             row = dict(
@@ -233,10 +250,38 @@ def select_forecast(
             if ev is None:
                 reasons["invalid_model_probabilities"] += 1
                 continue
+            observation = dict(
+                version="xgb-audit-v1-" + result["model_sha256"],
+                symbol=symbol,
+                entry_at=entry,
+                expires_at=entry + seconds,
+                observed_at=now,
+                feature_asof=now,
+                direction=direction,
+                payout=asset.payout,
+                selected=False,
+                reason="model_ev_below_margin"
+                if ev < MIN_MODEL_EV
+                else "no_directional_confirmation",
+                gates={"valid_forecast": True},
+                probabilities=list(probabilities),
+                estimated_ev=ev,
+                model_sha=result["model_sha256"],
+                calibration_sha=result.get("calibration_sha256", "unknown"),
+                selection_policy="xgboost-payout-ev-margin-v2",
+            )
+            if audit is not None:
+                audit.append(observation)
+            if symbol in (excluded_symbols or {}):
+                continue
+            if ev < MIN_MODEL_EV:
+                reasons["model_ev_below_margin"] += 1
+                continue
             confirmations = build(bars, direction, seconds, now)
             if not confirmations["available"] or confirmations["count"] < 1:
                 reasons["no_directional_confirmation"] += 1
                 continue
+            observation["reason"] = "eligible_not_selected"
             candidate = dict(
                 symbol=symbol,
                 name=asset.name or symbol,
@@ -246,7 +291,8 @@ def select_forecast(
                 payout=asset.payout,
                 model_sha256=result["model_sha256"],
                 model_role="unqualified_experimental",
-                selection_policy="xgboost-one-confirmation-v1",
+                selection_policy="xgboost-payout-ev-margin-v2",
+                min_model_ev=MIN_MODEL_EV,
                 evidence=dict(confirmations=confirmations),
                 confirmations=confirmations,
                 estimated_ev=ev,
@@ -260,6 +306,13 @@ def select_forecast(
                 best["symbol"],
             ):
                 best = candidate
+    if best is not None and audit is not None:
+        for row in audit:
+            if (row["symbol"], row["expires_at"]) == (
+                best["symbol"],
+                best["expires_at"],
+            ):
+                row.update(selected=True, reason="selected_by_model")
     return best
 
 
@@ -291,7 +344,7 @@ def settle_preview(row, bars, now):
 
 
 def signal_card(selected, outcome=None, *, source):
-    from services.otc_regime import describe
+    from services.otc_regime import describe, describe_context
 
     arrow = "🟢⬆️" if selected["direction"] == "UP" else "🔴⬇️"
     status = {
@@ -312,6 +365,16 @@ def signal_card(selected, outcome=None, *, source):
     market = (
         f"\nРынок M{report.get('period', 60) // 60}: {describe(state)}" if state else ""
     )
+    details = describe_context(report.get("market_context"))
+    if details:
+        market += "\nКонтекст: " + details
+        alignment = report.get("checks", {}).get("alignment")
+        alignment_label = {
+            "agree": "за направление сигнала",
+            "against": "против направления сигнала",
+            "neutral": "нейтрально",
+        }.get(alignment, "недостаточно данных")
+        market += f"\nСогласование с M{report.get('alignment_period', 60) // 60}: {alignment_label}"
     minutes = int(selected["expires_at"] - selected["entry_at"]) // 60
     clock = datetime.fromtimestamp(
         selected["entry_at"], ZoneInfo("Europe/Moscow")
@@ -339,6 +402,19 @@ class MLPreview:
         self.snapshot = None
         self.attempted = None
         self.planning = None
+        self.audit_journal = None
+        if runtime is not None:
+            from services.otc_candidate_research import CandidateJournal, TickSampler
+
+            self.audit_journal = CandidateJournal(
+                journal.path.with_name("xgboost-candidates.db")
+            )
+            self.audit_sampler = TickSampler()
+            self.next_audit_flush = 0
+
+    def observe_audit_tick(self, tick, now):
+        if self.audit_journal is not None:
+            self.audit_sampler.observe(tick, now)
 
     def observe(self, history, assets, quotes, session_end):
         self.snapshot = (history, assets, quotes, session_end)
@@ -351,6 +427,15 @@ class MLPreview:
         await asyncio.to_thread(self.journal.cancel_future, self.clock())
 
     async def settle_pending(self, history):
+        if self.audit_journal is not None and self.clock() >= self.next_audit_flush:
+            self.next_audit_flush = self.clock() + 5
+            samples = self.audit_sampler.drain(self.clock())
+            if samples:
+                try:
+                    await asyncio.to_thread(self.audit_journal.samples, samples)
+                except Exception:
+                    self.audit_sampler.restore(samples)
+                    logger.exception("XGBoost audit samples unavailable")
         for row in await asyncio.to_thread(self.journal.pending):
             now = self.clock()
             bars = history.get(row["symbol"], [])
@@ -378,11 +463,15 @@ class MLPreview:
                 await asyncio.to_thread(self.journal.finish, row["id"], *result)
 
     async def plan(self, bot, chat_id, snapshot):
-        if await asyncio.to_thread(self.journal.blocked, self.clock()):
-            return
+        self.snapshot = snapshot
+        operational_block = await asyncio.to_thread(self.journal.blocked, self.clock())
         history, assets, quotes, end = snapshot
+        excluded = await asyncio.to_thread(self.journal.loss_cooldowns, self.clock())
         histories = {symbol: list(bars) for symbol, bars in history.items()}
         reasons = Counter()
+        audit = []
+        if excluded:
+            reasons["symbol_loss_cooldown"] = len(excluded)
         selected = await asyncio.to_thread(
             select_forecast,
             self.runtime,
@@ -392,7 +481,23 @@ class MLPreview:
             self.clock(),
             end,
             reasons,
+            audit,
+            excluded,
         )
+        for row in audit:
+            row["operational_block"] = (
+                "symbol_loss_cooldown"
+                if row["symbol"] in excluded
+                else operational_block
+            )
+        if self.audit_journal is not None:
+            try:
+                await asyncio.to_thread(self.audit_journal.record, audit)
+                self.audit_sampler.register(audit, self.clock())
+            except Exception:
+                logger.exception("XGBoost audit journal unavailable")
+        if operational_block:
+            return
         if not selected:
             logger.info("XGBoost skipped: %s", dict(reasons) or "no candidates")
             return
@@ -423,7 +528,7 @@ class MLPreview:
         selected["estimated_ev"] = expected_return(
             selected["probabilities"], selected["direction"], current.payout
         )
-        if selected["estimated_ev"] is None:
+        if selected["estimated_ev"] is None or selected["estimated_ev"] < MIN_MODEL_EV:
             logger.info("XGBoost skipped: invalid probabilities at delivery")
             return
         await self.publish(selected, bot, chat_id)
@@ -432,6 +537,8 @@ class MLPreview:
         from services.otc_confirmations import build
 
         selected = dict(selected)
+        selected["execution_policy"] = "m2-m5-m15-data-guard-v3"
+        selected["settlement_policy"] = "otcharts-canonical-minute-open-v1"
         evidence = selected.get("evidence") or {}
         confirmations = evidence.get("confirmations")
         if confirmations is None:
@@ -445,6 +552,13 @@ class MLPreview:
                 asof,
             )
         selected["confirmations"] = confirmations
+        from services.otc_delivery_guard import check_data
+
+        rejection = check_data(selected, self.snapshot, self.clock())
+        if rejection:
+            logger.info("%s skipped before delivery: %s", self.label, rejection)
+            return
+        selected["delivery_data_check"] = "fresh-quote8s-catalogue60s-contiguous60m-v1"
         identifier = await asyncio.to_thread(
             self.journal.reserve, selected, self.clock()
         )
@@ -467,6 +581,11 @@ class MLPreview:
             return
         if not 15 <= selected["entry_at"] - self.clock() <= 20:
             await asyncio.to_thread(self.journal.finish, identifier, "LATE")
+            return
+        rejection = check_data(selected, self.snapshot, self.clock())
+        if rejection:
+            await asyncio.to_thread(self.journal.finish, identifier, "CANCELLED")
+            logger.info("%s cancelled before delivery: %s", self.label, rejection)
             return
         minutes = int(selected["expires_at"] - selected["entry_at"]) // 60
         try:

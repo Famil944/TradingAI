@@ -13,11 +13,11 @@ from contextlib import closing
 import aiohttp
 
 from services.otc_ml.features import FEATURE_NAMES, indicators
-from services.otc_ml.preview import MLPreview
+from services.otc_ml.preview import MLPreview, aligned_entry
 from services.otc_strategy import aggregate
 
 logger = logging.getLogger(__name__)
-DURATIONS = (1, 2, 3, 5, 15)
+DURATIONS = (2, 5, 15)
 
 
 def fresh(asset, quote, now):
@@ -36,7 +36,11 @@ def fresh(asset, quote, now):
 
 def market_packet(history, assets, quotes, now, end):
     entry = int(now) // 60 * 60 + 60
-    durations = [n for n in DURATIONS if not end or entry + n * 60 + 60 <= end]
+    durations = [
+        n
+        for n in DURATIONS
+        if aligned_entry(entry, n * 60) and (not end or entry + n * 60 + 60 <= end)
+    ]
     result = dict(asof=now, entry_at=entry, durations_minutes=durations, assets=[])
     for symbol, bars in history.items():
         asset = assets.get(symbol)
@@ -339,9 +343,10 @@ class GroqPreview(MLPreview):
             return
         history, assets, quotes, end = snapshot
         now = self.clock()
+        excluded = await asyncio.to_thread(self.journal.loss_cooldowns, now)
         packet = await asyncio.to_thread(
             market_packet,
-            {s: list(b) for s, b in history.items()},
+            {s: list(b) for s, b in history.items() if s not in excluded},
             dict(assets),
             dict(quotes),
             now,

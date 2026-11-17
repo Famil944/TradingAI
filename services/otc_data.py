@@ -9,11 +9,10 @@ recorded separately: the upstream API does not provide payout timestamps.
 import asyncio
 import json
 import math
+import os
 import time
 from dataclasses import dataclass
 from importlib.metadata import version
-
-import os
 
 import aiohttp
 
@@ -98,7 +97,7 @@ class OTChartsProvider:
             402: "OTCharts: тариф не разрешает доступ к данным (HTTP 402).",
             403: "OTCharts запретил запрос (HTTP 403): ограничения доступа или тарифа.",
             404: "Запрошенные данные OTCharts не найдены (HTTP 404).",
-            429: "OTCharts: исчерпан лимит запросов или соединений (HTTP 429).",
+            429: "OTCharts ограничил запрос или соединение (HTTP 429). Это не обязательно исчерпание дневной квоты.",
         }
         if response.status in messages:
             raise AccessUnavailable(messages[response.status])

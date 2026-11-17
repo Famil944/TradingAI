@@ -25,6 +25,16 @@ class Response:
 
 
 class GroqTests(unittest.IsolatedAsyncioTestCase):
+    def test_packet_only_offers_aligned_long_expirations(self):
+        for now, expected in (
+            (1240, [2]),
+            (1480, [2, 5]),
+            (1780, [2, 5, 15]),
+        ):
+            self.assertEqual(
+                market_packet({}, {}, {}, now, None)["durations_minutes"], expected
+            )
+
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / "groq.db"
@@ -116,6 +126,7 @@ class GroqTests(unittest.IsolatedAsyncioTestCase):
         from bot import otc_commands as commands
 
         current = SimpleNamespace(
+            config=SimpleNamespace(groq_enabled=True),
             running=lambda: True,
             phase="поток активен",
             groq_preview=SimpleNamespace(
@@ -132,7 +143,9 @@ class GroqTests(unittest.IsolatedAsyncioTestCase):
             patch.object(commands, "stats_epoch", return_value=0),
         ):
             text = commands.strategy_status(current)
-        self.assertIn("🔴 Groq · 0 · лимит исчерпан", text)
+        groq_line = next(line for line in text.splitlines() if "Groq ·" in line)
+        self.assertIn("🔴 Groq · 0", groq_line)
+        self.assertIn("лимит исчерпан", groq_line)
         self.assertIn("🟢 Основной", text)
         self.assertIn("🟢 XGBoost", text)
         self.assertTrue(current.groq_preview.enabled)

@@ -74,6 +74,7 @@ def format_cycles(stats, minutes):
         f"M{minutes} · циклы ×4, виртуально\nВин {wins}\nЛос {losses}\n"
         f"Пропуск {stats['skipped']}\nВинрейт {rate}"
     )
+    text += "\nWIN цикла = победа за 1–4 попытки; LOSS = четыре поражения подряд.\nЭто не винрейт отдельных сигналов и не расчёт прибыли."
     if stats["unavailable"]:
         text += f"\nНет данных {stats['unavailable']}"
     if stats["pending"]:

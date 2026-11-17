@@ -39,6 +39,32 @@ class CandidateJournal:
 
     def record(self, records):
         with closing(sqlite3.connect(self.path, timeout=0.5)) as db:
+            db.execute("BEGIN IMMEDIATE")
+            accepted = []
+            for row in records:
+                seconds = row.get("experiment", {}).get("cycle_seconds")
+                if seconds:
+                    if db.execute(
+                        "SELECT 1 FROM candidates WHERE version=? AND symbol=? AND expires_at-entry_at=? AND entry_at<? AND expires_at>? LIMIT 1",
+                        (
+                            row["version"],
+                            row["symbol"],
+                            3 * seconds,
+                            row["expires_at"],
+                            row["entry_at"],
+                        ),
+                    ).fetchone():
+                        continue
+                    if any(
+                        r["version"] == row["version"]
+                        and r.get("experiment", {}).get("cycle_seconds") == seconds
+                        and r["symbol"] == row["symbol"]
+                        and r["entry_at"] < row["expires_at"]
+                        and r["expires_at"] > row["entry_at"]
+                        for r in accepted
+                    ):
+                        continue
+                accepted.append(row)
             db.executemany(
                 "INSERT OR IGNORE INTO candidates VALUES(?,?,?,?,?,?)",
                 [
@@ -52,7 +78,7 @@ class CandidateJournal:
                             finite_payload(dict(r, schema=SCHEMA)), allow_nan=False
                         ),
                     )
-                    for r in records
+                    for r in accepted
                 ],
             )
             db.commit()
@@ -88,6 +114,9 @@ class TickSampler:
             if not row.get("gates"):
                 continue
             targets = [row["entry_at"] + d for d in DELAYS] + [row["expires_at"]]
+            seconds = row.get("experiment", {}).get("cycle_seconds")
+            if seconds:
+                targets += [row["entry_at"] + seconds, row["entry_at"] + 2 * seconds]
             for target in targets:
                 if target > now:
                     self.targets.setdefault(row["symbol"], set()).add(target)

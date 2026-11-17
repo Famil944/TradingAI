@@ -16,11 +16,53 @@ from tests.test_otc_conditional import impulse_history
 class FakeRuntime:
     def inspect(self, row, bars, payout):
         seconds = row["expires_at"] - row["entry_at"]
-        p = 0.75 if seconds == 180 else 0.62
+        p = 0.75 if seconds == 120 else 0.62
         return dict(probabilities=[1 - p, 0, p], model_sha256=str(seconds))
 
 
 class PreviewTests(unittest.TestCase):
+    @patch(
+        "services.otc_ml.preview.build",
+        return_value=dict(available=5, count=1, total=5),
+    )
+    def test_down_forecast_is_not_rejected_by_up_accept_flag(self, confirmations):
+        runtime = SimpleNamespace(
+            inspect=lambda *args: dict(
+                probabilities=[0.8, 0, 0.2], accept=False, model_sha256="down"
+            )
+        )
+        now = 1780
+        asset = Asset("A", True, True, 92, None, "Asset", now)
+        selected = select_forecast(runtime, {"A": []}, {"A": asset}, {"A": now}, now)
+        self.assertEqual(selected["direction"], "DOWN")
+
+    @patch(
+        "services.otc_ml.preview.build",
+        return_value=dict(available=5, count=1, total=5),
+    )
+    def test_long_expirations_wait_for_candle_boundary(self, confirmations):
+        for now, expected in ((1240, 120), (1480, 300), (1780, 900)):
+            calls = []
+
+            def inspect(row, *args):
+                seconds = row["expires_at"] - row["entry_at"]
+                calls.append(seconds)
+                p = {60: 0.51, 120: 0.55, 180: 0.51, 300: 0.7, 900: 0.9}[seconds]
+                return dict(probabilities=[1 - p, 0, p], model_sha256="test")
+
+            asset = Asset("A", True, True, 92, None, "Asset", now)
+            selected = select_forecast(
+                SimpleNamespace(inspect=inspect),
+                {"A": []},
+                {"A": asset},
+                {"A": now},
+                now,
+            )
+            self.assertEqual(selected["expires_at"] - selected["entry_at"], expected)
+            if now == 1240:
+                self.assertNotIn(300, calls)
+                self.assertNotIn(900, calls)
+
     @patch(
         "services.otc_ml.preview.build",
         return_value=dict(available=5, count=1, total=5),
@@ -31,7 +73,7 @@ class PreviewTests(unittest.TestCase):
         selected = select_forecast(
             FakeRuntime(), {"A": []}, {"A": asset}, {"A": now}, now
         )
-        self.assertEqual(selected["expires_at"] - selected["entry_at"], 180)
+        self.assertEqual(selected["expires_at"] - selected["entry_at"], 120)
         self.assertEqual(selected["direction"], "UP")
         self.assertEqual(selected["feature_asof"], now)
         self.assertEqual(selected["decision_lead_seconds"], 20)
@@ -59,9 +101,7 @@ class PreviewTests(unittest.TestCase):
             return_value=dict(available=5, count=1, total=5),
         ):
             selected = select_forecast(Weak(), {"A": []}, {"A": asset}, {"A": now}, now)
-        self.assertIsNotNone(selected)
-        self.assertEqual(selected["selection_policy"], "xgboost-one-confirmation-v1")
-        self.assertLess(selected["estimated_ev"], 0.05)
+        self.assertIsNone(selected)
         with patch(
             "services.otc_ml.preview.build",
             return_value=dict(available=5, count=0, total=5),
@@ -116,9 +156,10 @@ class PreviewTests(unittest.TestCase):
             result = settle_preview(row, bars, row["expires_at"] + 60)
             self.assertEqual(result[0], "WIN")
             journal.finish(identifier, *result)
-            self.assertIn("Вин 1", journal.stats(180))
-            self.assertIn("Вин 0", journal.stats(120))
-            self.assertIn("100.0%", journal.stats())
+            with patch("time.time", return_value=1800001000):
+                self.assertIn("Вин 1", journal.stats(180))
+                self.assertIn("Вин 0", journal.stats(120))
+                self.assertIn("100.0%", journal.stats())
 
 
 class PreviewDeliveryTests(unittest.IsolatedAsyncioTestCase):
@@ -142,8 +183,12 @@ class PreviewDeliveryTests(unittest.IsolatedAsyncioTestCase):
                     now[0] += delay
 
                 bot = SimpleNamespace(send_message=AsyncMock(side_effect=send))
+                closed_at = int(now[0]) // 60 * 60
+                bars = [
+                    Candle(closed_at - i * 60, 1, 1.1, 0.9, 1) for i in range(60, 0, -1)
+                ]
                 await preview.plan(
-                    bot, 1, ({"A": []}, {"A": asset}, {"A": now[0]}, None)
+                    bot, 1, ({"A": bars}, {"A": asset}, {"A": now[0]}, None)
                 )
                 self.assertEqual(bot.send_message.await_count, 1)
                 import sqlite3
@@ -153,5 +198,5 @@ class PreviewDeliveryTests(unittest.IsolatedAsyncioTestCase):
                         "SELECT outcome,expires_at-entry_at FROM predictions"
                     ).fetchone()
                 self.assertEqual(row[0], expected)
-                self.assertEqual(row[1], 180)
+                self.assertEqual(row[1], 120)
                 self.assertIn("Вин 0", journal.stats())

@@ -79,7 +79,7 @@ class ReadyTests(unittest.TestCase):
             )
             base = dict(
                 symbol="A",
-                entry_at=1800000060,
+                entry_at=1800000000,
                 direction="UP",
                 payout=92,
                 model_sha256="v5",

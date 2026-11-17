@@ -12,6 +12,12 @@ load_dotenv(ROOT / ".env", override=False)
 
 @dataclass(frozen=True)
 class Settings:
+    cycles_only: bool = True
+    groq_enabled: bool = field(
+        default_factory=lambda: (
+            os.getenv("OTC_GROQ_ENABLED", "false").lower() in ("1", "true", "yes")
+        )
+    )
     primary_mode: str = field(
         default_factory=lambda: os.getenv("OTC_PRIMARY_MODE", "conditional")
     )

@@ -1,7 +1,7 @@
 import unittest
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from aiogram.types import CallbackQuery, Chat, Message, User
 from aiohttp import web
@@ -11,6 +11,73 @@ from services.otc_data import AccessUnavailable, OTChartsProvider
 
 
 class InterfaceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shadow_rates_route_and_timeframe_buttons(self):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=1),
+            text="menu",
+            reply_markup=None,
+            edit_text=AsyncMock(),
+        )
+        query = SimpleNamespace(
+            data="otc:shadow:5", message=message, answer=AsyncMock()
+        )
+        with (
+            patch(
+                "services.otc_shadow_report.report", return_value={"filters": []}
+            ) as report,
+            patch.object(commands, "shadow_stats_epoch", return_value=12345),
+        ):
+            await commands.callback(query)
+        self.assertEqual(report.call_args.args[1], 12345)
+        self.assertIn("Фоновый винрейт · M5", message.edit_text.call_args.args[0])
+        buttons = [
+            b.callback_data
+            for row in message.edit_text.call_args.kwargs[
+                "reply_markup"
+            ].inline_keyboard
+            for b in row
+        ]
+        self.assertTrue(all(f"otc:shadow:{key}" in buttons for key in ("2", "5", "15")))
+
+    async def test_separate_source_stats_today_routes_and_preserves_period(self):
+        from zoneinfo import ZoneInfo
+
+        for action, attribute in (
+            ("mlstats", "ml_preview"),
+            ("groqstats", "groq_preview"),
+        ):
+            journal = SimpleNamespace(stats=Mock(return_value="source stats"))
+            preview = SimpleNamespace(
+                journal=journal, client=SimpleNamespace(status=lambda: "ready")
+            )
+            message = SimpleNamespace(
+                chat=SimpleNamespace(id=1), text="menu", answer=AsyncMock()
+            )
+            query = SimpleNamespace(
+                data=f"otc:{action}:2:today", message=message, answer=AsyncMock()
+            )
+            with (
+                patch.object(
+                    commands, "service", SimpleNamespace(**{attribute: preview})
+                ),
+                patch.object(commands, "stats_epoch", return_value=0),
+            ):
+                await commands.callback(query)
+            seconds, since = journal.stats.call_args.args
+            self.assertEqual(seconds, 120)
+            self.assertEqual(
+                datetime.fromtimestamp(since, ZoneInfo("Europe/Moscow")).hour, 0
+            )
+            buttons = [
+                b.callback_data
+                for row in message.answer.call_args.kwargs[
+                    "reply_markup"
+                ].inline_keyboard
+                for b in row
+            ]
+            self.assertIn(f"otc:{action}:5:today", buttons)
+            self.assertIn(f"otc:{action}:2:all", buttons)
+
     def message(self, user=1, chat=1, kind="private"):
         return Message(
             message_id=1,

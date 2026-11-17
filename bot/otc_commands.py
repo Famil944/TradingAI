@@ -12,14 +12,22 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from config.settings import ROOT, settings
 from services.otc_cycles import format_cycles, read_stats
 from services.otc_evaluation import compact_stats
-from services.otc_market import TIMEFRAMES
-from services.otc_signal_report import read_journal, report as signal_quality_report
+from services.otc_market import ACTIVE_TIMEFRAMES as TIMEFRAMES
+from services.otc_signal_report import read_journal
+from services.otc_signal_report import report as signal_quality_report
 
 router = Router()
 service = None
 choices = {}
+wallet_edits = {}
 STATS_EPOCH = ROOT / "data" / "signal-stats-epoch.txt"
-SOURCES = (("Основной", "main_ready"), ("Groq", "groq_preview"), ("XGBoost", "ml_preview"))
+SHADOW_STATS_EPOCH = ROOT / "data" / "shadow-stats-epoch.txt"
+SOURCES = (
+    ("Основной", "main_ready"),
+    ("Без чрезмерного движения M5", "main_broad"),
+    ("Groq", "groq_preview"),
+    ("XGBoost", "ml_preview"),
+)
 
 
 def stats_epoch():
@@ -27,6 +35,13 @@ def stats_epoch():
         return float(STATS_EPOCH.read_text(encoding="ascii"))
     except FileNotFoundError:
         return 0.0
+
+
+def shadow_stats_epoch():
+    try:
+        return max(stats_epoch(), float(SHADOW_STATS_EPOCH.read_text(encoding="ascii")))
+    except FileNotFoundError:
+        return stats_epoch()
 
 
 class OwnerOnly(BaseMiddleware):
@@ -60,6 +75,44 @@ def allowed(chat_id):
 
 
 def menu(chat_id, expanded=False):
+    if service and getattr(getattr(service, "config", None), "cycles_only", False):
+        selected = choices.get(chat_id, TIMEFRAMES)
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=("✅ " if selected == value else "") + label,
+                        callback_data="otc:tf:" + key,
+                    )
+                    for key, label, value in (
+                        ("all", "Все", TIMEFRAMES),
+                        ("2", "M2", (120,)),
+                        ("5", "M5", (300,)),
+                        ("15", "M15", (900,)),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(text="Запустить", callback_data="otc:start:0"),
+                    InlineKeyboardButton(text="Остановить", callback_data="otc:stop"),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="Винрейт циклов", callback_data="otc:cyclestats:all:all"
+                    ),
+                    InlineKeyboardButton(
+                        text="Обновить", callback_data="otc:panel:show"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="Виртуальный баланс", callback_data="otc:wallet:show"
+                    ),
+                    InlineKeyboardButton(
+                        text="Фон ×3", callback_data="otc:shadowcycles:2"
+                    ),
+                ],
+            ]
+        )
     chosen = choices.get(chat_id, TIMEFRAMES)
     duration = (
         getattr(service, "session_minutes", None)
@@ -68,8 +121,8 @@ def menu(chat_id, expanded=False):
     )
     buttons = []
     for key, label, value in [
-        ("all", "Все M1/M5/M15", TIMEFRAMES),
-        ("1", "M1", (60,)),
+        ("all", "Все M2/M5/M15", TIMEFRAMES),
+        ("2", "M2", (120,)),
         ("5", "M5", (300,)),
         ("15", "M15", (900,)),
     ]:
@@ -103,32 +156,145 @@ def menu(chat_id, expanded=False):
             ),
         ]
     )
+    rows.append(
+        [
+            InlineKeyboardButton(text="Фоновый винрейт", callback_data="otc:shadow:2"),
+            InlineKeyboardButton(
+                text="Качество · дни · XGBoost", callback_data="otc:validation"
+            ),
+        ]
+    )
     if expanded:
-        rows.append([InlineKeyboardButton(text="Обновить", callback_data="otc:panel:show")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Строгий M5 · WR", callback_data="otc:primarystats:5:all"
+                ),
+                InlineKeyboardButton(
+                    text="Без чрезмерного движения · WR",
+                    callback_data="otc:broadstats:5:all",
+                ),
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Винрейт XGBoost", callback_data="otc:mlstats:all:today"
+                ),
+                InlineKeyboardButton(
+                    text="Винрейт Groq", callback_data="otc:groqstats:all:today"
+                ),
+            ]
+        )
+        rows.append(
+            [InlineKeyboardButton(text="Обновить", callback_data="otc:panel:show")]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def strategy_status(current):
+    if current and getattr(getattr(current, "config", None), "cycles_only", False):
+        running = bool(current.running() and current.phase == "поток активен")
+        preview = getattr(current, "cycle_preview", None)
+        text = (
+            "🟢" if running and preview and preview.enabled else "🔴"
+        ) + " Боллинджер ×3"
+        return text + (
+            "\n" + preview.journal.stats(since=stats_epoch())
+            if preview
+            else " · запуск"
+        )
     streaming = bool(current and current.running() and current.phase == "поток активен")
     boost = getattr(current, "ml_preview", None)
     groq = getattr(current, "groq_preview", None)
     groq_health = groq.client.health() if groq else (False, "не запущен")
+    if groq and not getattr(getattr(current, "config", None), "groq_enabled", False):
+        groq_health = (False, "отключён пользователем")
     active = {
         "Основной": streaming,
-        "XGBoost": bool(streaming and boost and boost.enabled and boost.runtime.preview_ready()),
+        "Без чрезмерного движения M5": bool(
+            streaming
+            and getattr(current, "main_broad", None)
+            and current.main_broad.enabled
+        ),
+        "XGBoost": bool(
+            streaming and boost and boost.enabled and boost.runtime.preview_ready()
+        ),
         "Groq": bool(streaming and groq and groq.enabled and groq_health[0]),
     }
     since, now = stats_epoch(), time.time()
-    lines = []
+    lines = ["После сброса статистики · только отправленные сигналы"]
     for label, attr in SOURCES:
         preview = getattr(current, attr, None)
-        count = len(read_journal(preview.journal, since, now)) if preview else 0
-        detail = f" · {groq_health[1]}" if label == "Groq" and not groq_health[0] else ""
-        lines.append(f"{'🟢' if active[label] else '🔴'} {label} · {count}{detail}")
+        records = read_journal(preview.journal, since, now) if preview else []
+        count = len(records)
+        wins = sum(r["outcome"] == "WIN" for r in records)
+        losses = sum(r["outcome"] == "LOSS" for r in records)
+        rate = f"{100 * wins / (wins + losses):.1f}%" if wins + losses else "—"
+        detail = (
+            f" · {groq_health[1]}" if label == "Groq" and not groq_health[0] else ""
+        )
+        lines.append(
+            f"{'🟢' if active[label] else '🔴'} {label} · {count} · WIN {wins} / LOSS {losses} · {rate}{detail}"
+        )
     return "\n".join(lines)
 
 
-MENU_TITLE = "OTC · тестовые сигналы"
+def wallet_menu():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Изменить баланс", callback_data="otc:wallet:balance"
+                ),
+                InlineKeyboardButton(text="Ставки", callback_data="otc:wallet:stakes"),
+                InlineKeyboardButton(
+                    text="Выплата %", callback_data="otc:wallet:payout"
+                ),
+            ],
+            [
+                InlineKeyboardButton(text="Обновить", callback_data="otc:wallet:show"),
+                InlineKeyboardButton(text="Меню", callback_data="otc:panel:hide"),
+            ],
+        ]
+    )
+
+
+@router.message(Command("virtual"))
+async def virtual_account(message: types.Message):
+    if not service or not hasattr(service, "cycle_preview"):
+        await message.answer("Виртуальный счёт ещё не запущен.")
+        return
+    text = await asyncio.to_thread(service.cycle_preview.wallet.text)
+    await message.answer(text, reply_markup=wallet_menu(), parse_mode=None)
+
+
+@router.message(
+    F.text,
+    lambda message: (
+        message.chat.id in wallet_edits and not message.text.startswith("/")
+    ),
+)
+async def edit_virtual_account(message: types.Message):
+    kind = wallet_edits.get(message.chat.id)
+    if message.text.strip().lower() in ("отмена", "cancel"):
+        wallet_edits.pop(message.chat.id, None)
+        await virtual_account(message)
+        return
+    try:
+        await asyncio.to_thread(
+            service.cycle_preview.wallet.change, kind, message.text.strip()
+        )
+    except ValueError as exc:
+        await message.answer(
+            str(exc) + "\nДля отмены напишите «отмена».", parse_mode=None
+        )
+        return
+    wallet_edits.pop(message.chat.id, None)
+    await virtual_account(message)
+
+
+MENU_TITLE = "OTC · Боллинджер ×3"
 
 
 @router.message(Command("start", "help", "otc"))
@@ -139,7 +305,9 @@ async def show_menu(message: types.Message):
 @router.message(Command("otc_status"))
 async def status(message: types.Message):
     indicators = await asyncio.to_thread(strategy_status, service)
-    await message.answer(MENU_TITLE + "\n\n" + indicators, reply_markup=menu(message.chat.id, True))
+    await message.answer(
+        MENU_TITLE + "\n\n" + indicators, reply_markup=menu(message.chat.id, True)
+    )
 
 
 @router.message(Command("otc_stop"))
@@ -158,15 +326,37 @@ async def stop(message: types.Message):
 async def quality(message: types.Message):
     now = datetime.now(ZoneInfo("Europe/Moscow"))
     since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if service and getattr(getattr(service, "config", None), "cycles_only", False):
+        from services.otc_cycle_report import format_report, report
+
+        data = await asyncio.to_thread(
+            report,
+            ROOT / "data",
+            max(since.timestamp(), stats_epoch()),
+            now.timestamp(),
+        )
+        text = format_report(data)
+        for offset in range(0, len(text), 3500):
+            await message.answer(text[offset : offset + 3500], parse_mode=None)
+        return
     journals = {}
-    for label, attr in (("Основной", "main_ready"), ("Groq", "groq_preview"), ("XGBoost", "ml_preview")):
+    for label, attr in (
+        ("Основной", "main_ready"),
+        ("Groq", "groq_preview"),
+        ("XGBoost", "ml_preview"),
+    ):
         preview = getattr(service, attr, None)
         if preview:
             journals[label] = preview.journal
     if not journals:
         await message.answer("Журналы сигналов недоступны.")
         return
-    lines = await asyncio.to_thread(signal_quality_report, journals, since.timestamp(), now.timestamp())
+    lines = await asyncio.to_thread(
+        signal_quality_report,
+        journals,
+        max(since.timestamp(), stats_epoch()),
+        now.timestamp(),
+    )
     chunk = ""
     for line in lines:
         if len(chunk) + len(line) + 1 > 3500:
@@ -175,6 +365,18 @@ async def quality(message: types.Message):
         chunk += line + "\n"
     if chunk:
         await message.answer(chunk, parse_mode=None)
+
+
+@router.message(Command("otc_validation"))
+async def validation(message: types.Message):
+    from services.otc_validation_report import format_report, report
+
+    data = await asyncio.to_thread(
+        report, ROOT / "data", max(stats_epoch(), shadow_stats_epoch()), time.time()
+    )
+    text = format_report(data)
+    for offset in range(0, len(text), 3500):
+        await message.answer(text[offset : offset + 3500], parse_mode=None)
 
 
 @router.message(Command("otc_research"))
@@ -189,16 +391,49 @@ async def research_quality(message: types.Message):
         return
     now = time.time()
     since = now - periods[period] if periods[period] else 0
+    if service and getattr(getattr(service, "config", None), "cycles_only", False):
+        from services.otc_community_cycles import report as cycle_report
+        from services.otc_community_cycles import text_report
+
+        data = await asyncio.to_thread(
+            cycle_report,
+            ROOT / "data/community-cycles.db",
+            max(since, shadow_stats_epoch()),
+            now,
+        )
+        for seconds in (120, 300, 900):
+            await message.answer(text_report(data, seconds), parse_mode=None)
+        return
     data = await asyncio.to_thread(
-        report, ROOT / "data/ready-candidates.db", ROOT / "data/market-history.db", since, now
+        report,
+        ROOT / "data/ready-candidates.db",
+        ROOT / "data/market-history.db",
+        since,
+        now,
     )
     text = format_report(data)
+    from services.otc_shadow_report import format_report as format_variants
+    from services.otc_shadow_report import report as variants_report
+
+    variants = await asyncio.to_thread(
+        variants_report,
+        ROOT / "data/ready-candidates.db",
+        max(since, shadow_stats_epoch()),
+        now,
+    )
+    text += "\n\n" + format_variants(variants)
     for offset in range(0, len(text), 3500):
-        await message.answer(text[offset:offset + 3500], parse_mode=None)
+        await message.answer(text[offset : offset + 3500], parse_mode=None)
 
 
 @router.message(Command("otc_stats"))
 async def stats(message: types.Message):
+    if service and getattr(getattr(service, "config", None), "cycles_only", False):
+        text = await asyncio.to_thread(
+            service.cycle_preview.journal.stats, None, stats_epoch()
+        )
+        await message.answer(text, reply_markup=menu(message.chat.id), parse_mode=None)
+        return
     args = (message.text or "").split()
     period = args[1] if len(args) > 1 else "all"
     durations = {"24h": 86400, "7d": 604800, "30d": 2592000, "all": None}
@@ -243,16 +478,28 @@ def stats_menu(period="all", cycles=False):
                     text=f"M{m}",
                     callback_data=f"otc:{'cycles' if cycles else 'stats'}:{m}:{period}",
                 )
-                for m in (1, 5, 15)
+                for m in ((1, 5, 15) if cycles else (1, 2, 3, 5, 15))
             ],
+            *(
+                []
+                if cycles
+                else [
+                    [
+                        InlineKeyboardButton(
+                            text="Все экспирации",
+                            callback_data=f"otc:stats:all:{period}",
+                        )
+                    ]
+                ]
+            ),
             [
                 InlineKeyboardButton(
-                    text="Обычные"
+                    text="Отдельные сигналы"
                     if cycles
-                    else "Циклы · архив условных"
+                    else "Циклы ×4 · архив условных"
                     if settings.primary_mode == "ready"
-                    else "Циклы · 3 перекрытия",
-                    callback_data=f"otc:{'stats' if cycles else 'cycles'}",
+                    else "Циклы ×4 · виртуально",
+                    callback_data=f"otc:{'stats' if cycles else 'cycles'}:1:{period}",
                 )
             ],
         ]
@@ -284,6 +531,95 @@ async def callback(query: types.CallbackQuery):
         return
     action = parts[1]
     chat = query.message.chat.id
+    if action == "wallet" and len(parts) == 3:
+        await query.answer()
+        kind = parts[2]
+        if kind in ("show", "cancel"):
+            wallet_edits.pop(chat, None)
+            await virtual_account(query.message)
+        elif kind in ("balance", "stakes", "payout"):
+            wallet_edits[chat] = kind
+            prompt = {
+                "balance": "Введите новый текущий виртуальный баланс в рублях, например 5000. Это ручная корректировка, а не торговая прибыль.",
+                "stakes": "Введите три виртуальные ставки через пробел, например 100 250 625. Уже начатые циклы сохранят прежние ставки.",
+                "payout": "Введите прибыль при WIN в процентах, например 92. Уже начатые циклы сохранят прежнюю выплату.",
+            }[kind]
+            await query.message.answer(
+                prompt,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="Отмена", callback_data="otc:wallet:cancel"
+                            )
+                        ]
+                    ]
+                ),
+            )
+        return
+    if action == "shadowcycles" and len(parts) == 3 and parts[2] in ("2", "5", "15"):
+        await query.answer()
+        from services.otc_community_cycles import report, text_report
+
+        data = await asyncio.to_thread(
+            report, ROOT / "data/community-cycles.db", shadow_stats_epoch(), time.time()
+        )
+        text = text_report(data, int(parts[2]) * 60)
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=("✅ " if key == parts[2] else "") + "M" + key,
+                        callback_data="otc:shadowcycles:" + key,
+                    )
+                    for key in ("2", "5", "15")
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="Обновить", callback_data="otc:shadowcycles:" + parts[2]
+                    ),
+                    InlineKeyboardButton(text="Меню", callback_data="otc:panel:hide"),
+                ],
+            ]
+        )
+        if query.message.text != text or query.message.reply_markup != keyboard:
+            await query.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
+        return
+    if action == "validation":
+        await query.answer()
+        await validation(query.message)
+        return
+    if action == "shadow":
+        if len(parts) != 3 or parts[2] not in ("2", "5", "15"):
+            await query.answer("Выберите M2, M5 или M15")
+            return
+        await query.answer()
+        from services.otc_shadow_report import format_active_rates, report
+
+        data = await asyncio.to_thread(
+            report, ROOT / "data/ready-candidates.db", shadow_stats_epoch(), time.time()
+        )
+        text = format_active_rates(data, int(parts[2]) * 60)
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=("✅ " if key == parts[2] else "") + "M" + key,
+                        callback_data=f"otc:shadow:{key}",
+                    )
+                    for key in ("2", "5", "15")
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="Обновить", callback_data=f"otc:shadow:{parts[2]}"
+                    ),
+                    InlineKeyboardButton(text="Меню", callback_data="otc:panel:hide"),
+                ],
+            ]
+        )
+        if query.message.text != text or query.message.reply_markup != keyboard:
+            await query.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
+        return
     if action == "panel" and len(parts) == 3 and parts[2] in ("show", "hide"):
         await query.answer()
         expanded = parts[2] == "show"
@@ -298,19 +634,33 @@ async def callback(query: types.CallbackQuery):
         await query.answer()
         await send_confirmations(query.message)
         return
-    if action in ("mlstats", "groqstats"):
-        preview_name = "groq_preview" if action == "groqstats" else "ml_preview"
+    if action in ("mlstats", "groqstats", "primarystats", "broadstats", "cyclestats"):
+        preview_name = {
+            "cyclestats": "cycle_preview",
+            "groqstats": "groq_preview",
+            "mlstats": "ml_preview",
+            "primarystats": "main_ready",
+            "broadstats": "main_broad",
+        }[action]
         if (
-            len(parts) != 3
+            len(parts) not in (3, 4)
             or parts[2] not in ("all", "1", "2", "3", "5", "15")
+            or (len(parts) == 4 and parts[3] not in ("today", "all"))
             or not hasattr(service, preview_name)
         ):
             await query.answer("Тест ещё не запущен")
             return
         await query.answer()
+        period = parts[3] if len(parts) == 4 else "all"
+        since = stats_epoch()
+        if period == "today":
+            midnight = datetime.now(ZoneInfo("Europe/Moscow")).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            since = max(since, midnight.timestamp())
         seconds = None if parts[2] == "all" else int(parts[2]) * 60
         text = await asyncio.to_thread(
-            getattr(service, preview_name).journal.stats, seconds, stats_epoch()
+            getattr(service, preview_name).journal.stats, seconds, since
         )
         if action == "groqstats":
             text += "\n" + await asyncio.to_thread(service.groq_preview.client.status)
@@ -319,10 +669,24 @@ async def callback(query: types.CallbackQuery):
                 [
                     InlineKeyboardButton(
                         text="Все" if key == "all" else key + " мин",
-                        callback_data="otc:" + action + ":" + key,
+                        callback_data="otc:" + action + ":" + key + ":" + period,
                     )
-                    for key in ("all", "1", "2", "3", "5", "15")
-                ]
+                    for key in (
+                        ("all", "2", "5", "15")
+                        if action == "cyclestats"
+                        else ("all", "1", "2", "3", "5", "15")
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=("✅ " if period == key else "") + label,
+                        callback_data=f"otc:{action}:{parts[2]}:{key}",
+                    )
+                    for key, label in (
+                        ("today", "Сегодня МСК"),
+                        ("all", "После сброса"),
+                    )
+                ],
             ]
         )
         if query.message.text != text:
@@ -337,7 +701,8 @@ async def callback(query: types.CallbackQuery):
             )
         elif (
             len(parts) == 4
-            and parts[2] in ("1", "5", "15")
+            and parts[2]
+            in (("1", "5", "15") if cycles else ("all", "1", "2", "3", "5", "15"))
             and parts[3] in ("24h", "7d", "30d", "all")
         ):
             await query.answer()
@@ -348,7 +713,9 @@ async def callback(query: types.CallbackQuery):
             if not cycles:
                 since = max(since, stats_epoch())
             rows = await asyncio.to_thread(
-                service.db.virtual_stats, since, int(parts[2]) * 60
+                service.db.virtual_stats,
+                since,
+                None if parts[2] == "all" else int(parts[2]) * 60,
             )
             if cycles:
                 cycle_stats = await asyncio.to_thread(
@@ -362,10 +729,14 @@ async def callback(query: types.CallbackQuery):
                     settings, "primary_mode", "conditional"
                 ) == "ready" and hasattr(service, "main_ready"):
                     text = await asyncio.to_thread(
-                        service.main_ready.journal.stats, int(parts[2]) * 60, since
+                        service.main_ready.journal.stats,
+                        None if parts[2] == "all" else int(parts[2]) * 60,
+                        since,
                     )
                 else:
-                    text = compact_stats(rows, int(parts[2]))
+                    text = compact_stats(
+                        rows, None if parts[2] == "all" else int(parts[2])
+                    )
             if query.message.text != text:
                 await query.message.edit_text(
                     text, reply_markup=stats_menu(parts[3], cycles=cycles)
@@ -373,8 +744,12 @@ async def callback(query: types.CallbackQuery):
         else:
             await query.answer("Недопустимый выбор")
         return
-    if action == "tf" and len(parts) == 3 and parts[2] in ("all", "1", "5", "15"):
+    if action == "tf" and len(parts) == 3 and parts[2] in ("all", "2", "5", "15"):
         choices[chat] = TIMEFRAMES if parts[2] == "all" else (int(parts[2]) * 60,)
+        if getattr(getattr(service, "config", None), "cycles_only", False) and hasattr(
+            service, "cycle_preview"
+        ):
+            service.cycle_preview.allowed_timeframes = choices[chat]
         await query.answer("Экспирации выбраны")
         await query.message.edit_reply_markup(
             reply_markup=menu(chat, query.message.text != MENU_TITLE)
@@ -408,6 +783,8 @@ async def callback(query: types.CallbackQuery):
     elif action == "status" and len(parts) == 2:
         await query.answer()
         indicators = await asyncio.to_thread(strategy_status, service)
-        await query.message.answer(MENU_TITLE + "\n\n" + indicators, reply_markup=menu(chat, True))
+        await query.message.answer(
+            MENU_TITLE + "\n\n" + indicators, reply_markup=menu(chat, True)
+        )
     else:
         await query.answer("Недопустимый выбор")

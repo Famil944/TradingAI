@@ -70,6 +70,7 @@ class OTCSession:
         self._health_counts = Counter()
         self._repair_last = {}
         self._repair_count = 0
+        self._repair_window = self.clock()
 
     @property
     def conditional_mode(self):
@@ -92,6 +93,23 @@ class OTCSession:
                 and 0 <= now - a.observed_at <= max_age
             ]
         return eligible(instruments, now, max_age, research=self.test_mode)
+
+    def _clear_quotes(self):
+        self._quotes.clear()
+        if hasattr(self, "data_readiness"):
+            self.data_readiness.reset(self.clock(), "stream_or_session_reset")
+        for name in (
+            "main_ready",
+            "main_broad",
+            "ml_preview",
+            "groq_preview",
+            "cycle_preview",
+        ):
+            preview = getattr(self, name, None)
+            snapshot = getattr(preview, "snapshot", None)
+            if snapshot is not None:
+                history, assets, _, end = snapshot
+                preview.observe(history, assets, {}, end)
 
     def _price_max_age(self):
         return (
@@ -126,7 +144,19 @@ class OTCSession:
         if (
             minutes not in (0, 30, 60, 120, 240, 480)
             or not timeframes
-            or any(t not in TIMEFRAMES for t in timeframes)
+            or any(
+                t
+                not in (
+                    TIMEFRAMES
+                    + (
+                        (120,)
+                        if getattr(self.config, "primary_mode", "conditional")
+                        == "ready"
+                        else ()
+                    )
+                )
+                for t in timeframes
+            )
         ):
             raise ValueError("Invalid session selection")
         async with self._lock:
@@ -134,21 +164,35 @@ class OTCSession:
                 return False
             self.chat_id = chat_id
             self.user_stopped = False
+            cycles_only = getattr(self.config, "cycles_only", False)
             if hasattr(self, "main_ready"):
                 self.main_ready.enabled = (
                     getattr(self.config, "primary_mode", "conditional") == "ready"
+                    and not cycles_only
                 )
-                self.main_ready.allowed_timeframes = tuple(timeframes)
+                self.main_ready.allowed_timeframes = (300,)
                 self.main_ready.sent_count = 0
+            if hasattr(self, "main_broad"):
+                self.main_broad.enabled = (
+                    getattr(self.config, "primary_mode", "conditional") == "ready"
+                    and not cycles_only
+                )
+                self.main_broad.allowed_timeframes = (300,)
+                self.main_broad.sent_count = 0
             if hasattr(self, "ml_preview"):
-                self.ml_preview.enabled = True
+                self.ml_preview.enabled = not cycles_only
             if hasattr(self, "groq_preview"):
-                self.groq_preview.enabled = True
+                self.groq_preview.enabled = (
+                    getattr(self.config, "groq_enabled", False) and not cycles_only
+                )
+            if hasattr(self, "cycle_preview"):
+                self.cycle_preview.enabled = cycles_only
+                self.cycle_preview.allowed_timeframes = tuple(timeframes)
             self.timeframes = tuple(timeframes)
             self.ends_at = self.clock() + minutes * 60 if minutes else None
             self.session_minutes = minutes
             self.last_tick = None
-            self._quotes.clear()
+            self._clear_quotes()
             self.last_error = None
             self.transport = "pending"
             self.poll_requests_used = 0
@@ -158,6 +202,7 @@ class OTCSession:
             self._health_counts.clear()
             self._repair_last.clear()
             self._repair_count = 0
+            self._repair_window = self.clock()
             self.available = 0
             self.phase = "подключение"
             self.task = asyncio.create_task(self._timed_run(bot))
@@ -171,6 +216,10 @@ class OTCSession:
                 await self.groq_preview.stop()
             if hasattr(self, "main_ready"):
                 await self.main_ready.stop()
+            if hasattr(self, "main_broad"):
+                await self.main_broad.stop()
+            if hasattr(self, "cycle_preview"):
+                await self.cycle_preview.stop()
             if not self.running():
                 return False
             self.task.cancel()
@@ -182,7 +231,7 @@ class OTCSession:
                 self.phase = "остановлен"
                 self.monitored = 0
                 self.last_tick = None
-                self._quotes.clear()
+                self._clear_quotes()
                 await self.provider.close()
                 if self.db:
                     await db_call(self.db.recover)
@@ -266,7 +315,7 @@ class OTCSession:
         if getattr(self.config, "primary_mode", "conditional") == "ready" and hasattr(
             self, "main_ready"
         ):
-            count_text = f"Готовые v5 · сигналов {self.main_ready.sent_count}"
+            count_text = f"Основной · сигналов за сеанс {self.main_ready.sent_count}"
         text = f"{'🟢' if active else '🟠'} OTC · {'работает' if active else self.phase}\n{frames} · инструментов {monitored}\n{count_text} · до {end} МСК"
         if hasattr(self, "groq_preview"):
             text += "\n" + self.groq_preview.client.status()
@@ -420,7 +469,7 @@ class OTCSession:
             await asyncio.gather(watchdog, health_watchdog, return_exceptions=True)
             self.phase = "остановлен"
             self.monitored = 0
-            self._quotes.clear()
+            self._clear_quotes()
             self.last_tick = None
             try:
                 if self.db:
@@ -657,6 +706,10 @@ class OTCSession:
 
     def _queue_history_repair(self, symbol, history, tasks):
         now = self.clock()
+        # Bound request use without permanently disabling repair in long sessions.
+        if now - self._repair_window >= 3600:
+            self._repair_window = now
+            self._repair_count = 0
         if (
             self._repair_count >= 50
             or now - self._repair_last.get(symbol, float("-inf")) < 60
@@ -739,13 +792,25 @@ class OTCSession:
                                 continue
                             self.last_tick = tick.time
                             self._quotes[tick.symbol] = tick.time
+                            send_quotes = self._quotes
+                            if hasattr(self, "data_readiness"):
+                                send_quotes = self.data_readiness.observe(
+                                    tick, now, history, active, self._quotes
+                                )
                             if hasattr(self, "ml_preview"):
                                 self.ml_preview.observe(
-                                    history, active, self._quotes, self.ends_at
+                                    history, active, send_quotes, self.ends_at
                                 )
+                                if hasattr(self.ml_preview, "observe_audit_tick"):
+                                    self.ml_preview.observe_audit_tick(tick, now)
+                            if hasattr(self, "cycle_preview"):
+                                self.cycle_preview.observe(
+                                    history, active, send_quotes, self.ends_at
+                                )
+                                self.cycle_preview.observe_tick(tick, now)
                             if hasattr(self, "groq_preview"):
                                 self.groq_preview.observe(
-                                    history, active, self._quotes, self.ends_at
+                                    history, active, send_quotes, self.ends_at
                                 )
                             if (
                                 hasattr(self, "main_ready")
@@ -753,9 +818,14 @@ class OTCSession:
                                 == "ready"
                             ):
                                 self.main_ready.observe(
-                                    history, active, self._quotes, self.ends_at
+                                    history, active, send_quotes, self.ends_at
                                 )
                                 self.main_ready.observe_tick(tick, now)
+                                if hasattr(self, "main_broad"):
+                                    self.main_broad.observe(
+                                        history, active, send_quotes, self.ends_at
+                                    )
+                                    self.main_broad.observe_tick(tick, now)
                             self.monitored = sum(
                                 0 <= now - t <= self.config.max_tick_age
                                 for t in builder.last.values()
@@ -853,7 +923,7 @@ class OTCSession:
                 self.monitored = 0
                 self.last_tick = None
                 builder.clear()
-                self._quotes.clear()
+                self._clear_quotes()
                 active = {}
                 # Broken continuity invalidates outstanding observations.
                 if self.db:
@@ -864,6 +934,8 @@ class OTCSession:
                     else "stream_disconnected"
                 )
                 logger.warning("OTC reconnect: %s (%s)", reason, type(exc).__name__)
+                if hasattr(self, "data_readiness"):
+                    self.data_readiness.reset(self.clock(), reason)
                 await self._event(reason)
                 delay = reconnect_delay(attempt, getattr(exc, "retry_after", 0))
                 attempt += 1
@@ -1071,7 +1143,8 @@ class OTCSession:
                 else ""
             )
             + f"\nПричина: {reason}\nID: {identifier}\nСовпадение с платформой не подтверждено. Виртуальный исход UNKNOWN."
-            + "\n" + format_confirmations(quality["confirmations"])
+            + "\n"
+            + format_confirmations(quality["confirmations"])
         )
         try:
             await bot.send_message(self.chat_id, text)

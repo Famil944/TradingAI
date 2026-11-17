@@ -161,6 +161,12 @@ def export(root=ROOT, device="termux", now=None):
             confirmations=dict(confirmations),
             regimes=dict(regimes),
         )
+    from services.otc_cycle_report import report as cycle_report
+
+    data["cycles"] = {
+        period: cycle_report(root / "data", since, now)
+        for period, since in (("all", 0), ("24h", now - 86400))
+    }
     return data
 
 

@@ -1,7 +1,7 @@
 """Versioned, causal explanations of a direction; never probability estimates."""
 
 from services.otc_ml.features import FEATURE_NAMES, indicators
-from services.otc_regime import classify
+from services.otc_regime import classify, context
 from services.otc_strategy import aggregate, ema
 
 VERSION = "direction-confirmations-v1"
@@ -64,6 +64,7 @@ def build(minutes, direction, seconds, asof):
         checks["alignment"] = _sign(ema(prices, 20) - ema(prices, 50), direction)
     result.update(
         market_state=classify(f),
+        market_context=context(bars, period, asof),
         count=sum(v == "agree" for v in checks.values()),
         available=sum(v != "unavailable" for v in checks.values()),
         matched=[k for k, v in checks.items() if v == "agree"],

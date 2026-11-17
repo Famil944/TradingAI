@@ -73,6 +73,11 @@ async def main(*, session_minutes=None, session_end=None):
         db=db, provider=OTChartsProvider(settings.otcharts_api_key, archive=archive)
     )
     otc_commands.service = service
+    from services.otc_readiness import DataReadiness
+
+    service.data_readiness = DataReadiness(
+        ROOT / "data" / "runtime-readiness.db", time.time()
+    )
     heartbeat_task = asyncio.create_task(heartbeat(service))
     proxy = os.getenv("TRADINGAI_HTTP_PROXY")
     session = None
@@ -123,24 +128,62 @@ async def main(*, session_minutes=None, session_end=None):
     )
     await asyncio.to_thread(groq_journal.cancel_future, time.time())
     service.groq_preview = groq
+    groq.enabled = settings.groq_enabled
     groq_task = asyncio.create_task(groq.run(bot, settings.admin_chat_id))
     ready_journal = PreviewJournal(
-        ROOT / "data" / "primary-ready.db", label="Основной v6", per_horizon=True
+        ROOT / "data" / "primary-ready.db", label="Основной v9", per_horizon=True
     )
     ready = ReadyPrimary(ready_journal, settlement_provider=evaluator.provider)
+    ready.allowed_timeframes = (300,)
+    ready.research_timeframes = (120, 300, 900)
+    ready.label = "Основной · Строгий M5"
     await asyncio.to_thread(ready_journal.cancel_future, time.time())
     service.main_ready = ready
     ready_task = asyncio.create_task(ready.run(bot, settings.admin_chat_id))
+    broad = ReadyPrimary(
+        PreviewJournal(
+            ROOT / "data" / "primary-not-extended.db",
+            label="Без чрезмерного движения M5",
+            per_horizon=True,
+        ),
+        settlement_provider=evaluator.provider,
+    )
+    broad.policy = "not_extended"
+    broad.label = "Основной · Без чрезмерного движения M5"
+    broad.allowed_timeframes = (300,)
+    await asyncio.to_thread(broad.journal.cancel_future, time.time())
+    service.main_broad = broad
+    broad_task = asyncio.create_task(broad.run(bot, settings.admin_chat_id))
+    from services.otc_bollinger_live import BollingerCycles, CycleJournal
+
+    cycle_journal = CycleJournal(
+        ROOT / "data" / "bollinger-cycles.db", label="Боллинджер ×3", per_horizon=True
+    )
+    await asyncio.to_thread(cycle_journal.cancel_future, time.time())
+    cycles = BollingerCycles(cycle_journal)
+    service.cycle_preview = cycles
+    cycle_task = asyncio.create_task(cycles.run(bot, settings.admin_chat_id))
+    if settings.cycles_only:
+        ready.enabled = broad.enabled = preview.enabled = groq.enabled = False
     (ROOT / "logs").mkdir(exist_ok=True)
     if os.getenv("OTC_ML_TRAINING", "true").lower() in ("1", "true", "yes"):
-        for name, extra in (("ml-collector", []), ("ml-preview-collector", ["--preview"])):
+        for name, extra in (
+            ("ml-collector", []),
+            ("ml-preview-collector", ["--preview"]),
+        ):
             with (
-                (ROOT / "logs" / f"{name}.stdout.log").open("a", encoding="utf-8") as out,
-                (ROOT / "logs" / f"{name}.stderr.log").open("a", encoding="utf-8") as err,
+                (ROOT / "logs" / f"{name}.stdout.log").open(
+                    "a", encoding="utf-8"
+                ) as out,
+                (ROOT / "logs" / f"{name}.stderr.log").open(
+                    "a", encoding="utf-8"
+                ) as err,
             ):
                 subprocess.Popen(
                     [sys.executable, "-u", "-m", "services.otc_ml.collector", *extra],
-                    cwd=ROOT, stdout=out, stderr=err,
+                    cwd=ROOT,
+                    stdout=out,
+                    stderr=err,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
     try:
@@ -152,7 +195,7 @@ async def main(*, session_minutes=None, session_end=None):
         )
         if session_minutes is not None:
             await service.start(
-                bot, settings.admin_chat_id, session_minutes, (60, 300, 900)
+                bot, settings.admin_chat_id, session_minutes, (120, 300, 900)
             )
             if session_end is not None:
                 service.ends_at = session_end
@@ -167,6 +210,10 @@ async def main(*, session_minutes=None, session_end=None):
             await service._notify(bot, text + "\n\n" + indicators)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        cycle_task.cancel()
+        await asyncio.gather(cycle_task, return_exceptions=True)
+        broad_task.cancel()
+        await asyncio.gather(broad_task, return_exceptions=True)
         ready_task.cancel()
         await asyncio.gather(ready_task, return_exceptions=True)
         heartbeat_task.cancel()

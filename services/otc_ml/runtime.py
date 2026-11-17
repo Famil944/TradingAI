@@ -162,6 +162,7 @@ class RuntimeML:
                 probabilities=probabilities,
                 expected_return=ev,
                 model_sha256=hashes[0],
+                calibration_sha256=hashes[1],
                 data_kind=report["data_kind"],
                 probabilities_display_allowed=certified,
             )

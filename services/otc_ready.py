@@ -11,10 +11,10 @@ from services.otc_conditional import context_setup
 from services.otc_confirmations import build
 from services.otc_groq import fresh
 from services.otc_ml.features import FEATURE_NAMES, indicators
-from services.otc_ml.preview import MLPreview
+from services.otc_ml.preview import MLPreview, aligned_entry
 from services.otc_strategy import aggregate
 
-VERSION = "primary-ready-v6-one-confirmation"
+VERSION = "primary-ready-v9-strict-families"
 logger = logging.getLogger(__name__)
 
 
@@ -141,10 +141,21 @@ def select_ready_v5(
 
 
 def select_ready(
-    histories, assets, quotes, now, seconds, end=None, audit=None, recent_ticks=None
+    histories,
+    assets,
+    quotes,
+    now,
+    seconds,
+    end=None,
+    audit=None,
+    recent_ticks=None,
+    excluded_symbols=None,
+    policy="strict",
 ):
     entry = int(now) // 60 * 60 + 60
-    if seconds not in (60, 300, 900) or not 15 <= entry - now <= 20:
+    if seconds not in (60, 120, 300, 900) or not 15 <= entry - now <= 20:
+        return None
+    if not aligned_entry(entry, seconds):
         return None
     if end and entry + seconds + 60 > end:
         return None
@@ -167,6 +178,9 @@ def select_ready(
         )
         if audit is not None:
             audit.append(row)
+        if symbol in (excluded_symbols or {}):
+            row["reason"] = "symbol_loss_cooldown"
+            continue
         if not fresh(asset, quotes.get(symbol), now):
             continue
         up = build(minutes, "UP", seconds, asof)
@@ -185,7 +199,10 @@ def select_ready(
         if confirmations["count"] < 1:
             row["reason"] = "no_directional_confirmation"
             continue
-        bars = aggregate([b for b in minutes if b.time + 60 <= asof], seconds)[-250:]
+        bars = aggregate(
+            [b for b in minutes if b.time + 60 <= asof],
+            60 if seconds == 120 else seconds,
+        )[-250:]
         values = indicators(bars)
         if values is None:
             row["reason"] = "insufficient_indicator_history"
@@ -205,6 +222,26 @@ def select_ready(
             quality_score=confirmations["count"],
             confirmation_count=confirmations["count"],
         )
+        from services.otc_selection_quality import not_extended, primary_rejection
+
+        rejection = primary_rejection(evidence, seconds, direction)
+        if policy == "not_extended":
+            rejection = (
+                None
+                if seconds == 300
+                and not_extended(
+                    evidence["features"],
+                    confirmations.get("market_context") or {},
+                    direction,
+                )
+                is True
+                else "m5_extended_or_missing_context"
+            )
+        row["live_rejection"] = rejection
+        row["strict_eligible"] = rejection is None
+        evidence["selection_policy"] = "primary-" + policy + "-m5-v1"
+        if rejection:
+            continue
         candidates.append(
             dict(
                 symbol=symbol,
@@ -213,7 +250,7 @@ def select_ready(
                 expires_at=entry + seconds,
                 direction=direction,
                 payout=asset.payout,
-                model_sha256=VERSION,
+                model_sha256=VERSION + "-" + policy,
                 model_role="unqualified_primary_experiment",
                 feature_asof=asof,
                 evidence=evidence,
@@ -258,7 +295,9 @@ class ReadyPrimary(MLPreview):
 
     def __init__(self, journal, clock=time.time, settlement_provider=None):
         super().__init__(journal, None, clock, settlement_provider)
-        self.allowed_timeframes = (60, 300, 900)
+        self.allowed_timeframes = (120, 300, 900)
+        self.policy = "strict"
+        self.research_timeframes = None
         self.sent_count = 0
         self.research = CandidateJournal(journal.path.with_name("ready-candidates.db"))
         self.sampler = TickSampler()
@@ -294,11 +333,12 @@ class ReadyPrimary(MLPreview):
         history, assets, quotes, end = snapshot
         histories = {s: list(b) for s, b in history.items()}
         offered = []
-        for seconds in self.allowed_timeframes:
+        for seconds in self.research_timeframes or self.allowed_timeframes:
             now = self.clock()
             if not self.enabled or not 15 <= (int(now) // 60 * 60 + 60) - now <= 20:
                 continue
             unavailable = await asyncio.to_thread(self.journal.blocked, now, seconds)
+            excluded = await asyncio.to_thread(self.journal.loss_cooldowns, now)
             audit = []
             selected = await asyncio.to_thread(
                 select_ready,
@@ -310,15 +350,25 @@ class ReadyPrimary(MLPreview):
                 end,
                 audit,
                 dict(self.recent_ticks),
+                excluded,
+                self.policy,
             )
             for record in audit:
                 record["operational_block"] = unavailable
             try:
+                from services.otc_shadow_variants import prepare
+
+                audit = await asyncio.to_thread(
+                    prepare,
+                    audit,
+                    histories,
+                    self.journal.path.with_name("market-history.db"),
+                )
                 await asyncio.to_thread(self.research.record, audit)
                 self.sampler.register(audit, self.clock())
             except Exception:
                 logger.exception("Candidate research journal unavailable")
-            if unavailable:
+            if unavailable or seconds not in self.allowed_timeframes:
                 continue
             if not selected or not self.enabled or not self.snapshot:
                 continue

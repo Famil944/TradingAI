@@ -225,7 +225,7 @@ def report(path, archive_path=None, since=0, now=None):
         if accepts(row, "context") or row.get("gates", {}).get("min_confirmation"):
             cohorts[(row["version"], row["expires_at"] - row["entry_at"])].append(row)
     for (version, horizon), cohort in sorted(cohorts.items()):
-        if version == "primary-ready-v6-one-confirmation":
+        if all(r.get("gates", {}).get("min_confirmation") for r in cohort):
             results = [resolve(r, "historical_open", 0) for r in cohort]
             result["groups"].append(
                 dict(

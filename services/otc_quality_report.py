@@ -45,7 +45,10 @@ def build_report(db, now):
                 advantage_confirmed=False,
             )
         )
+    from services.otc_cycle_report import report as cycle_report
+
     return dict(
+        cycles=cycle_report(db.db_path.parent, 0, now),
         generated_at=now,
         source="otcharts_virtual",
         groups=result,

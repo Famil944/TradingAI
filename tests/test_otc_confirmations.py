@@ -109,7 +109,12 @@ class ConfirmationDeliveryTests(unittest.IsolatedAsyncioTestCase):
             asof = bars[-1].time + 60
             now = asof + 42
             preview = MLPreview(journal, None, lambda: now)
-            preview.snapshot = ({"A": bars}, {}, {}, None)
+            preview.snapshot = (
+                {"A": bars},
+                {"A": SimpleNamespace(open=True, payout=92, observed_at=now)},
+                {"A": now},
+                None,
+            )
             selected = dict(
                 symbol="A",
                 name="Asset",

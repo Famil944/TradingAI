@@ -239,6 +239,5 @@ def compact_stats(rows, minutes):
     wins, losses = count("wins"), count("losses")
     rate = f"{100 * wins / (wins + losses):.1f}%" if wins + losses else "—"
     return (
-        f"M{minutes}\nВин {wins}\nЛос {losses}\n"
-        f"Пропуск {count('skipped')}\nВинрейт {rate}"
-    )
+        f"M{minutes}" if minutes is not None else "Все экспирации"
+    ) + f"\nВин {wins}\nЛос {losses}\nПропуск {count('skipped')}\nВинрейт {rate}"

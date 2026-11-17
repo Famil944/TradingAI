@@ -43,12 +43,37 @@ class CooldownTests(unittest.TestCase):
             journal.finish(identifier, "LOSS", 2, 1, resolved_at=1600)
             self.assertEqual(journal.blocked(1610, 300), "result_cooldown")
             self.assertIsNone(journal.blocked(1610, 60))
-            one = journal.reserve(signal(60, at=1680), 1610)
+            self.assertIsNone(journal.reserve(signal(60, at=1680), 1610))
+            one = journal.reserve(signal(60, at=1680, symbol="B"), 1610)
             journal.finish(one, "NOT_DELIVERED", resolved_at=1610)
             self.assertIsNone(journal.blocked(1611, 60))
             # Duplicate callbacks cannot move the result timestamp forward.
             journal.finish(identifier, "LOSS", 2, 1, resolved_at=1700)
             self.assertIsNone(journal.blocked(1660, 300))
+
+    def test_loss_pause_survives_restart_and_later_win_but_not_other_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            journal = PreviewJournal(Path(folder) / "primary.db", per_horizon=True)
+            loss = journal.reserve(signal(300), 1180)
+            win = journal.reserve(signal(60, at=1260), 1240)
+            for identifier in (loss, win):
+                journal.sent(identifier, 1180)
+            journal.finish(loss, "LOSS", 2, 1, resolved_at=1600)
+            journal.finish(win, "WIN", 1, 2, resolved_at=1650)
+            journal = PreviewJournal(journal.path, per_horizon=True)
+            self.assertEqual(journal.loss_cooldowns(1899), {"A": 1900})
+            self.assertIsNone(journal.reserve(signal(at=1920), 1899))
+            other = PreviewJournal(Path(folder) / "groq.db")
+            self.assertIsNotNone(other.reserve(signal(at=1920), 1899))
+            self.assertEqual(journal.loss_cooldowns(1900), {})
+            self.assertIsNotNone(journal.reserve(signal(at=1920), 1900))
+
+    def test_reservation_rejects_unaligned_m5_m15(self):
+        with tempfile.TemporaryDirectory() as folder:
+            journal = PreviewJournal(Path(folder) / "primary.db")
+            for seconds in (300, 900):
+                self.assertIsNone(journal.reserve(signal(seconds, at=1260), 1240))
+            self.assertIsNotNone(journal.reserve(signal(900, at=1800), 1780))
 
     def test_best_timeframe_per_asset_uses_votes_then_shorter_duration(self):
         candidates = [
