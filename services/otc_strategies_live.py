@@ -325,6 +325,15 @@ class LiveStrategyPublisher:
                 if row["entry_at"] - when <= MIN_LEAD:
                     # A delivered late card is not counted as an actionable win.
                     await asyncio.to_thread(self.journal.not_delivered, ident)
+                    try:
+                        await bot.edit_message_text(
+                            "⚠️ Сигнал опоздал — НЕ ВХОДИТЬ.\n"
+                            + signal["label"] + " · " + signal["symbol"],
+                            chat_id=owner, message_id=message.message_id,
+                            parse_mode=None,
+                        )
+                    except Exception:
+                        LOG.warning("Could not mark a late owner card")
                     continue
                 await asyncio.to_thread(
                     self.journal.sent, ident, when, message.message_id,
