@@ -5,6 +5,7 @@ Joining a public Telegram channel is handled by Telegram; this store is for
 people who send /start to the bot in a private chat.
 """
 import asyncio
+import hashlib
 import logging
 import sqlite3
 import time
@@ -43,11 +44,17 @@ class Subscribers:
                     signal_id TEXT NOT NULL,
                     message_id INTEGER NOT NULL,
                     outcome TEXT NOT NULL,
+                    content_sha TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY(chat_id,signal_id)
                 );
                 CREATE INDEX IF NOT EXISTS deliveries_signal_id
                     ON deliveries(signal_id);
             """)
+            fields = {row[1] for row in db.execute("PRAGMA table_info(deliveries)")}
+            if "content_sha" not in fields:
+                db.execute(
+                    "ALTER TABLE deliveries ADD COLUMN content_sha TEXT NOT NULL DEFAULT ''"
+                )
             db.commit()
 
     def _connect(self):
@@ -94,18 +101,19 @@ class Subscribers:
     def delivered(self, chat_id, signal_id):
         with closing(self._connect()) as db:
             return db.execute(
-                "SELECT message_id,outcome FROM deliveries "
+                "SELECT message_id,outcome,content_sha FROM deliveries "
                 "WHERE chat_id=? AND signal_id=?",
                 (chat_id, signal_id),
             ).fetchone()
 
-    def saved(self, chat_id, signal_id, message_id, outcome):
+    def saved(self, chat_id, signal_id, message_id, outcome, content_sha):
         with closing(self._connect()) as db:
             db.execute(
-                "INSERT INTO deliveries(chat_id,signal_id,message_id,outcome) "
-                "VALUES(?,?,?,?) ON CONFLICT(chat_id,signal_id) "
-                "DO UPDATE SET message_id=excluded.message_id,outcome=excluded.outcome",
-                (chat_id, signal_id, message_id, outcome),
+                "INSERT INTO deliveries(chat_id,signal_id,message_id,outcome,content_sha) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(chat_id,signal_id) "
+                "DO UPDATE SET message_id=excluded.message_id,outcome=excluded.outcome,"
+                "content_sha=excluded.content_sha",
+                (chat_id, signal_id, message_id, outcome, content_sha),
             )
             db.commit()
 
@@ -122,11 +130,10 @@ class SubscriberRelay:
             return []
         return main_signals(
             self.root / "data" / "bollinger-cycles.db",
-            max(0, since - 120),
+            max(0, since - 120, self.clock() - 7200),
         )
 
     async def update(self, bot):
-        now = self.clock()
         rows = await asyncio.to_thread(self._signals)
         if not rows:
             return
@@ -140,6 +147,9 @@ class SubscriberRelay:
             offset += len(subscribers)
             for chat_id, joined_at in subscribers:
                 for row in rows:
+                    current_time = self.clock()
+                    safe_text = public_text(row)
+                    content_sha = hashlib.sha256(safe_text.encode("utf-8")).hexdigest()
                     # Only explicitly delivered main Bollinger forecasts; background
                     # research stays in the read-only stats, not a live signal feed.
                     if row["origin"] != "main":
@@ -148,16 +158,16 @@ class SubscriberRelay:
                         self.store.delivered, chat_id, row["id"]
                     )
                     if already:
-                        if already[1] == row["outcome"]:
+                        if already[1] == row["outcome"] and already[2] == content_sha:
                             continue
                         try:
                             await bot.edit_message_text(
-                                public_text(row), chat_id=chat_id,
+                                safe_text, chat_id=chat_id,
                                 message_id=already[0], parse_mode=None,
                             )
                             await asyncio.to_thread(
                                 self.store.saved, chat_id, row["id"],
-                                already[0], row["outcome"],
+                                already[0], row["outcome"], content_sha,
                             )
                         except TelegramForbiddenError:
                             await asyncio.to_thread(self.store.unsubscribe, chat_id)
@@ -166,7 +176,7 @@ class SubscriberRelay:
                             if "message is not modified" in str(exc).lower():
                                 await asyncio.to_thread(
                                     self.store.saved, chat_id, row["id"],
-                                    already[0], row["outcome"],
+                                    already[0], row["outcome"], content_sha,
                                 )
                             else:
                                 LOG.warning("Subscriber edit rejected for %d", chat_id)
@@ -176,18 +186,18 @@ class SubscriberRelay:
                     if (
                         row["created_at"] < joined_at
                         or row["sent_at"] < joined_at
-                        or row["sent_at"] > now
-                        or now - row["sent_at"] > MAX_SEND_AGE_SECONDS
-                        or row["entry_at"] - now < MIN_ENTRY_LEAD_SECONDS
+                        or row["sent_at"] > current_time
+                        or current_time - row["sent_at"] > MAX_SEND_AGE_SECONDS
+                        or row["entry_at"] - current_time < MIN_ENTRY_LEAD_SECONDS
                     ):
                         continue
                     try:
                         msg = await bot.send_message(
-                            chat_id, public_text(row), parse_mode=None
+                            chat_id, safe_text, parse_mode=None
                         )
                         await asyncio.to_thread(
                             self.store.saved, chat_id, row["id"],
-                            msg.message_id, row["outcome"],
+                            msg.message_id, row["outcome"], content_sha,
                         )
                     except TelegramForbiddenError:
                         await asyncio.to_thread(self.store.unsubscribe, chat_id)
