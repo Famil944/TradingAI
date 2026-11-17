@@ -125,6 +125,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 "otc",
                 "otc_stats",
                 "otc_research",
+                "otc_m1",
                 "signal_stats",
                 "suggest",
                 "suggestions",
