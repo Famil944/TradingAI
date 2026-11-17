@@ -218,5 +218,42 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(bot.edited), 1)
 
 
+
+class ExportTests(unittest.TestCase):
+    def test_daily_csv_exports_known_and_unknown_without_wallet(self):
+        import csv
+        from scripts.recover_otc_history import export
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "data").mkdir()
+            path = root / "data/bollinger-cycles.db"
+            with sqlite3.connect(path) as db:
+                db.execute("""
+                    CREATE TABLE predictions(
+                        id TEXT PRIMARY KEY,symbol TEXT,created_at REAL,entry_at REAL,
+                        expires_at REAL,direction TEXT,model_sha TEXT,evidence TEXT,
+                        sent_at REAL,outcome TEXT,resolved_at REAL
+                    )
+                """)
+                for i, state in enumerate(("WIN", "UNKNOWN")):
+                    db.execute("INSERT INTO predictions VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
+                        "s"+str(i), "BTC", 1000+i*400, 1020+i*400, 1380+i*400,
+                        "UP", "v1", json.dumps({
+                            "cycle_seconds": 120,
+                            "attempt_outcomes": ["WIN"] if state == "WIN" else [],
+                            "virtual": {"balance": "TOP-SECRET"}
+                        }), 1001+i*400, state, 1380+i*400
+                    ))
+            result = export(root, root / "data/exports", with_shadow=False)
+            self.assertEqual(result["signals"], 2)
+            self.assertEqual(result["confirmed"], 1)
+            text = (root / "data/exports/signals.csv").read_text(encoding="utf-8-sig")
+            self.assertNotIn("TOP-SECRET", text)
+            self.assertNotIn("balance", text)
+            with (root / "data/exports/daily.csv").open(encoding="utf-8-sig") as f:
+                rows = list(csv.DictReader(f))
+            self.assertTrue(any(row["metric"] == "B" for row in rows))
+
+
 if __name__ == "__main__":
     unittest.main()
