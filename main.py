@@ -14,7 +14,7 @@ from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import BotCommand
 from aiohttp import ClientSession
 
-from bot import otc_commands
+from bot import community, otc_commands
 from config.settings import ROOT, settings
 from core.logging import SecretFormatter
 from core.single_instance import SingleInstance
@@ -37,6 +37,9 @@ COMMANDS = [
     ("otc", "OTC меню"),
     ("otc_stats", "Виртуальная статистика"),
     ("otc_research", "Качество фильтров и задержек"),
+    ("signal_stats", "Винрейт прогнозов"),
+    ("suggest", "Предложить улучшение"),
+    ("suggestions", "Предложения владельцу"),
 ]
 
 
@@ -64,6 +67,15 @@ async def main(*, session_minutes=None, session_end=None):
     if settings.admin_chat_id <= 0:
         print("Не задан положительный OTC_ADMIN_CHAT_ID личного чата владельца.")
         return 1
+    # Reject unsafe channel targets before any background tasks or collectors run.
+    public_channel = os.getenv("OTC_PUBLIC_CHANNEL_ID", "").strip()
+    if public_channel and (
+        not public_channel.startswith("-100")
+        or not public_channel[1:].isdigit()
+        or len(public_channel) < 9
+    ):
+        print("OTC_PUBLIC_CHANNEL_ID должен быть числовым ID канала (-100...).")
+        return 1
     db = Database()
     await asyncio.to_thread(db.init_db)
     await asyncio.to_thread(db.recover)
@@ -87,6 +99,7 @@ async def main(*, session_minutes=None, session_end=None):
         session._should_reset_connector = False
     bot = Bot(token=settings.telegram_bot_token, session=session)
     dp = Dispatcher()
+    dp.include_router(community.router)
     dp.include_router(otc_commands.router)
     evaluator = configured_evaluator(db, bot, settings, ROOT)
     evaluation_task = asyncio.create_task(evaluator.run())
@@ -163,6 +176,14 @@ async def main(*, session_minutes=None, session_end=None):
     cycles = BollingerCycles(cycle_journal)
     service.cycle_preview = cycles
     cycle_task = asyncio.create_task(cycles.run(bot, settings.admin_chat_id))
+    # Opt-in public reporting; independent from the private virtual wallet.
+    public_task = None
+    public_channel = os.getenv("OTC_PUBLIC_CHANNEL_ID", "").strip()
+    if public_channel:
+        from services.otc_public_broadcast import PublicPublisher
+
+        public_publisher = PublicPublisher(ROOT, int(public_channel))
+        public_task = asyncio.create_task(public_publisher.run(bot))
     if settings.cycles_only:
         ready.enabled = broad.enabled = preview.enabled = groq.enabled = False
     (ROOT / "logs").mkdir(exist_ok=True)
@@ -210,6 +231,9 @@ async def main(*, session_minutes=None, session_end=None):
             await service._notify(bot, text + "\n\n" + indicators)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        if public_task is not None:
+            public_task.cancel()
+            await asyncio.gather(public_task, return_exceptions=True)
         cycle_task.cancel()
         await asyncio.gather(cycle_task, return_exceptions=True)
         broad_task.cancel()
