@@ -11,6 +11,7 @@ from aiogram.types import BotCommandScopeAllPrivateChats, BotCommandScopeChat, B
 
 from bot import community, otc_commands
 from services.otc_subscribers import SubscriberRelay, Subscribers
+from services.otc_strategies_live import LiveStrategyJournal, display_name, load_live_signals
 
 
 def journal(path, rows):
@@ -50,6 +51,63 @@ class FakeBot:
 
     async def edit_message_text(self, text, chat_id, message_id, parse_mode=None):
         self.edited.append((chat_id, message_id, text))
+
+
+class DisplayNameTests(unittest.TestCase):
+    def test_legacy_symbols_are_prettified(self):
+        self.assertEqual(display_name("#JNJ_otc"), "JNJ OTC")
+        self.assertEqual(display_name("AUDCHF_otc"), "AUD/CHF OTC")
+        self.assertEqual(
+            display_name("#PFE_otc", "Pfizer Inc OTC"),
+            "Pfizer Inc OTC",
+        )
+
+    def test_live_journal_persists_catalogue_name_and_migrates_existing_db(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "community-live.db"
+            # Simulate a pre-update database without display_name.
+            with sqlite3.connect(path) as db:
+                db.execute("""
+                    CREATE TABLE signals(
+                        id TEXT PRIMARY KEY,
+                        strategy TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        seconds INTEGER NOT NULL,
+                        created_at REAL NOT NULL,
+                        entry_at REAL NOT NULL,
+                        expires_at REAL NOT NULL,
+                        direction TEXT NOT NULL,
+                        version TEXT NOT NULL,
+                        sent_at REAL,
+                        message_id INTEGER,
+                        outcome TEXT NOT NULL DEFAULT 'RESERVED',
+                        attempts_json TEXT NOT NULL DEFAULT '[]',
+                        attempt_sources_json TEXT NOT NULL DEFAULT '[]',
+                        resolved_at REAL,
+                        card_sha TEXT,
+                        UNIQUE(strategy,seconds,entry_at)
+                    )
+                """)
+
+            journal = LiveStrategyJournal(path)
+            candidate = {
+                "symbol": "#PFE_otc",
+                "name": "Pfizer Inc OTC",
+                "entry_at": 1020,
+                "expires_at": 1380,
+                "direction": "UP",
+                "experiment": {
+                    "method": "ema_pullback",
+                    "cycle_seconds": 120,
+                },
+            }
+            ident = journal.reserve(candidate, 1000)
+            self.assertIsNotNone(ident)
+            journal.sent(ident, 1001, 7, "sha")
+
+            rows = load_live_signals(path, 0)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["symbol"], "Pfizer Inc OTC")
 
 
 class SubscriberStoreTests(unittest.TestCase):
