@@ -14,8 +14,12 @@ load_dotenv(ROOT / ".env", override=False)
 class Settings:
     cycles_only: bool = True
     groq_enabled: bool = field(
+        default_factory=lambda: False
+    )
+    groq_recovery_enabled: bool = field(
         default_factory=lambda: (
-            os.getenv("OTC_GROQ_ENABLED", "false").lower() in ("1", "true", "yes")
+            os.getenv("OTC_GROQ_RECOVERY_ENABLED", "true").lower()
+            in ("1", "true", "yes")
         )
     )
     primary_mode: str = field(
@@ -28,10 +32,10 @@ class Settings:
         default_factory=lambda: os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
     )
     groq_interval_seconds: int = field(
-        default_factory=lambda: max(60, int(os.getenv("GROQ_INTERVAL_SECONDS", "300")))
+        default_factory=lambda: max(60, int(os.getenv("GROQ_INTERVAL_SECONDS", "60")))
     )
     groq_max_requests: int = field(
-        default_factory=lambda: max(0, int(os.getenv("GROQ_MAX_REQUESTS", "100")))
+        default_factory=lambda: max(0, int(os.getenv("GROQ_MAX_REQUESTS", "1000")))
     )
     groq_max_tokens: int = field(
         default_factory=lambda: max(0, int(os.getenv("GROQ_MAX_TOKENS", "150000")))
