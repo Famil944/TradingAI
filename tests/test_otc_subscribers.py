@@ -135,6 +135,34 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bot.sent, [])
 
 
+class LiveAttemptTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_attempt_progress_is_mirrored_without_wallet(self):
+        from services.otc_public_broadcast import safe_card
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = Subscribers(root / "data" / "subscribers.db")
+            store.subscribe(41, now=990)
+            journal(root / "data" / "bollinger-cycles.db", [
+                {"id": "pending1", "created": 1000, "outcome": "PENDING"}
+            ])
+            live = SimpleNamespace(card_cache={"pending1": ["LOSS", "PENDING", "PENDING"]})
+            relay = SubscriberRelay(
+                root, store=store, clock=lambda: 1005, live_cycle=live
+            )
+            bot = FakeBot()
+            await relay.update(bot)
+            self.assertEqual(len(bot.sent), 1)
+            self.assertIn("❌", bot.sent[0][1])
+            self.assertNotIn("DO_NOT_DISCLOSE", bot.sent[0][1])
+            # The overall result is still PENDING. An attempt change must edit.
+            live.card_cache["pending1"] = ["LOSS", "WIN", "PENDING"]
+            await relay.update(bot)
+            self.assertEqual(len(bot.sent), 1)
+            self.assertEqual(len(bot.edited), 1)
+            self.assertIn("✅", bot.edited[0][2])
+            self.assertNotIn("DO_NOT_DISCLOSE", bot.edited[0][2])
+
+
 class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
     async def test_telegram_shows_admin_commands_only_to_owner(self):
         from main import COMMANDS, SUBSCRIBER_COMMANDS, initialize_telegram
