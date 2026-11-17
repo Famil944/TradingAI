@@ -24,6 +24,16 @@ def signal(identifier, created, outcome, *, secs=120, version="v1", strat="a",
     }
 
 
+class TelegramPaginationTests(unittest.TestCase):
+    def test_long_reports_are_split_without_dropping_lines(self):
+        from bot.community import split_messages
+        text = "\n".join(f"line-{n:03d}: test outcome" for n in range(150))
+        parts = list(split_messages(text, limit=150))
+        self.assertTrue(len(parts) > 1)
+        self.assertTrue(all(len(p) <= 150 for p in parts))
+        self.assertEqual("\n".join(parts), text)
+
+
 class CombinedTests(unittest.TestCase):
     def test_loss_then_win_gives_one_x6_win(self):
         a = signal("avalanche", 1000, "LOSS", resolved=1380,
