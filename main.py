@@ -4,8 +4,6 @@ import argparse
 import asyncio
 import logging
 import os
-import subprocess
-import sys
 import time
 
 from aiogram import Bot, Dispatcher
@@ -29,8 +27,7 @@ from services.otc_entry_checks import EntryChecks
 from services.otc_evaluation import configured as configured_evaluator
 from services.otc_groq import GroqClient
 from services.otc_market_archive import MarketArchive
-from services.otc_ml.preview import MLPreview, PreviewJournal
-from services.otc_ml.runtime import RuntimeML
+from services.otc_ml.preview import PreviewJournal
 from services.otc_preflight import PreflightChecks
 from services.otc_ready import ReadyPrimary
 from services.otc_session import OTCSession
@@ -130,29 +127,17 @@ async def main(*, session_minutes=None, session_end=None):
     dp.include_router(otc_commands.router)
     evaluator = configured_evaluator(db, bot, settings, ROOT)
     evaluation_task = asyncio.create_task(evaluator.run())
-    ml_runtime = RuntimeML(ROOT / "data" / "ml", ROOT / "data" / "ml_provider")
-    service.ml_runtime = ml_runtime
     entry_checks = EntryChecks(
         db,
         OTChartsProvider(settings.otcharts_api_key),
         bot,
         settings.admin_chat_id,
-        ml=ml_runtime,
+        ml=None,
         source_snapshot=service.entry_snapshot,
     )
     entry_task = asyncio.create_task(entry_checks.run())
     preflight = PreflightChecks(db, bot, settings.admin_chat_id, service.entry_snapshot)
     preflight_task = asyncio.create_task(preflight.run())
-    preview = MLPreview(
-        PreviewJournal(ROOT / "data" / "ml-preview.db"),
-        RuntimeML(
-            ROOT / "data" / "ml_preview20_verified", ROOT / "data" / "ml_preview20"
-        ),
-        settlement_provider=evaluator.provider,
-    )
-    await asyncio.to_thread(preview.journal.cancel_future, time.time())
-    service.ml_preview = preview
-    preview_task = asyncio.create_task(preview.run(bot, settings.admin_chat_id))
     groq_client = (
         GroqClient(
             settings.groq_api_key,
@@ -228,28 +213,8 @@ async def main(*, session_minutes=None, session_end=None):
         public_publisher = PublicPublisher(ROOT, int(public_channel), live_cycle=cycles)
         public_task = asyncio.create_task(public_publisher.run(bot))
     if settings.cycles_only:
-        ready.enabled = broad.enabled = preview.enabled = False
+        ready.enabled = broad.enabled = False
     (ROOT / "logs").mkdir(exist_ok=True)
-    if os.getenv("OTC_ML_TRAINING", "true").lower() in ("1", "true", "yes"):
-        for name, extra in (
-            ("ml-collector", []),
-            ("ml-preview-collector", ["--preview"]),
-        ):
-            with (
-                (ROOT / "logs" / f"{name}.stdout.log").open(
-                    "a", encoding="utf-8"
-                ) as out,
-                (ROOT / "logs" / f"{name}.stderr.log").open(
-                    "a", encoding="utf-8"
-                ) as err,
-            ):
-                subprocess.Popen(
-                    [sys.executable, "-u", "-m", "services.otc_ml.collector", *extra],
-                    cwd=ROOT,
-                    stdout=out,
-                    stderr=err,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
     try:
         identity = await initialize_telegram(bot)
         logging.getLogger(__name__).info(
@@ -295,8 +260,6 @@ async def main(*, session_minutes=None, session_end=None):
             await groq_client.close()
         preflight_task.cancel()
         await asyncio.gather(preflight_task, return_exceptions=True)
-        preview_task.cancel()
-        await asyncio.gather(preview_task, return_exceptions=True)
         entry_task.cancel()
         await asyncio.gather(entry_task, return_exceptions=True)
         evaluation_task.cancel()
