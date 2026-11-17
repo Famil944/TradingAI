@@ -278,6 +278,43 @@ def evaluate_cycle(row, prices, now, archive_path=None):
     return attempts, sources, "LOSS"
 
 
+def reconcile_unknown(row, prices, now, archive_path=None):
+    """Recover the missing actual attempt without inventing later entries.
+
+    After UNKNOWN, further entries were not instructed. Even if a historical
+    quote later proves that attempt lost, do not retroactively fabricate
+    attempts 2 or 3 and an imaginary total LOSS.
+    """
+    attempts = json.loads(row["attempts_json"] or "[]")
+    sources = json.loads(row["attempt_sources_json"] or "[]")
+    if "UNKNOWN" not in attempts:
+        return attempts, sources, "UNKNOWN"
+    index = attempts.index("UNKNOWN")
+    seconds = row["seconds"]
+    start = int(row["entry_at"] + index * seconds)
+    end = start + seconds
+    state = _tick_outcome(prices, row["symbol"], start, end, row["direction"])
+    source = "otcharts_tick"
+    if state is None and archive_path:
+        state = _canonical_outcome(
+            archive_path, row["symbol"], start, end, row["direction"]
+        )
+        source = "otcharts_history"
+    if state is None:
+        return attempts, sources, "UNKNOWN"
+    attempts[index] = state
+    if len(sources) > index:
+        sources[index] = source
+    else:
+        sources.extend(["unconfirmed"] * (index - len(sources)))
+        sources.append(source)
+    if state in ("WIN", "DRAW"):
+        return attempts, sources, state
+    if index == 2:
+        return attempts, sources, "LOSS"
+    return attempts, sources, "UNKNOWN"
+
+
 class LiveStrategyPublisher:
     def __init__(self, root, *, clock=time.time, journal=None):
         self.root = Path(root)
@@ -357,8 +394,12 @@ class LiveStrategyPublisher:
         )
         for row in pending:
             try:
+                evaluator = (
+                    reconcile_unknown if row["outcome"] == "UNKNOWN"
+                    else evaluate_cycle
+                )
                 attempts, sources, state = await asyncio.to_thread(
-                    evaluate_cycle, row, prices, now, self.archive_path
+                    evaluator, row, prices, now, self.archive_path
                 )
                 previous = json.loads(row["attempts_json"] or "[]")
                 if attempts != previous or state != row["outcome"]:
