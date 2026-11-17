@@ -128,6 +128,10 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 "signal_stats",
                 "suggest",
                 "suggestions",
+                "access",
+                "grant",
+                "block",
+                "unblock",
             },
         )
         commands.choices[1] = (300,)

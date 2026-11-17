@@ -53,6 +53,11 @@ def keyboard(rows):
 
 
 def home(owner=False):
+    if not owner:
+        return keyboard([
+            [("📊 Винрейт", "c:wr"), ("💎 Подписка", "c:subscription")],
+            [("ℹ️ О сигналах", "c:info")],
+        ])
     rows = [
         [("📊 Проверить винрейт", "c:sources")],
         [("💡 Предложить улучшение", "c:suggest")],
@@ -61,6 +66,7 @@ def home(owner=False):
         rows.append([("🔕 Отписаться от сигналов", "c:unsubscribe")])
     if owner:
         rows.append([("📥 Предложения пользователей", "c:queue")])
+        rows.append([("🔐 Доступ подписчиков", "c:access")])
         rows.append([("🔧 Административное меню", "c:owner")])
     return keyboard(rows)
 
@@ -71,6 +77,82 @@ STRATEGIES = (
     ("break_retest", "③ Пробой/ретест"),
     ("ema_pullback", "④ EMA9/19"),
 )
+
+IDS = {"main": "S1", "bb_reentry": "S2", "break_retest": "S3", "ema_pullback": "S4"}
+TERMS = (
+    "🧪 Тестовый режим · доступ только по одобрению владельца.\n\n"
+    "Сигналы — экспериментальные прогнозы по котировкам OTCharts, а не "
+    "исполненные сделки брокера. Котировки и итог на вашей платформе могут "
+    "отличаться. Возможна потеря всех вложенных средств. Нет гарантии "
+    "доходности или точности. Решение о сделке и риск — только ваши.\n\n"
+    "Принимая условия, вы запрашиваете доступ и соглашаетесь получать "
+    "уведомления бота. Первая одобренная заявка даёт 7 дней бесплатно. "
+    "Затем продление — только владельцем."
+)
+INFO = (
+    "ℹ️ О сигналах\n"
+    "S1 — Боллинджер ×3\n"
+    "S2 — Возврат в диапазон\n"
+    "S3 — Пробой и ретест\n"
+    "S4 — Откат EMA9/19\n\n"
+    "M2/M5/M15 — длительность одной попытки (2/5/15 минут).\n"
+    "1/2/3 — попытки сигнала: ✅ выигрыш, ❌ проигрыш, "
+    "⏳ ожидание, ❔ данных недостаточно, — не выполнялась.\n"
+    "WR — доля WIN среди подтверждённых WIN и LOSS опубликованных сигналов; "
+    "ожидание и UNKNOWN не входят в расчёт.\n\n" + TERMS
+)
+
+
+def compact_overview(timeframe="all"):
+    """Published ×3 forecasts, never wallet/research or incomplete outcomes."""
+    seconds = SECONDS[timeframe]
+    lines = [f"📊 Винрейт · {('Все M2/M5/M15' if seconds is None else 'M' + timeframe)}"]
+    for source, _ in STRATEGIES:
+        rows = snapshots(source)
+        if seconds is not None:
+            rows = [row for row in rows if row["seconds"] == seconds]
+        m = metrics(rows)
+        rate = f"{m['wr']:.1f}%" if m["wr"] is not None else "—"
+        lines.append(f"{IDS[source]}  {rate} · ✅{m['win']} ❌{m['loss']} (n={m['known']})")
+    lines.extend(["", "Только известные WIN/LOSS · не сделки брокера."])
+    return "\n".join(lines)
+
+
+def compact_periods():
+    return keyboard([
+        [("Все", "c:wr:all"), ("M2", "c:wr:2"),
+         ("M5", "c:wr:5"), ("M15", "c:wr:15")],
+        [("◀ Меню", "c:home")],
+    ])
+
+
+def access_text(store, user_id):
+    status = store.status(user_id)
+    state = status["state"]
+    if state == "approved":
+        return f"💎 Доступ активен до {timestamp(status['expires_at'])}"
+    if state == "paused":
+        return f"🔕 Уведомления отключены · доступ до {timestamp(status['expires_at'])}"
+    if state == "pending":
+        return "🕓 Заявка принята. Ожидайте решения владельца."
+    if state == "expired":
+        return "⌛ Доступ закончился. Можно запросить продление."
+    if state == "blocked":
+        return "⛔ Доступ ограничен владельцем."
+    return "💎 Доступ ещё не оформлен. Примите условия, чтобы подать заявку."
+
+
+def subscription_buttons(store, user_id):
+    state = store.status(user_id)["state"]
+    if state == "new":
+        return keyboard([[("✅ Принимаю условия · запросить", "c:accept")],
+                         [("ℹ️ О сигналах", "c:info")]])
+    if state == "expired":
+        return keyboard([[("📩 Запросить продление", "c:request")],
+                         [("◀ Меню", "c:home")]])
+    if state == "paused":
+        return keyboard([[("🔔 Возобновить уведомления", "c:request")]])
+    return home()
 
 
 def sources():
@@ -203,14 +285,11 @@ async def start(message: types.Message):
     if is_owner(message.from_user):
         await otc_commands.show_menu(message)
         return
-    await asyncio.to_thread(subscribers().subscribe, message.chat.id)
-    await message.answer(
-        "✅ Подписка на сигналы включена.\n"
-        "Когда владелец запустит бота и появится новый сигнал, "
-        "ты получишь его автоматически — нажимать «Запустить» не нужно.\n"
-        "Прогнозы OTCharts не являются подтверждёнными сделками брокера.",
-        reply_markup=home(), parse_mode=None,
-    )
+    store = subscribers()
+    status = await asyncio.to_thread(store.status, message.chat.id)
+    body = TERMS if status["state"] == "new" else access_text(store, message.chat.id)
+    await message.answer(body, reply_markup=subscription_buttons(store, message.chat.id),
+                         parse_mode=None)
 
 
 @router.message(Command("help"))
@@ -221,8 +300,8 @@ async def help_menu(message: types.Message):
         await otc_commands.show_menu(message)
     else:
         await message.answer(
-            "Здесь можно смотреть результаты и предлагать улучшения. "
-            "Чтобы получать новые сигналы автоматически — /start.",
+            "Сигналы доступны после подтверждения условий и одобрения владельцем. "
+            "В меню — подписка, винрейт и пояснения S1–S4.",
             reply_markup=home(), parse_mode=None,
         )
 
@@ -233,26 +312,98 @@ async def stop_signals(message: types.Message):
         return
     await asyncio.to_thread(subscribers().unsubscribe, message.chat.id)
     await message.answer(
-        "🔕 Подписка отключена. Новые личные сигналы больше не отправляются. "
-        "Чтобы подписаться снова, используй /start.",
-        reply_markup=keyboard([
-            [("🔔 Подписаться снова", "c:subscribe")],
-            [("📊 Винрейт", "c:sources")],
-            [("💡 Предложение", "c:suggest")],
-        ]), parse_mode=None,
+        "🔕 Уведомления остановлены. Возобновить можно через /start, "
+        "пока действует одобренный срок.",
+        reply_markup=home(), parse_mode=None,
     )
 
 
 @router.message(Command("signal_stats"))
 async def signal_stats(message: types.Message):
     if private(message):
-        text = await asyncio.to_thread(overview_text)
-        await message.answer(text, reply_markup=sources(), parse_mode=None)
+        if is_owner(message.from_user):
+            text = await asyncio.to_thread(overview_text)
+            await message.answer(text, reply_markup=sources(), parse_mode=None)
+        elif subscribers().status(message.chat.id)["state"] == "approved":
+            await message.answer(await asyncio.to_thread(compact_overview),
+                                 reply_markup=compact_periods(), parse_mode=None)
+        else:
+            await message.answer("Сначала оформите доступ: /start", reply_markup=home())
+
+
+@router.message(Command("access", "requests"))
+async def access_commands(message: types.Message):
+    if private(message) and is_owner(message.from_user):
+        await show_access(message)
+
+
+async def show_access(message):
+    users = await asyncio.to_thread(subscribers().members, 30)
+    if not users:
+        await message.answer("🔐 Заявок пока нет.")
+        return
+    lines = ["🔐 Доступ · последние 30 пользователей"]
+    buttons = []
+    for chat_id, state, expires, used, accepted in users:
+        label = subscribers().status(chat_id)["state"]
+        expiry = f" до {timestamp(expires)}" if expires else ""
+        lines.append(f"{chat_id} · {label}{expiry}")
+        if label == "pending" and accepted is not None:
+            buttons.append([("✅ 7д · " + str(chat_id), f"c:grant:{chat_id}:7"),
+                            ("⛔", f"c:block:{chat_id}")])
+    buttons.append([("🔄 Обновить", "c:access")])
+    await message.answer("\n".join(lines)[:3500],
+                         reply_markup=keyboard(buttons[:25]), parse_mode=None)
+
+
+@router.message(Command("grant"))
+async def grant_command(message: types.Message):
+    if not private(message) or not is_owner(message.from_user):
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        await message.answer("Формат: /grant TELEGRAM_ID ДНЕЙ (1–365)")
+        return
+    await grant_access(message, int(parts[1]), int(parts[2]))
+
+
+async def grant_access(message, chat_id, days):
+    try:
+        expiry = await asyncio.to_thread(subscribers().grant, chat_id, days)
+    except ValueError as exc:
+        await message.answer(str(exc))
+        return
+    await message.answer(f"✅ {chat_id}: доступ до {timestamp(expiry)}")
+    try:
+        await message.bot.send_message(
+            chat_id, f"✅ Доступ одобрен до {timestamp(expiry)}. "
+            "Новые сигналы будут приходить автоматически.",
+            reply_markup=home(), parse_mode=None,
+        )
+    except Exception:
+        # Approval persisted; subscriber will see the status upon /start.
+        pass
+
+
+@router.message(Command("block", "unblock"))
+async def block_command(message: types.Message):
+    if not private(message) or not is_owner(message.from_user):
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Формат: /block ID или /unblock ID")
+        return
+    action = subscribers().unblock if parts[0].startswith("/unblock") else subscribers().block
+    changed = await asyncio.to_thread(action, int(parts[1]))
+    await message.answer("✅ Обновлено" if changed else "Пользователь не найден")
 
 
 @router.message(Command("suggest", "feedback"))
 async def suggest(message: types.Message):
     if not private(message):
+        return
+    if not is_owner(message.from_user) and subscribers().status(message.chat.id)["state"] != "approved":
+        await message.answer("Сначала оформите доступ: /start", reply_markup=home())
         return
     feedback().begin(message.from_user.id)
     await message.answer(
@@ -300,7 +451,75 @@ async def callbacks(query: types.CallbackQuery):
         return
     action = (query.data or "").split(":")
     owner = is_owner(query.from_user)
+    admin_chat = owner and query.message.chat.id == settings.admin_chat_id
     target = action[1] if len(action) > 1 else ""
+    if target in ("grant", "block", "access"):
+        if not admin_chat:
+            await query.answer("Нет доступа", show_alert=True)
+            return
+        await query.answer()
+        if target == "access":
+            await show_access(query.message)
+        elif target == "grant" and len(action) == 4 and action[2].isdigit() and action[3].isdigit():
+            await grant_access(query.message, int(action[2]), int(action[3]))
+        elif target == "block" and len(action) == 3 and action[2].isdigit():
+            await asyncio.to_thread(subscribers().block, int(action[2]))
+            await query.message.answer("⛔ Пользователь заблокирован")
+        return
+    if target == "info":
+        await query.answer()
+        await query.message.answer(INFO, reply_markup=home(owner), parse_mode=None)
+        return
+    if target == "subscription" and not owner:
+        await query.answer()
+        store = subscribers()
+        state = store.status(query.message.chat.id)["state"]
+        await query.message.answer(
+            TERMS if state == "new" else access_text(store, query.message.chat.id),
+            reply_markup=subscription_buttons(store, query.message.chat.id),
+            parse_mode=None,
+        )
+        return
+    if target in ("accept", "request", "subscribe") and not owner:
+        store = subscribers()
+        previous = store.status(query.message.chat.id)["state"]
+        if target == "accept" and previous != "new":
+            await query.answer("Заявка уже оформлена")
+            return
+        if target != "accept" and previous == "new":
+            await query.answer("Сначала примите условия через /start", show_alert=True)
+            return
+        result = await asyncio.to_thread(store.request, query.message.chat.id)
+        await query.answer("Заявка отправлена" if result == "pending" else "Статус обновлён")
+        await query.message.answer(access_text(store, query.message.chat.id),
+                                   reply_markup=home(), parse_mode=None)
+        if result == "pending" and previous != "pending":
+            try:
+                await query.bot.send_message(
+                    settings.admin_chat_id,
+                    f"🔐 Заявка на доступ: {query.from_user.id}"
+                    + (f" (@{query.from_user.username})" if getattr(query.from_user, "username", None) else "")
+                    + (" · продление" if previous == "expired" else " · 7 дней тест"),
+                    reply_markup=keyboard([
+                        [("✅ Одобрить 7 дней", f"c:grant:{query.from_user.id}:7")],
+                        [("⛔ Заблокировать", f"c:block:{query.from_user.id}")],
+                    ]), parse_mode=None,
+                )
+            except Exception:
+                pass  # Owner can still find the persisted request via /access.
+        return
+    if target == "wr":
+        if not owner and subscribers().status(query.message.chat.id)["state"] != "approved":
+            await query.answer("Сначала оформите доступ через /start", show_alert=True)
+            return
+        tf = action[2] if len(action) == 3 else "all"
+        if tf not in SECONDS:
+            await query.answer("Некорректный период")
+            return
+        await query.answer()
+        await query.message.answer(await asyncio.to_thread(compact_overview, tf),
+                                   reply_markup=compact_periods(), parse_mode=None)
+        return
     if target == "owner":
         if not owner:
             await query.answer("Нет доступа", show_alert=True)
@@ -322,13 +541,9 @@ async def callbacks(query: types.CallbackQuery):
             parse_mode=None,
         )
         return
-    if target == "subscribe" and not owner:
-        await asyncio.to_thread(subscribers().subscribe, query.message.chat.id)
-        await query.answer("Подписка включена")
-        await query.message.answer(
-            "✅ Подписка включена. Запускает торговую систему только владелец.",
-            reply_markup=home(), parse_mode=None,
-        )
+    # Advanced owner reports must not leak source versions, health or history.
+    if target in ("sources", "source", "source_tf", "stats") and not owner:
+        await query.answer("Нет доступа", show_alert=True)
         return
     if target == "sources":
         await query.answer()
@@ -336,6 +551,9 @@ async def callbacks(query: types.CallbackQuery):
         await query.message.answer(text, reply_markup=sources(), parse_mode=None)
         return
     if target == "suggest":
+        if not owner and subscribers().status(query.message.chat.id)["state"] != "approved":
+            await query.answer("Нет доступа", show_alert=True)
+            return
         await query.answer()
         feedback().begin(query.from_user.id)
         await query.message.answer(
@@ -436,6 +654,10 @@ def awaiting_text(message):
 
 @router.message(F.text, awaiting_text)
 async def receive_text(message: types.Message):
+    if not is_owner(message.from_user) and subscribers().status(message.chat.id)["state"] != "approved":
+        feedback().cancel(message.from_user.id)
+        await message.answer("Доступ закончился. Обновите заявку: /start")
+        return
     state = feedback().state(message.from_user.id)
     if not state:
         return
