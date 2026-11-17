@@ -12,7 +12,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from services.otc_public_stats import (
-    METHOD_LABELS, main_signals, metric_units, shadow_signals,
+    METHOD_LABELS, _attempts, main_signals, metric_units, shadow_signals,
 )
 
 LOG = logging.getLogger(__name__)
@@ -53,6 +53,16 @@ def public_text(row):
     return "\n".join(lines)
 
 
+def safe_card(row, live_cycle=None):
+    """Use public fields plus in-memory attempt outcomes; never copy wallet data."""
+    if live_cycle is not None and row["origin"] == "main":
+        cache = getattr(live_cycle, "card_cache", {})
+        states = cache.get(row["id"].removeprefix("main:"))
+        if isinstance(states, list):
+            row = dict(row, attempts=_attempts(states))
+    return public_text(row)
+
+
 def batch_report(rows, metric, seconds):
     wins = sum(r["outcome"] == "WIN" for r in rows)
     losses = len(rows) - wins
@@ -74,8 +84,9 @@ def batch_report(rows, metric, seconds):
 
 class PublicPublisher:
     """Separate journal records what was ACKed by Telegram, not an exactly-once guarantee."""
-    def __init__(self, root, channel_id):
+    def __init__(self, root, channel_id, live_cycle=None):
         self.root = Path(root)
+        self.live_cycle = live_cycle
         self.channel_id = int(channel_id)
         if not str(self.channel_id).startswith("-100"):
             raise ValueError("OTC_PUBLIC_CHANNEL_ID must be a Telegram channel ID (-100...)")
@@ -89,6 +100,7 @@ class PublicPublisher:
                 CREATE TABLE IF NOT EXISTS sent_signals(
                     channel_id INTEGER NOT NULL,signal_id TEXT NOT NULL,
                     message_id INTEGER NOT NULL,last_outcome TEXT NOT NULL,
+                    last_content_sha TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY(channel_id,signal_id)
                 );
                 CREATE TABLE IF NOT EXISTS sent_batches(
@@ -119,6 +131,14 @@ class PublicPublisher:
             if "enabled_at" not in columns:
                 db.execute(
                     "ALTER TABLE shadow_flags ADD COLUMN enabled_at REAL NOT NULL DEFAULT 0"
+                )
+            delivery_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(sent_signals)")
+            }
+            if "last_content_sha" not in delivery_columns:
+                db.execute(
+                    "ALTER TABLE sent_signals ADD COLUMN "
+                    "last_content_sha TEXT NOT NULL DEFAULT ''"
                 )
             db.execute(
                 "INSERT OR IGNORE INTO channels(channel_id,enabled_at) VALUES(?,?)",
@@ -212,18 +232,20 @@ class PublicPublisher:
     def _sent(self, identifier):
         with closing(self._connect()) as db:
             return db.execute(
-                "SELECT message_id,last_outcome FROM sent_signals "
+                "SELECT message_id,last_outcome,last_content_sha FROM sent_signals "
                 "WHERE channel_id=? AND signal_id=?",
                 (self.channel_id, identifier),
             ).fetchone()
 
-    def _record(self, identifier, message_id, outcome):
+    def _record(self, identifier, message_id, outcome, content_sha):
         with closing(self._connect()) as db:
             db.execute(
-                "INSERT INTO sent_signals(channel_id,signal_id,message_id,last_outcome)"
-                " VALUES(?,?,?,?) ON CONFLICT(channel_id,signal_id) DO UPDATE SET"
-                " message_id=excluded.message_id,last_outcome=excluded.last_outcome",
-                (self.channel_id, identifier, message_id, outcome),
+                "INSERT INTO sent_signals"
+                "(channel_id,signal_id,message_id,last_outcome,last_content_sha)"
+                " VALUES(?,?,?,?,?) ON CONFLICT(channel_id,signal_id) DO UPDATE SET"
+                " message_id=excluded.message_id,last_outcome=excluded.last_outcome,"
+                "last_content_sha=excluded.last_content_sha",
+                (self.channel_id, identifier, message_id, outcome, content_sha),
             )
             db.commit()
 
@@ -305,21 +327,28 @@ class PublicPublisher:
     async def update(self, bot):
         rows = await asyncio.to_thread(self._snapshot)
         for row in rows:
+            text = safe_card(row, self.live_cycle)
+            content_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
             previous = await asyncio.to_thread(self._sent, row["id"])
             if previous is None:
+                if row["entry_at"] <= time.time() + 3:
+                    # Never present historical or late entries as actionable signals.
+                    continue
                 msg = await bot.send_message(
-                    self.channel_id, public_text(row), parse_mode=None
+                    self.channel_id, text, parse_mode=None
                 )
                 await asyncio.to_thread(
-                    self._record, row["id"], msg.message_id, row["outcome"]
+                    self._record, row["id"], msg.message_id,
+                    row["outcome"], content_sha
                 )
-            elif previous[1] != row["outcome"]:
+            elif previous[1] != row["outcome"] or previous[2] != content_sha:
                 await bot.edit_message_text(
-                    public_text(row), chat_id=self.channel_id,
+                    text, chat_id=self.channel_id,
                     message_id=previous[0], parse_mode=None,
                 )
                 await asyncio.to_thread(
-                    self._record, row["id"], previous[0], row["outcome"]
+                    self._record, row["id"], previous[0],
+                    row["outcome"], content_sha
                 )
         await asyncio.to_thread(self._enqueue_units, rows)
         while True:
