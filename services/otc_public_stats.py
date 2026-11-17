@@ -51,9 +51,12 @@ def main_signals(path, since=0):
         # virtual-account segment embedded in older journal evidence.
         rows = db.execute(
             "SELECT id,symbol,created_at,entry_at,expires_at,direction,model_sha,"
-            "json_extract(evidence,'$.cycle_seconds') AS cycle_seconds,"
-            "json_extract(evidence,'$.name') AS display_name,"
-            "json_extract(evidence,'$.attempt_outcomes') AS attempts_json,"
+            "CASE WHEN json_valid(evidence) THEN "
+            "json_extract(evidence,'$.cycle_seconds') END AS cycle_seconds,"
+            "CASE WHEN json_valid(evidence) THEN "
+            "json_extract(evidence,'$.name') END AS display_name,"
+            "CASE WHEN json_valid(evidence) THEN "
+            "json_extract(evidence,'$.attempt_outcomes') END AS attempts_json,"
             "sent_at,outcome,resolved_at FROM predictions "
             "WHERE sent_at IS NOT NULL AND sent_at >= ? "
             "AND outcome NOT IN ('LATE','CANCELLED','NOT_DELIVERED') "
