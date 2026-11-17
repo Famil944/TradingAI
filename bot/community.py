@@ -1,5 +1,6 @@
 """Subscriber read-only menus and owner-only suggestion moderation."""
 import asyncio
+import os
 import time
 from datetime import datetime
 from functools import lru_cache
@@ -52,6 +53,7 @@ def home(owner=False):
     ]
     if owner:
         rows.append([("📥 Предложения пользователей", "c:queue")])
+        rows.append([("📡 Публикация фоновых тестов", "c:shadow")])
         rows.append([("🔧 Административное меню", "c:owner")])
     return keyboard(rows)
 
@@ -82,6 +84,34 @@ def metrics_menu(source, timeframe="2", metric="B", limit=10, period="all"):
          ("Все", action(p="all"))],
         [("Другие стратегии", "c:sources")],
     ])
+
+def publisher():
+    channel = os.getenv("OTC_PUBLIC_CHANNEL_ID", "").strip()
+    if not channel:
+        return None
+    from services.otc_public_broadcast import PublicPublisher
+    return PublicPublisher(ROOT, int(channel))
+
+
+async def show_shadow_flags(message):
+    worker = publisher()
+    if worker is None:
+        await message.answer(
+            "Общий канал ещё не настроен. Укажи OTC_PUBLIC_CHANNEL_ID в локальном .env."
+        )
+        return
+    flags = worker.flags()
+    buttons = [[(
+        ("✅ " if flags.get(method) else "⬜ ") + METHOD_LABELS[method],
+        "c:toggle:" + method,
+    )] for method in METHODS]
+    buttons.append([("Меню", "c:home")])
+    await message.answer(
+        "📡 Фоновые ТЕСТЫ — публикация в канале.\n"
+        "Выключенные стратегии по-прежнему доступны в статистике.",
+        reply_markup=keyboard(buttons), parse_mode=None,
+    )
+
 
 def source_title(source):
     return "ОСНОВНОЙ · Боллинджер ×3" if source == "main" else METHOD_LABELS[source]
@@ -253,6 +283,19 @@ async def callbacks(query: types.CallbackQuery):
         return
     if not owner:
         await query.answer("Нет доступа", show_alert=True)
+        return
+    if target == "shadow":
+        await query.answer()
+        await show_shadow_flags(query.message)
+        return
+    if target == "toggle" and len(action) == 3 and action[2] in METHODS:
+        worker = publisher()
+        if worker is None:
+            await query.answer("Канал не настроен", show_alert=True)
+            return
+        switched = worker.toggle_shadow(action[2])
+        await query.answer("Включено" if switched else "Выключено")
+        await show_shadow_flags(query.message)
         return
     if target == "queue":
         await query.answer()
