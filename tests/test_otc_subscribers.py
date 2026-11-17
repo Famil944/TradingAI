@@ -201,6 +201,26 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Административное", x)
             self.assertNotIn("баланс", x.lower())
 
+    async def test_subscriber_start_only_registers_and_never_starts_engine(self):
+        from unittest.mock import Mock
+        from bot import community
+        registry = SimpleNamespace(subscribe=Mock())
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=41),
+            chat=SimpleNamespace(id=41, type="private"),
+            answer=AsyncMock(),
+        )
+        engine_start = AsyncMock()
+        with patch.object(community, "subscribers", return_value=registry), patch.object(
+            community, "settings", SimpleNamespace(admin_chat_id=999)
+        ), patch.object(otc_commands, "show_menu", engine_start):
+            await community.start(message)
+        registry.subscribe.assert_called_once_with(41)
+        engine_start.assert_not_awaited()
+        sent = message.answer.await_args.args[0]
+        self.assertIn("Подписка", sent)
+        self.assertNotIn("Вирт.", sent)
+
     async def test_owner_start_remains_in_private_admin_router(self):
         handler = AsyncMock()
         owner = SimpleNamespace(id=999)
