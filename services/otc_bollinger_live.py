@@ -33,7 +33,8 @@ def card(plan, outcomes=None, result=None):
     won = False
     stopped_after = plan.get("stopped_after_index")
     virtual = plan.get("virtual")
-    for i, outcome in enumerate(outcomes):
+    for i in range(3):
+        outcome = outcomes[i] if i < len(outcomes) else "PENDING"
         at = datetime.fromtimestamp(
             plan["entry_at"] + i * seconds, ZoneInfo("Europe/Moscow")
         ).strftime("%H:%M")

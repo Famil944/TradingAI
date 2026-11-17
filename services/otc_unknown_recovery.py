@@ -17,7 +17,6 @@ from pathlib import Path
 from services.otc_strategies_live import (
     LiveStrategyJournal,
     _canonical_outcome,
-    reconcile_unknown,
 )
 
 LOG = logging.getLogger(__name__)
@@ -110,6 +109,79 @@ class UnknownRecovery:
             else None
         )
 
+    def _reconstruct_cycle(
+        self, symbol, entry_at, seconds, direction, attempts, sources
+    ):
+        """Rebuild the pre-published 3-attempt plan from canonical history.
+
+        A later attempt is eligible only when every earlier attempt is LOSS.
+        Existing known outcomes are preserved. Missing/UNKNOWN/PENDING attempts
+        are filled only from exact unrevised OTCharts historical opens.
+        """
+        attempts = list(attempts or [])
+        sources = list(sources or [])
+        audits = []
+        for index in range(3):
+            if index < len(attempts) and attempts[index] in ("WIN", "DRAW"):
+                return (
+                    attempts[: index + 1],
+                    sources[: index + 1],
+                    attempts[index],
+                    audits,
+                    False,
+                )
+            if index < len(attempts) and attempts[index] == "LOSS":
+                continue
+
+            start = int(entry_at + index * seconds)
+            end = start + seconds
+            entry_price = self._price(symbol, start)
+            expiry_price = self._price(symbol, end)
+            state = _canonical_outcome(
+                self.archive_path, symbol, start, end, direction
+            )
+            if state is None or entry_price is None or expiry_price is None:
+                if len(attempts) <= index:
+                    attempts.extend(["PENDING"] * (index - len(attempts)))
+                    attempts.append("UNKNOWN")
+                else:
+                    attempts[index] = "UNKNOWN"
+                if len(sources) <= index:
+                    sources.extend(["unconfirmed"] * (index + 1 - len(sources)))
+                else:
+                    sources[index] = "unconfirmed"
+                return attempts, sources, "UNKNOWN", audits, True
+
+            if len(attempts) <= index:
+                attempts.extend(["PENDING"] * (index - len(attempts)))
+                attempts.append(state)
+            else:
+                attempts[index] = state
+            if len(sources) <= index:
+                sources.extend(["unconfirmed"] * (index - len(sources)))
+                sources.append("otcharts_history")
+            else:
+                sources[index] = "otcharts_history"
+            audits.append(
+                dict(
+                    index=index,
+                    direction=direction,
+                    entry_price=entry_price,
+                    expiry_price=expiry_price,
+                    outcome=state,
+                )
+            )
+            if state in ("WIN", "DRAW"):
+                return (
+                    attempts[: index + 1],
+                    sources[: index + 1],
+                    state,
+                    audits,
+                    False,
+                )
+
+        return attempts[:3], sources[:3], "LOSS", audits, False
+
     def _recover_live(self):
         if not self.live_path.is_file():
             return [], set()
@@ -118,38 +190,36 @@ class UnknownRecovery:
         for row in self._live_unknowns():
             try:
                 old_attempts = json.loads(row.get("attempts_json") or "[]")
-                if "UNKNOWN" not in old_attempts:
-                    continue
-                index = old_attempts.index("UNKNOWN")
+                old_sources = json.loads(row.get("attempt_sources_json") or "[]")
                 seconds = int(row["seconds"])
-                start = int(row["entry_at"] + index * seconds)
-                end = start + seconds
-                entry_price = self._price(row["symbol"], start)
-                expiry_price = self._price(row["symbol"], end)
-                attempts, sources, state = reconcile_unknown(
-                    row, {}, self.clock(), self.archive_path
+                attempts, sources, state, recovered, missing = self._reconstruct_cycle(
+                    row["symbol"],
+                    row["entry_at"],
+                    seconds,
+                    row["direction"],
+                    old_attempts,
+                    old_sources,
                 )
-                if attempts == old_attempts:
-                    unresolved.add(row["symbol"])
-                    continue
-                journal.save_outcome(
-                    row["id"], attempts, sources, state, self.clock()
-                )
-                recovered = attempts[index]
                 if (
-                    recovered in ("WIN", "LOSS", "DRAW")
-                    and entry_price is not None
-                    and expiry_price is not None
+                    attempts != old_attempts
+                    or sources != old_sources
+                    or state != row["outcome"]
                 ):
+                    journal.save_outcome(
+                        row["id"], attempts, sources, state, self.clock()
+                    )
+                for item in recovered:
                     audits.append(
                         dict(
-                            id="live:" + row["id"] + ":" + str(index),
-                            direction=row["direction"],
-                            entry_price=entry_price,
-                            expiry_price=expiry_price,
-                            outcome=recovered,
+                            id="live:" + row["id"] + ":" + str(item["index"]),
+                            direction=item["direction"],
+                            entry_price=item["entry_price"],
+                            expiry_price=item["expiry_price"],
+                            outcome=item["outcome"],
                         )
                     )
+                if missing:
+                    unresolved.add(row["symbol"])
             except (ValueError, TypeError, KeyError, json.JSONDecodeError):
                 unresolved.add(row.get("symbol", ""))
         return audits, {s for s in unresolved if s}
@@ -162,39 +232,30 @@ class UnknownRecovery:
             for row in self._bollinger_unknowns():
                 try:
                     plan = json.loads(row["evidence"])
-                    attempts = list(plan.get("attempt_outcomes") or [])
-                    if "UNKNOWN" not in attempts:
-                        continue
-                    index = attempts.index("UNKNOWN")
+                    old_attempts = list(plan.get("attempt_outcomes") or [])
                     seconds = int(plan.get("cycle_seconds") or 0)
                     if seconds not in (120, 300, 900):
                         unresolved.add(row["symbol"])
                         continue
-                    start = int(row["entry_at"] + index * seconds)
-                    end = start + seconds
-                    entry_price = self._price(row["symbol"], start)
-                    expiry_price = self._price(row["symbol"], end)
-                    state = _canonical_outcome(
-                        self.archive_path,
-                        row["symbol"],
-                        start,
-                        end,
-                        row["direction"],
+                    attempts, sources, outcome, recovered, missing = (
+                        self._reconstruct_cycle(
+                            row["symbol"],
+                            row["entry_at"],
+                            seconds,
+                            row["direction"],
+                            old_attempts,
+                            ["otcharts_history"] * len(old_attempts),
+                        )
                     )
-                    if state is None:
-                        unresolved.add(row["symbol"])
-                        continue
-                    attempts[index] = state
                     plan["attempt_outcomes"] = attempts
                     plan["recovered_unknown_at"] = self.clock()
-                    plan["stopped_after_index"] = index
-                    if state in ("WIN", "DRAW"):
-                        outcome = state
-                    elif index == 2 and all(x == "LOSS" for x in attempts[:3]):
-                        outcome = "LOSS"
+                    plan["attempt_sources"] = sources
+                    if outcome in ("WIN", "DRAW"):
+                        plan["stopped_after_index"] = attempts.index(outcome)
+                    elif outcome == "UNKNOWN":
+                        plan["stopped_after_index"] = attempts.index("UNKNOWN")
                     else:
-                        # Later attempts were not confirmed as entered after UNKNOWN.
-                        outcome = "UNKNOWN"
+                        plan.pop("stopped_after_index", None)
                     db.execute(
                         "UPDATE predictions SET evidence=?,outcome=?,resolved_at=? "
                         "WHERE id=? AND outcome='UNKNOWN'",
@@ -205,16 +266,18 @@ class UnknownRecovery:
                             row["id"],
                         ),
                     )
-                    if entry_price is not None and expiry_price is not None:
+                    for item in recovered:
                         audits.append(
                             dict(
-                                id="bollinger:" + row["id"] + ":" + str(index),
-                                direction=row["direction"],
-                                entry_price=entry_price,
-                                expiry_price=expiry_price,
-                                outcome=state,
+                                id="bollinger:" + row["id"] + ":" + str(item["index"]),
+                                direction=item["direction"],
+                                entry_price=item["entry_price"],
+                                expiry_price=item["expiry_price"],
+                                outcome=item["outcome"],
                             )
                         )
+                    if missing:
+                        unresolved.add(row["symbol"])
                 except (ValueError, TypeError, KeyError, json.JSONDecodeError):
                     unresolved.add(row.get("symbol", ""))
             db.commit()
