@@ -190,6 +190,7 @@ async def main(*, session_minutes=None, session_end=None):
     strategy_engine = LiveStrategyPublisher(
         ROOT, subscriber_relay=subscriber_relay
     )
+    service.live_strategies = strategy_engine
     strategy_task = asyncio.create_task(
         strategy_engine.run(bot, settings.admin_chat_id, service, cycles)
     )
