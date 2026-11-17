@@ -67,6 +67,15 @@ async def main(*, session_minutes=None, session_end=None):
     if settings.admin_chat_id <= 0:
         print("Не задан положительный OTC_ADMIN_CHAT_ID личного чата владельца.")
         return 1
+    # Reject unsafe channel targets before any background tasks or collectors run.
+    public_channel = os.getenv("OTC_PUBLIC_CHANNEL_ID", "").strip()
+    if public_channel and (
+        not public_channel.startswith("-100")
+        or not public_channel[1:].isdigit()
+        or len(public_channel) < 9
+    ):
+        print("OTC_PUBLIC_CHANNEL_ID должен быть числовым ID канала (-100...).")
+        return 1
     db = Database()
     await asyncio.to_thread(db.init_db)
     await asyncio.to_thread(db.recover)
