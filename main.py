@@ -206,14 +206,14 @@ async def main(*, session_minutes=None, session_end=None):
     # This relay does not start/stop the owner's trading strategy.
     from services.otc_subscribers import SubscriberRelay
 
-    subscriber_task = asyncio.create_task(SubscriberRelay(ROOT).run(bot))
+    subscriber_task = asyncio.create_task(SubscriberRelay(ROOT, live_cycle=cycles).run(bot))
     # Opt-in public reporting; independent from the private virtual wallet.
     public_task = None
     public_channel = os.getenv("OTC_PUBLIC_CHANNEL_ID", "").strip()
     if public_channel:
         from services.otc_public_broadcast import PublicPublisher
 
-        public_publisher = PublicPublisher(ROOT, int(public_channel))
+        public_publisher = PublicPublisher(ROOT, int(public_channel), live_cycle=cycles)
         public_task = asyncio.create_task(public_publisher.run(bot))
     if settings.cycles_only:
         ready.enabled = broad.enabled = preview.enabled = groq.enabled = False
