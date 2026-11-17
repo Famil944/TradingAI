@@ -65,6 +65,7 @@ def prepare(snapshot, now):
         for symbol, minutes in history.items():
             row = dict(
                 symbol=symbol,
+                name=assets[symbol].name or symbol,
                 entry_at=entry,
                 expires_at=entry + 3 * seconds,
                 feature_asof=entry - 60,
