@@ -275,7 +275,10 @@ def evaluate_cycle(row, prices, now, archive_path=None):
     for i in range(3):
         start = int(row["entry_at"] + i * seconds)
         end = start + seconds
-        if now < end + 2:
+        # The tick journal only records samples observed at/after their target.
+        # An already-confirmed expiry sample can settle immediately; otherwise
+        # allow time for the stream/history to supply the missing exact quote.
+        if now < end:
             return attempts, sources, "PENDING"
         outcome = _tick_outcome(prices, row["symbol"], start, end, row["direction"])
         source = "otcharts_tick"

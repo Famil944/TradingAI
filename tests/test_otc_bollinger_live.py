@@ -1,3 +1,5 @@
+import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +12,7 @@ from services.otc_bollinger_live import (
     card,
     live_outcome,
 )
+from services.otc_market_archive import MarketArchive
 from services.otc_strategy import Candle
 
 
@@ -96,6 +99,87 @@ class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
             bot = SimpleNamespace(edit_message_text=AsyncMock())
             await engine.update_cards(bot, 1)
             self.assertIn("Цикл: ✅ WIN", bot.edit_message_text.call_args.args[0])
+
+    async def test_confirmed_expiry_tick_settles_without_fixed_two_second_delay(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            clock = [2080]
+            journal = CycleJournal(root / "cycles.db", per_horizon=True)
+            engine = BollingerCycles(journal, clock=lambda: clock[0])
+            identifier = journal.reserve(LiveCycleTests().plan(), 2080)
+            journal.sent(identifier, 2080, message_id=1)
+            engine.research.samples(
+                [("A", 2100, 2100, 2100, 100),
+                 ("A", 2400, 2400, 2400, 101)]
+            )
+            clock[0] = 2400
+            await engine.settle_pending({})
+            self.assertEqual(journal.pending(), [])
+            with sqlite3.connect(journal.path) as db:
+                state, evidence = db.execute(
+                    "SELECT outcome,evidence FROM predictions WHERE id=?",
+                    (identifier,),
+                ).fetchone()
+            self.assertEqual(state, "WIN")
+            self.assertEqual(json.loads(evidence)["attempt_sources"], ["otcharts_tick"])
+
+    async def test_missing_quote_waits_for_exact_canonical_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            clock = [2080]
+            journal = CycleJournal(root / "cycles.db", per_horizon=True)
+            engine = BollingerCycles(journal, clock=lambda: clock[0])
+            identifier = journal.reserve(LiveCycleTests().plan(), 2080)
+            journal.sent(identifier, 2080, message_id=1)
+            # A later quote is not the price at expiry and cannot settle it.
+            engine.research.samples(
+                [("A", 2100, 2100, 2100, 100),
+                 ("A", 2401, 2401, 2401, 101)]
+            )
+            clock[0] = 2403
+            await engine.settle_pending({})
+            self.assertEqual(len(journal.pending()), 1)
+            self.assertEqual(engine.card_cache[identifier], ["PENDING"] * 3)
+
+            # Late official history has both exact, unrevised candle opens.
+            MarketArchive(engine.archive_path).bars(
+                "A", [Candle(2100, 100, 100, 100, 100),
+                      Candle(2400, 101, 101, 101, 101)],
+                2500,
+            )
+            clock[0] = 2500
+            await engine.settle_pending({})
+            self.assertEqual(journal.pending(), [])
+            with sqlite3.connect(journal.path) as db:
+                state, evidence = db.execute(
+                    "SELECT outcome,evidence FROM predictions WHERE id=?",
+                    (identifier,),
+                ).fetchone()
+            self.assertEqual(state, "WIN")
+            self.assertEqual(json.loads(evidence)["attempt_sources"], ["otcharts_history"])
+
+    async def test_missing_quote_only_becomes_unknown_after_grace(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            clock = [2080]
+            journal = CycleJournal(root / "cycles.db", per_horizon=True)
+            engine = BollingerCycles(journal, clock=lambda: clock[0])
+            identifier = journal.reserve(LiveCycleTests().plan(), 2080)
+            journal.sent(identifier, 2080, message_id=1)
+            clock[0] = 2579  # First attempt expires at 2400; 179s of grace.
+            await engine.settle_pending({})
+            self.assertEqual(len(journal.pending()), 1)
+            clock[0] = 2581  # The settlement loop polls every two seconds.
+            await engine.settle_pending({})
+            self.assertEqual(journal.pending(), [])
+            with sqlite3.connect(journal.path) as db:
+                state, evidence = db.execute(
+                    "SELECT outcome,evidence FROM predictions WHERE id=?",
+                    (identifier,),
+                ).fetchone()
+            self.assertEqual(state, "UNKNOWN")
+            self.assertEqual(json.loads(evidence)["attempt_outcomes"],
+                             ["UNKNOWN", "PENDING", "PENDING"])
 
     async def test_no_send_without_snapshot(self):
         with tempfile.TemporaryDirectory() as folder:

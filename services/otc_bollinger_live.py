@@ -15,7 +15,8 @@ from services.otc_delivery_guard import check_data, claim
 from services.otc_groq import fresh
 from services.otc_ml.preview import MLPreview, PreviewJournal, aligned_entry
 from services.otc_shadow_variants import pattern_directions
-from services.otc_validation_report import load, resolve
+from services.otc_strategies_live import evaluate_cycle
+from services.otc_validation_report import load
 
 logger = logging.getLogger(__name__)
 VERSION = "bollinger-live-three-attempts-v1"
@@ -101,7 +102,7 @@ class CycleJournal(PreviewJournal):
                 )
                 db.commit()
 
-    def complete(self, identifier, outcomes, result, now):
+    def complete(self, identifier, outcomes, result, now, sources=None):
         with closing(sqlite3.connect(self.path, timeout=1)) as db:
             row = db.execute(
                 "SELECT evidence FROM predictions WHERE id=? AND outcome='PENDING'",
@@ -110,6 +111,8 @@ class CycleJournal(PreviewJournal):
             if row:
                 payload = json.loads(row[0])
                 payload["attempt_outcomes"] = outcomes
+                if sources is not None:
+                    payload["attempt_sources"] = sources
                 db.execute(
                     "UPDATE predictions SET evidence=?,outcome=?,resolved_at=? WHERE id=? AND outcome='PENDING'",
                     (json.dumps(payload, ensure_ascii=False), result, now, identifier),
@@ -192,6 +195,7 @@ class BollingerCycles(MLPreview):
         self.research = CandidateJournal(
             journal.path.with_name("bollinger-live-ticks.db")
         )
+        self.archive_path = journal.path.with_name("market-history.db")
         self.sampler = TickSampler()
         self.next_flush = 0
         self.card_cache = {}
@@ -371,27 +375,25 @@ class BollingerCycles(MLPreview):
                 await asyncio.to_thread(self.wallet.cancel, row["id"])
                 await asyncio.to_thread(self.journal.finish, row["id"], "NOT_DELIVERED")
                 continue
-            outcomes = []
-            for i in range(3):
-                start = plan["entry_at"] + i * plan["cycle_seconds"]
-                outcomes.append(
-                    resolve(
-                        dict(
-                            plan,
-                            entry_at=start,
-                            expires_at=start + plan["cycle_seconds"],
-                        ),
-                        prices,
-                        self.clock(),
-                    )
-                )
+            attempts, sources, result = await asyncio.to_thread(
+                evaluate_cycle,
+                dict(plan, seconds=plan["cycle_seconds"]),
+                prices,
+                self.clock(),
+                self.archive_path,
+            )
+            outcomes = (attempts + ["PENDING"] * 3)[:3]
             self.card_cache[row["id"]] = outcomes
             if row.get("sent_at") is not None:
                 await asyncio.to_thread(self.wallet.settle, row["id"], outcomes)
-            result = live_outcome(outcomes)
             if result != "PENDING":
                 await asyncio.to_thread(
-                    self.journal.complete, row["id"], outcomes, result, self.clock()
+                    self.journal.complete,
+                    row["id"],
+                    outcomes,
+                    result,
+                    self.clock(),
+                    sources,
                 )
 
     async def update_cards(self, bot, chat_id):
@@ -408,19 +410,14 @@ class BollingerCycles(MLPreview):
                 _, prices = await asyncio.to_thread(
                     load, self.research.path, 0, self.clock()
                 )
-                outcomes = [
-                    resolve(
-                        dict(
-                            plan,
-                            entry_at=plan["entry_at"] + i * plan["cycle_seconds"],
-                            expires_at=plan["entry_at"]
-                            + (i + 1) * plan["cycle_seconds"],
-                        ),
-                        prices,
-                        self.clock(),
-                    )
-                    for i in range(3)
-                ]
+                attempts, _, _ = await asyncio.to_thread(
+                    evaluate_cycle,
+                    dict(plan, seconds=plan["cycle_seconds"]),
+                    prices,
+                    self.clock(),
+                    self.archive_path,
+                )
+                outcomes = (attempts + ["PENDING"] * 3)[:3]
             text = card(plan, outcomes, None if result == "PENDING" else result)
             if plan.get("virtual") and result != "PENDING":
                 plan["virtual"]["delta"] = await asyncio.to_thread(
