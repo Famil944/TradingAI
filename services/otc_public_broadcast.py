@@ -18,6 +18,12 @@ from services.otc_public_stats import (
 LOG = logging.getLogger(__name__)
 MSK = ZoneInfo("Europe/Moscow")
 ICONS = {"WIN": "✅", "LOSS": "❌", "DRAW": "➖", "UNKNOWN": "❔", "PENDING": "⏳"}
+STRATEGY_IDS = {
+    "bollinger_live": "S1",
+    "bb_reentry": "S2",
+    "break_retest": "S3",
+    "ema_pullback": "S4",
+}
 
 
 def _ts(at):
@@ -61,6 +67,40 @@ def safe_card(row, live_cycle=None):
         if isinstance(states, list):
             row = dict(row, attempts=_attempts(states))
     return public_text(row)
+
+
+def subscriber_card(row, live_cycle=None):
+    """Minimal subscriber-only signal; owner and channel cards stay unchanged."""
+    if live_cycle is not None and row["origin"] == "main":
+        states = getattr(live_cycle, "card_cache", {}).get(
+            row["id"].removeprefix("main:")
+        )
+        if isinstance(states, list):
+            row = dict(row, attempts=_attempts(states))
+    strategy = STRATEGY_IDS.get(row["strategy"], "S?")
+    direction = "⬆️" if row["direction"] == "UP" else "⬇️"
+    attempts = row.get("attempts") or []
+    badges = []
+    finished = False
+    for i in range(3):
+        if finished:
+            icon = "—"
+        elif i < len(attempts):
+            state = attempts[i]
+            icon = ICONS.get(state, "❔")
+            finished = state != "LOSS"
+        elif row["outcome"] == "PENDING" and i == len(attempts):
+            icon = "⏳"
+        else:
+            icon = "—"
+        badges.append(f"{i+1}{icon}")
+    outcome = ICONS.get(row["outcome"], "❔")
+    return "\n".join([
+        f"{str(row['symbol']).replace(chr(10), ' ')[:90]} {direction} · M{row['seconds'] // 60} · {strategy}",
+        f"🕒 {_ts(row['entry_at'])} МСК",
+        "  ".join(badges),
+        f"Итог: {outcome} {row['outcome']}",
+    ])
 
 
 def batch_report(rows, metric, seconds):

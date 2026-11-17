@@ -1,4 +1,4 @@
-"""Private opt-in subscribers; relay only allowlisted forecast fields.
+"""Private, owner-approved time-limited subscribers; relay safe forecast fields.
 
 Never opens the owner's wallet and never copies the owner's Telegram message.
 Joining a public Telegram channel is handled by Telegram; this store is for
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-from services.otc_public_broadcast import safe_card
+from services.otc_public_broadcast import subscriber_card
 from services.otc_public_stats import main_signals
 from services.otc_strategies_live import load_live_signals
 
@@ -26,6 +26,8 @@ MIN_ENTRY_LEAD_SECONDS = 3
 MAX_SEND_AGE_SECONDS = 90
 POLL_SECONDS = 2  # fallback/reconciliation only; new signals are pushed immediately
 MAX_USERS_PER_TICK = 200
+TRIAL_DAYS = 7
+DAY = 86400
 
 
 class Subscribers:
@@ -56,24 +58,152 @@ class Subscribers:
                 db.execute(
                     "ALTER TABLE deliveries ADD COLUMN content_sha TEXT NOT NULL DEFAULT ''"
                 )
+            # Secure migration: legacy /start opt-ins are NOT paid/approved users.
+            # They must explicitly accept the new terms and be approved by owner.
+            columns = {row[1] for row in db.execute("PRAGMA table_info(subscribers)")}
+            additions = {
+                "status": "TEXT NOT NULL DEFAULT 'pending'",
+                "accepted_at": "REAL",
+                "expires_at": "REAL",
+                "trial_used": "INTEGER NOT NULL DEFAULT 0",
+                "reminded_at": "REAL",
+                "expired_notice_at": "REAL",
+            }
+            for field, declaration in additions.items():
+                if field not in columns:
+                    db.execute(f"ALTER TABLE subscribers ADD COLUMN {field} {declaration}")
+            # Old enabled flags never bypass the new approval requirement.
+            db.execute("UPDATE subscribers SET enabled=0 WHERE status='pending'")
             db.commit()
 
     def _connect(self):
         return sqlite3.connect(self.path, timeout=5)
 
-    def subscribe(self, chat_id, now=None):
+    def request(self, chat_id, now=None):
+        """Record explicit consent/request; repeat requests cannot extend a trial."""
         now = time.time() if now is None else float(now)
         with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT status,expires_at FROM subscribers WHERE chat_id=?", (chat_id,)
+            ).fetchone()
+            if row and row[0] == "blocked":
+                return "blocked"
+            if row and row[0] == "approved" and row[1] and row[1] > now:
+                db.execute(
+                    "UPDATE subscribers SET enabled=1,"
+                    "subscribed_at=CASE WHEN enabled=0 THEN ? ELSE subscribed_at END,"
+                    "updated_at=? WHERE chat_id=?", (now, now, chat_id),
+                )
+                db.commit()
+                return "approved"
             db.execute(
-                "INSERT INTO subscribers(chat_id,enabled,subscribed_at,updated_at)"
-                " VALUES(?,1,?,?)"
+                "INSERT INTO subscribers(chat_id,enabled,subscribed_at,updated_at,"
+                "status,accepted_at) VALUES(?,0,?,?,'pending',?)"
                 " ON CONFLICT(chat_id) DO UPDATE SET "
-                " enabled=1,"
-                " subscribed_at=CASE WHEN enabled=0 THEN excluded.subscribed_at"
-                " ELSE subscribed_at END,"
+                " enabled=0,status='pending',accepted_at=excluded.accepted_at,"
                 " updated_at=excluded.updated_at",
-                (chat_id, now, now),
+                (chat_id, now, now, now),
             )
+            db.commit()
+            return "pending"
+
+    def subscribe(self, chat_id, now=None):
+        """Legacy entry point: requesting is not permission to receive signals."""
+        return self.request(chat_id, now)
+
+    def status(self, chat_id, now=None):
+        now = time.time() if now is None else float(now)
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT status,enabled,accepted_at,expires_at,trial_used "
+                "FROM subscribers WHERE chat_id=?", (chat_id,)
+            ).fetchone()
+        if not row:
+            return dict(state="new", expires_at=None, trial_used=False)
+        state, enabled, accepted_at, expires_at, trial_used = row
+        if state == "approved" and (expires_at is None or expires_at <= now):
+            state = "expired"
+        elif state == "approved" and not enabled:
+            state = "paused"
+        elif state == "pending" and accepted_at is None:
+            state = "new"
+        return dict(state=state, expires_at=expires_at, trial_used=bool(trial_used))
+
+    def grant(self, chat_id, days=TRIAL_DAYS, now=None):
+        """Owner-only caller. Reapproval/renewal never grants a second free trial."""
+        if not isinstance(days, int) or not 1 <= days <= 365:
+            raise ValueError("Срок доступа: от 1 до 365 дней")
+        now = time.time() if now is None else float(now)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT status,accepted_at,expires_at FROM subscribers WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+            if not row or row[1] is None or row[0] == "blocked":
+                db.rollback()
+                raise ValueError("Нет принятой заявки или пользователь заблокирован")
+            expiry = max(now, row[2] or 0) + days * DAY
+            db.execute(
+                "UPDATE subscribers SET status='approved',enabled=1,"
+                "trial_used=1,expires_at=?,subscribed_at=?,updated_at=?,"
+                "reminded_at=NULL,expired_notice_at=NULL WHERE chat_id=?",
+                (expiry, now, now, chat_id),
+            )
+            db.commit()
+            return expiry
+
+    def block(self, chat_id, now=None):
+        now = time.time() if now is None else float(now)
+        with closing(self._connect()) as db:
+            changed = db.execute(
+                "UPDATE subscribers SET status='blocked',enabled=0,updated_at=? "
+                "WHERE chat_id=?", (now, chat_id),
+            ).rowcount
+            db.commit()
+            return bool(changed)
+
+    def unblock(self, chat_id, now=None):
+        now = time.time() if now is None else float(now)
+        with closing(self._connect()) as db:
+            changed = db.execute(
+                "UPDATE subscribers SET status='pending',enabled=0,updated_at=? "
+                "WHERE chat_id=? AND status='blocked'", (now, chat_id),
+            ).rowcount
+            db.commit()
+            return bool(changed)
+
+    def members(self, limit=30):
+        with closing(self._connect()) as db:
+            return db.execute(
+                "SELECT chat_id,status,expires_at,trial_used,accepted_at "
+                "FROM subscribers ORDER BY "
+                "CASE WHEN status='pending' AND accepted_at IS NOT NULL "
+                "THEN 0 ELSE 1 END, updated_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+
+    def notices_due(self, now=None):
+        now = time.time() if now is None else float(now)
+        with closing(self._connect()) as db:
+            return db.execute(
+                "SELECT chat_id,CASE WHEN expires_at <= ? THEN 'expired' "
+                "ELSE 'reminder' END FROM subscribers WHERE status='approved' "
+                "AND enabled=1 "
+                "AND expires_at IS NOT NULL AND ("
+                "(expires_at <= ? AND expired_notice_at IS NULL) OR "
+                "(expires_at > ? AND expires_at <= ? AND reminded_at IS NULL)) "
+                "ORDER BY expires_at LIMIT 200",
+                (now, now, now, now + DAY),
+            ).fetchall()
+
+    def notice_sent(self, chat_id, kind, now=None):
+        if kind not in ("reminder", "expired"):
+            raise ValueError("Invalid notification")
+        field = "reminded_at" if kind == "reminder" else "expired_notice_at"
+        now = time.time() if now is None else float(now)
+        with closing(self._connect()) as db:
+            db.execute(f"UPDATE subscribers SET {field}=? WHERE chat_id=?", (now, chat_id))
             db.commit()
 
     def unsubscribe(self, chat_id, now=None):
@@ -85,18 +215,23 @@ class Subscribers:
             )
             db.commit()
 
-    def active(self, limit=MAX_USERS_PER_TICK, offset=0):
+    def active(self, limit=MAX_USERS_PER_TICK, offset=0, now=None):
+        now = time.time() if now is None else float(now)
         with closing(self._connect()) as db:
             return db.execute(
                 "SELECT chat_id,subscribed_at FROM subscribers "
-                "WHERE enabled=1 ORDER BY chat_id LIMIT ? OFFSET ?",
-                (limit, offset),
+                "WHERE enabled=1 AND status='approved' AND accepted_at IS NOT NULL "
+                "AND expires_at>? ORDER BY chat_id LIMIT ? OFFSET ?",
+                (now, limit, offset),
             ).fetchall()
 
-    def min_active_since(self):
+    def min_active_since(self, now=None):
+        now = time.time() if now is None else float(now)
         with closing(self._connect()) as db:
             return db.execute(
-                "SELECT MIN(subscribed_at) FROM subscribers WHERE enabled=1"
+                "SELECT MIN(subscribed_at) FROM subscribers "
+                "WHERE enabled=1 AND status='approved' AND accepted_at IS NOT NULL "
+                "AND expires_at>?", (now,),
             ).fetchone()[0]
 
     def delivered(self, chat_id, signal_id):
@@ -125,9 +260,10 @@ class SubscriberRelay:
         self.store = store or Subscribers(self.root / "data" / "subscribers.db")
         self.clock = clock
         self.live_cycle = live_cycle
+        self._last_notice_check = 0.0
 
     def _signals(self):
-        since = self.store.min_active_since()
+        since = self.store.min_active_since(now=self.clock())
         if since is None:
             return []
         cutoff = max(0, since - 120, self.clock() - 7200)
@@ -158,19 +294,19 @@ class SubscriberRelay:
         ):
             return
 
-        safe_text = safe_card(row, self.live_cycle)
+        safe_text = subscriber_card(row, self.live_cycle)
         content_sha = hashlib.sha256(safe_text.encode("utf-8")).hexdigest()
         offset = 0
         while True:
             subscribers = await asyncio.to_thread(
-                self.store.active, MAX_USERS_PER_TICK, offset
+                self.store.active, MAX_USERS_PER_TICK, offset, current_time
             )
             if not subscribers:
                 break
             offset += len(subscribers)
 
             async def deliver(chat_id, joined_at):
-                if sent_at < joined_at:
+                if sent_at < joined_at or self.store.status(chat_id, self.clock())["state"] != "approved":
                     return
                 already = await asyncio.to_thread(
                     self.store.delivered, chat_id, row["id"]
@@ -204,15 +340,17 @@ class SubscriberRelay:
         offset = 0
         while True:
             subscribers = await asyncio.to_thread(
-                self.store.active, MAX_USERS_PER_TICK, offset
+                self.store.active, MAX_USERS_PER_TICK, offset, self.clock()
             )
             if not subscribers:
                 break
             offset += len(subscribers)
             for chat_id, joined_at in subscribers:
+                if self.store.status(chat_id, self.clock())["state"] != "approved":
+                    continue
                 for row in rows:
                     current_time = self.clock()
-                    safe_text = safe_card(row, self.live_cycle)
+                    safe_text = subscriber_card(row, self.live_cycle)
                     content_sha = hashlib.sha256(safe_text.encode("utf-8")).hexdigest()
                     # All four published strategies, never legacy research rows.
                     if row["origin"] not in ("main", "live"):
@@ -269,10 +407,34 @@ class SubscriberRelay:
                     except Exception as exc:
                         LOG.warning("Subscriber delivery failed: %s", type(exc).__name__)
 
+    async def notify_expiry(self, bot):
+        """Send a 24-hour reminder and a one-off expiration notice."""
+        due = await asyncio.to_thread(self.store.notices_due, self.clock())
+        for chat_id, kind in due:
+            content = (
+                "⏳ До конца доступа меньше 24 часов. "
+                "Для продления обратитесь к владельцу бота."
+                if kind == "reminder" else
+                "⌛ Доступ закончился. Новые сигналы больше не отправляются. "
+                "Продление — по решению владельца. /start"
+            )
+            try:
+                await bot.send_message(chat_id, content, parse_mode=None)
+                await asyncio.to_thread(self.store.notice_sent, chat_id, kind, self.clock())
+            except TelegramForbiddenError:
+                await asyncio.to_thread(self.store.unsubscribe, chat_id)
+                await asyncio.to_thread(self.store.notice_sent, chat_id, kind, self.clock())
+            except Exception as exc:
+                LOG.warning("Subscriber expiry notice failed: %s", type(exc).__name__)
+
     async def run(self, bot):
         while True:
             try:
                 await self.update(bot)
+                current = self.clock()
+                if current - self._last_notice_check >= 60:
+                    self._last_notice_check = current
+                    await self.notify_expiry(bot)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

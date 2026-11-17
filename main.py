@@ -43,16 +43,18 @@ COMMANDS = [
     ("signal_stats", "Винрейт прогнозов"),
     ("suggest", "Предложить улучшение"),
     ("suggestions", "Предложения владельцу"),
+    ("access", "Заявки и доступ пользователей"),
+    ("grant", "Выдать или продлить доступ: ID ДНИ"),
+    ("block", "Заблокировать пользователя: ID"),
+    ("unblock", "Разблокировать пользователя: ID"),
 ]
 
 # Menu commands are a convenience only; the owner-only middleware is the
 # actual authorization boundary. Never advertise trading controls to viewers.
 SUBSCRIBER_COMMANDS = [
-    ("start", "Подписаться на сигналы"),
-    ("help", "Справка"),
-    ("signal_stats", "Статистика прогнозов"),
-    ("suggest", "Предложить улучшение"),
-    ("stop_signals", "Отписаться от сигналов"),
+    ("start", "Запросить доступ"),
+    ("help", "О сигналах и рисках"),
+    ("signal_stats", "Винрейт S1–S4"),
 ]
 
 
@@ -208,11 +210,18 @@ async def main(*, session_minutes=None, session_end=None):
     # Opt-in public reporting; independent from the private virtual wallet.
     public_task = None
     public_channel = os.getenv("OTC_PUBLIC_CHANNEL_ID", "").strip()
-    if public_channel:
+    # Public channel broadcasts bypass all per-user approval/expiry controls.
+    # Require an explicit second opt-in to avoid accidentally leaking gated signals.
+    if public_channel and os.getenv("OTC_ENABLE_UNGATED_PUBLIC_CHANNEL", "").strip() == "1":
         from services.otc_public_broadcast import PublicPublisher
 
         public_publisher = PublicPublisher(ROOT, int(public_channel), live_cycle=cycles)
         public_task = asyncio.create_task(public_publisher.run(bot))
+    elif public_channel:
+        logging.getLogger(__name__).warning(
+            "Public OTC channel disabled: it would bypass owner-approved subscriber access. "
+            "Explicit OTC_ENABLE_UNGATED_PUBLIC_CHANNEL=1 is required."
+        )
     if settings.cycles_only:
         ready.enabled = broad.enabled = False
     (ROOT / "logs").mkdir(exist_ok=True)

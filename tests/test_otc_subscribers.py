@@ -45,7 +45,7 @@ class FakeBot:
         self.sent = []
         self.edited = []
 
-    async def send_message(self, chat_id, text, parse_mode=None):
+    async def send_message(self, chat_id, text, parse_mode=None, **kwargs):
         self.sent.append((chat_id, text))
         return SimpleNamespace(message_id=len(self.sent))
 
@@ -111,17 +111,68 @@ class DisplayNameTests(unittest.TestCase):
 
 
 class SubscriberStoreTests(unittest.TestCase):
+    def test_legacy_subscribers_require_new_consent_and_owner_approval(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "users.db"
+            with sqlite3.connect(path) as db:
+                db.execute(
+                    "CREATE TABLE subscribers(chat_id INTEGER PRIMARY KEY,"
+                    "enabled INTEGER NOT NULL DEFAULT 1,subscribed_at REAL NOT NULL,"
+                    "updated_at REAL NOT NULL)"
+                )
+                db.execute("INSERT INTO subscribers VALUES(41,1,500,500)")
+            store = Subscribers(path)
+            self.assertEqual(store.active(now=600), [])
+            self.assertEqual(store.status(41, now=600)["state"], "new")
+            with self.assertRaises(ValueError):
+                store.grant(41, now=600)
+            store.request(41, now=600)
+            self.assertEqual(store.status(41, now=600)["state"], "pending")
+            self.assertEqual(store.active(now=600), [])
+            store.grant(41, now=700)
+            self.assertEqual(store.active(now=701), [(41, 700)])
+
+    def test_expiry_renewal_block_and_notifications(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Subscribers(Path(folder) / "users.db")
+            store.request(41, now=1000)
+            expires = store.grant(41, days=7, now=1000)
+            self.assertEqual(expires, 1000 + 7 * 86400)
+            self.assertEqual(store.active(now=expires), [])
+            self.assertEqual(store.status(41, now=expires)["state"], "expired")
+            self.assertEqual(store.notices_due(now=expires - 3600), [(41, "reminder")])
+            store.notice_sent(41, "reminder", now=expires - 3600)
+            self.assertEqual(store.notices_due(now=expires - 3600), [])
+            self.assertEqual(store.notices_due(now=expires), [(41, "expired")])
+            store.notice_sent(41, "expired", now=expires)
+            self.assertEqual(store.notices_due(now=expires), [])
+            self.assertEqual(store.request(41, now=expires + 1), "pending")
+            later = store.grant(41, days=30, now=expires + 10)
+            self.assertEqual(later, expires + 10 + 30 * 86400)
+            self.assertTrue(store.status(41, now=expires + 11)["trial_used"])
+            self.assertEqual(store.request(41, now=expires + 12), "approved")
+            self.assertEqual(store.status(41, now=expires + 12)["expires_at"], later)
+            self.assertTrue(store.block(41, now=expires + 13))
+            self.assertEqual(store.active(now=expires + 14), [])
+            self.assertEqual(store.request(41, now=expires + 14), "blocked")
+            with self.assertRaises(ValueError):
+                store.grant(41, now=expires + 14)
+            self.assertTrue(store.unblock(41, now=expires + 15))
+            self.assertEqual(store.status(41, now=expires + 16)["state"], "pending")
+
     def test_register_unsubscribe_and_rejoin_are_persistent(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "users.db"
             store = Subscribers(path)
-            store.subscribe(41, now=1000)
+            self.assertEqual(store.request(41, now=1000), "pending")
+            self.assertEqual(store.active(now=1010), [])
+            store.grant(41, now=1000)
             store.subscribe(41, now=1020)
-            self.assertEqual(store.active(), [(41, 1000.0)])
+            self.assertEqual(store.active(now=1020), [(41, 1000.0)])
             store.unsubscribe(41, now=1030)
-            self.assertEqual(store.active(), [])
+            self.assertEqual(store.active(now=1031), [])
             Subscribers(path).subscribe(41, now=1040)
-            self.assertEqual(store.active(), [(41, 1040.0)])
+            self.assertEqual(store.active(now=1040), [(41, 1040.0)])
 
     def test_users_only_explicitly_opt_in(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -131,11 +182,30 @@ class SubscriberStoreTests(unittest.TestCase):
 
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_expiration_stops_immediate_and_poll_delivery(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = Subscribers(root / "data" / "subscribers.db")
+            store.request(41, now=1000)
+            store.grant(41, days=7, now=1000)
+            expiry = 1000 + 7 * 86400
+            row = dict(
+                id="new", origin="main", strategy="bollinger_live", label="Private label",
+                seconds=120, symbol="Bitcoin OTC", direction="UP", created_at=expiry,
+                sent_at=expiry, entry_at=expiry + 20, expires_at=expiry + 380,
+                resolved_at=expiry + 380, outcome="PENDING", attempts=[],
+            )
+            relay = SubscriberRelay(root, store=store, clock=lambda: expiry)
+            bot = FakeBot()
+            await relay.publish_now(bot, row)
+            self.assertEqual(bot.sent, [])
+
     async def test_new_signal_sent_automatically_and_updated(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             store = Subscribers(root / "data" / "subscribers.db")
             store.subscribe(41, now=990)
+            store.grant(41, now=990)
             journal(root / "data" / "bollinger-cycles.db", [
                 {"id": "new", "created": 1000, "outcome": "PENDING"}
             ])
@@ -168,6 +238,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             root = Path(folder)
             store = Subscribers(root / "data" / "subscribers.db")
             store.subscribe(41, now=1005)
+            store.grant(41, now=1005)
             journal(root / "data" / "bollinger-cycles.db", [
                 {"id": "new_after_join", "created": 1000, "outcome": "PENDING"}
             ])
@@ -187,6 +258,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             root = Path(folder)
             store = Subscribers(root / "data" / "subscribers.db")
             store.subscribe(41, now=990)
+            store.grant(41, now=990)
             relay = SubscriberRelay(root, store=store, clock=lambda: 1005)
             bot = FakeBot()
             for index, label in enumerate((
@@ -216,21 +288,16 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
             self.assertEqual(len(bot.sent), 4)
-            self.assertEqual(
-                {text.split(" · M", 1)[0] for _, text in bot.sent},
-                {
-                    "Боллинджер ×3",
-                    "Возврат внутрь",
-                    "Пробой/ретест",
-                    "Откат EMA9/19",
-                },
-            )
+            self.assertTrue(all("TEST OTC" in text for _, text in bot.sent))
+            self.assertTrue(all(" · S" in text for _, text in bot.sent))
+            self.assertTrue(all("Итог: ⏳" in text for _, text in bot.sent))
 
     async def test_no_backfill_and_disabled_user_cannot_receive(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             store = Subscribers(root / "data" / "subscribers.db")
             store.subscribe(41, now=1200)
+            store.grant(41, now=1200)
             journal(root / "data" / "bollinger-cycles.db", [
                 {"id": "already_started", "created": 1000},
             ])
@@ -247,6 +314,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             root = Path(folder)
             store = Subscribers(root / "data" / "subscribers.db")
             store.subscribe(41, now=990)
+            store.grant(41, now=990)
             journal(root / "data" / "bollinger-cycles.db", [
                 {"id": "late", "created": 1000},
             ])
@@ -263,6 +331,7 @@ class LiveAttemptTests(unittest.IsolatedAsyncioTestCase):
             root = Path(folder)
             store = Subscribers(root / "data" / "subscribers.db")
             store.subscribe(41, now=990)
+            store.grant(41, now=990)
             journal(root / "data" / "bollinger-cycles.db", [
                 {"id": "pending1", "created": 1000, "outcome": "PENDING"}
             ])
@@ -285,6 +354,63 @@ class LiveAttemptTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
+    async def test_consent_creates_pending_only_and_owner_grant_enables(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Subscribers(Path(folder) / "users.db")
+            bot = FakeBot()
+            query = SimpleNamespace(
+                data="c:accept", bot=bot,
+                from_user=SimpleNamespace(id=41, username="tester"),
+                message=SimpleNamespace(
+                    chat=SimpleNamespace(id=41, type="private"), answer=AsyncMock()
+                ),
+                answer=AsyncMock(),
+            )
+            with patch.object(community, "subscribers", return_value=store), patch.object(
+                community, "settings", SimpleNamespace(admin_chat_id=999)
+            ):
+                await community.callbacks(query)
+                self.assertEqual(store.status(41)["state"], "pending")
+                self.assertEqual(store.active(), [])
+                self.assertEqual(bot.sent[0][0], 999)
+                self.assertIn("@tester", bot.sent[0][1])
+                owner_message = SimpleNamespace(answer=AsyncMock(), bot=bot)
+                await community.grant_access(owner_message, 41, 7)
+            self.assertEqual(store.status(41)["state"], "approved")
+            self.assertEqual(len(store.active()), 1)
+            self.assertEqual(bot.sent[1][0], 41)
+
+    def test_compact_subscriber_card_has_no_method_or_private_details(self):
+        from services.otc_public_broadcast import subscriber_card
+        row = dict(
+            id="main:001", origin="main", strategy="bollinger_live",
+            label="Боллинджер ×3", symbol="Bitcoin OTC", direction="UP",
+            seconds=120, entry_at=1000, outcome="WIN",
+            attempts=["LOSS", "WIN"],
+            provenance="Secret internal", wallet="DO_NOT_DISCLOSE",
+        )
+        card = subscriber_card(row)
+        self.assertIn("S1", card)
+        self.assertIn("1❌", card)
+        self.assertIn("2✅", card)
+        self.assertIn("3—", card)
+        self.assertIn("Итог: ✅ WIN", card)
+        for private in ("Боллинджер", "Secret internal", "DO_NOT_DISCLOSE", "OTCharts"):
+            self.assertNotIn(private, card)
+
+    def test_compact_winrate_excludes_pending_unknown_draw(self):
+        from bot import community
+        data = [
+            dict(seconds=120, outcome=outcome)
+            for outcome in ("WIN", "LOSS", "UNKNOWN", "DRAW", "PENDING")
+        ]
+        with patch.object(community, "snapshots", return_value=data):
+            text = community.compact_overview("2")
+        self.assertEqual(text.count("50.0%"), 4)
+        self.assertIn("✅1 ❌1 (n=2)", text)
+        self.assertNotIn("UNKNOWN", text)
+        self.assertNotIn("Боллинджер", text)
+
     async def test_telegram_shows_admin_commands_only_to_owner(self):
         from main import COMMANDS, SUBSCRIBER_COMMANDS, initialize_telegram
 
@@ -308,6 +434,8 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("otc_stats", bot.scopes[1][1])
         self.assertNotIn("suggestions", bot.scopes[0][1])
         self.assertNotIn("stop_signals", bot.scopes[2][1])
+        self.assertNotIn("grant", bot.scopes[0][1])
+        self.assertNotIn("access", bot.scopes[1][1])
 
     def test_public_menu_has_no_admin_controls(self):
         buttons = [
@@ -325,7 +453,9 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
     async def test_subscriber_start_only_registers_and_never_starts_engine(self):
         from unittest.mock import Mock
         from bot import community
-        registry = SimpleNamespace(subscribe=Mock())
+        registry = SimpleNamespace(
+            status=Mock(return_value={"state": "new"}),
+        )
         message = SimpleNamespace(
             from_user=SimpleNamespace(id=41),
             chat=SimpleNamespace(id=41, type="private"),
@@ -336,11 +466,24 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
             community, "settings", SimpleNamespace(admin_chat_id=999)
         ), patch.object(otc_commands, "show_menu", engine_start):
             await community.start(message)
-        registry.subscribe.assert_called_once_with(41)
+        registry.status.assert_called()
         engine_start.assert_not_awaited()
         sent = message.answer.await_args.args[0]
-        self.assertIn("Подписка", sent)
+        self.assertIn("Тестовый режим", sent)
         self.assertNotIn("Вирт.", sent)
+
+    async def test_unapproved_subscriber_cannot_use_legacy_statistics_buttons(self):
+        query = SimpleNamespace(
+            data="c:sources",
+            from_user=SimpleNamespace(id=41),
+            message=SimpleNamespace(chat=SimpleNamespace(id=41, type="private"),
+                                    answer=AsyncMock()),
+            answer=AsyncMock(),
+        )
+        with patch.object(community, "settings", SimpleNamespace(admin_chat_id=999)):
+            await community.callbacks(query)
+        query.answer.assert_awaited_once_with("Нет доступа", show_alert=True)
+        query.message.answer.assert_not_awaited()
 
     async def test_owner_start_remains_in_private_admin_router(self):
         handler = AsyncMock()
