@@ -15,7 +15,9 @@ from contextlib import closing
 from pathlib import Path
 
 from services.otc_candidate_report import outcome as direction_outcome
-from services.otc_community_cycles import METHODS, VERSION as RESEARCH_VERSION
+from services.otc_community_cycles import METHODS
+from services.otc_community_cycles import VERSION as RESEARCH_VERSION
+from services.otc_delivery_guard import claim, completed
 from services.otc_public_broadcast import public_text
 from services.otc_validation_report import load
 
@@ -25,6 +27,10 @@ MIN_LEAD = 5
 MAX_LEAD = 30
 RECOVERY_GRACE = 180
 POLL_INTERVAL = 1.0
+# S1 prepares entries 15-20 seconds ahead. Let it claim first; S2-S4
+# publish during the following window if S1 did not select that instrument.
+SECONDARY_MAX_LEAD = 14
+STRATEGY_PRIORITY = {"bb_reentry": 0, "break_retest": 1, "ema_pullback": 2}
 
 
 def _connect(path):
@@ -355,18 +361,40 @@ class LiveStrategyPublisher:
             return
         now = self.clock()
         rows = await asyncio.to_thread(candidate_list, self.candidate_path, now)
+        # Stable, explicitly configured tie-break, not a claimed accuracy score.
+        rows.sort(key=lambda r: (
+            STRATEGY_PRIORITY[r["experiment"]["method"]],
+            -r["experiment"]["cycle_seconds"], -r["payout"], r["symbol"],
+        ))
         for row in rows:
             now = self.clock()
             if (
                 row["experiment"]["cycle_seconds"] not in allowed_timeframes
                 or row["observed_at"] < self.started_at - 2
-                or not MIN_LEAD < row["entry_at"] - now <= MAX_LEAD
+                or not MIN_LEAD < row["entry_at"] - now <= SECONDARY_MAX_LEAD
             ):
                 continue
             ident = await asyncio.to_thread(self.journal.reserve, row, now)
             if not ident:
                 continue
             method, seconds = row["experiment"]["method"], row["experiment"]["cycle_seconds"]
+            try:
+                claimed = await asyncio.to_thread(
+                    claim,
+                    self.root / "data" / "signal-delivery.db",
+                    row, method, self.clock(),
+                )
+            except Exception as exc:
+                LOG.warning("Strategy claim failed: %s", type(exc).__name__)
+                await asyncio.to_thread(self.journal.not_delivered, ident)
+                continue
+            if not claimed:
+                await asyncio.to_thread(self.journal.not_delivered, ident)
+                LOG.info("Overlapping OTC entry suppressed: %s %s", method, row["symbol"])
+                continue
+            if row["entry_at"] - self.clock() <= MIN_LEAD:
+                await asyncio.to_thread(self.journal.not_delivered, ident)
+                continue
             from services.otc_public_stats import METHOD_LABELS
             signal = dict(
                 id=ident, origin="live", label=METHOD_LABELS[method],
@@ -444,6 +472,13 @@ class LiveStrategyPublisher:
                         self.journal.save_outcome, row["id"], attempts,
                         sources, state, now
                     )
+                    if state != "PENDING" and attempts:
+                        await asyncio.to_thread(
+                            completed,
+                            self.root / "data" / "signal-delivery.db",
+                            row, row["strategy"],
+                            row["entry_at"] + len(attempts) * row["seconds"],
+                        )
             except Exception as exc:
                 LOG.warning("Strategy settlement skipped: %s", type(exc).__name__)
 

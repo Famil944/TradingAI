@@ -11,7 +11,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from services.otc_candidate_research import CandidateJournal, TickSampler
-from services.otc_delivery_guard import check_data, claim
+from services.otc_delivery_guard import check_data, claim, completed
 from services.otc_groq import fresh
 from services.otc_ml.preview import MLPreview, PreviewJournal, aligned_entry
 from services.otc_shadow_variants import pattern_directions
@@ -395,6 +395,14 @@ class BollingerCycles(MLPreview):
                     self.clock(),
                     sources,
                 )
+                if row.get("sent_at") is not None and attempts:
+                    await asyncio.to_thread(
+                        completed,
+                        self.journal.path.with_name("signal-delivery.db"),
+                        plan,
+                        self.label,
+                        plan["entry_at"] + len(attempts) * plan["cycle_seconds"],
+                    )
 
     async def update_cards(self, bot, chat_id):
         with closing(sqlite3.connect(self.journal.path)) as db:

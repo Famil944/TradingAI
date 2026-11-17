@@ -1,21 +1,23 @@
 """Four independently delivered strategies: causality, isolation, concise UI."""
-import json
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 from services.otc_candidate_research import CandidateJournal
 from services.otc_community_cycles import VERSION
-from services.otc_strategies_live import (
-    LiveStrategyJournal, LiveStrategyPublisher, candidate_list,
-    evaluate_cycle, load_live_signals, reconcile_unknown,
-)
-from services.otc_public_stats import metrics, metric_units
+from services.otc_delivery_guard import claim
 from services.otc_public_broadcast import PublicPublisher
-from services.otc_subscribers import Subscribers, SubscriberRelay
+from services.otc_public_stats import metrics
+from services.otc_strategies_live import (
+    LiveStrategyJournal,
+    LiveStrategyPublisher,
+    evaluate_cycle,
+    load_live_signals,
+    reconcile_unknown,
+)
+from services.otc_subscribers import SubscriberRelay, Subscribers
 
 
 class FakeBot:
@@ -53,7 +55,64 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         self.publisher = LiveStrategyPublisher(
             self.root, clock=lambda: self.now[0]
         )
+        # Publisher starts while S1's 15-20s window is still open; S2-S4
+        # become actionable after that priority window.
+        self.now[0] = 1007
         self.bot = FakeBot()
+
+    async def test_secondary_strategies_wait_for_s1_to_have_first_choice(self):
+        self.candidates.record([candidate("bb_reentry", "BTC")])
+        self.now[0] = 1001
+        await self.publisher.publish(self.bot, 777)
+        self.assertEqual(self.bot.sent, [])
+        self.now[0] = 1007
+        await self.publisher.publish(self.bot, 777)
+        self.assertEqual(len(self.bot.sent), 1)
+
+    async def test_cross_strategy_same_asset_and_entry_only_one_card(self):
+        self.candidates.record([
+            candidate("bb_reentry", "BTC", seconds=120),
+            candidate("break_retest", "BTC", seconds=300),
+            candidate("ema_pullback", "BTC", seconds=900),
+            candidate("break_retest", "ETH", seconds=120),
+        ])
+        await self.publisher.publish(self.bot, 777)
+        self.assertEqual(len(self.bot.sent), 2)
+        rows = load_live_signals(self.root / "data" / "community-live.db")
+        self.assertEqual({(r["strategy"], r["symbol"]) for r in rows},
+                         {("bb_reentry", "BTC OTC"), ("break_retest", "ETH OTC")})
+
+    async def test_s1_claim_blocks_secondary_entry_even_with_different_expiry(self):
+        self.candidates.record([candidate("bb_reentry", "BTC", seconds=120)])
+        guard = self.root / "data" / "signal-delivery.db"
+        self.assertTrue(claim(guard, dict(
+            symbol="BTC", direction="DOWN", entry_at=1020,
+            expires_at=3720,
+        ), "Боллинджер ×3", 1001))
+        await self.publisher.publish(self.bot, 777)
+        self.assertEqual(self.bot.sent, [])
+        self.assertEqual(load_live_signals(self.root / "data" / "community-live.db"), [])
+
+    async def test_verified_win_releases_symbol_before_original_three_attempt_end(self):
+        self.candidates.record([candidate("bb_reentry", "BTC")])
+        await self.publisher.publish(self.bot, 777)
+        self.candidates.samples([
+            ("BTC", 1020, 1020, 1020, 100),
+            ("BTC", 1140, 1140, 1140, 101),
+        ])
+        self.now[0] = 1143
+        await self.publisher.settle()
+        self.assertEqual(load_live_signals(
+            self.root / "data" / "community-live.db"
+        )[0]["outcome"], "WIN")
+        # First S2 plan was booked until 1380; a subsequent S3 at 1200
+        # is now safe because the original series stopped at 1140.
+        self.candidates.record([candidate(
+            "break_retest", "BTC", observed=1180, entry=1200
+        )])
+        self.now[0] = 1187
+        await self.publisher.publish(self.bot, 777)
+        self.assertEqual(len(self.bot.sent), 2)
 
     async def test_three_independent_strategies_delivered_with_distinct_names(self):
         self.candidates.record([
@@ -278,7 +337,7 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
 
     def test_compact_overview_has_four_named_winrates(self):
         from bot import community
-        with tempfile.TemporaryDirectory() as folder:
+        with tempfile.TemporaryDirectory():
             labels = [
                 button.text
                 for row in community.sources().inline_keyboard

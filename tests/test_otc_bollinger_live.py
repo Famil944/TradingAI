@@ -12,6 +12,7 @@ from services.otc_bollinger_live import (
     card,
     live_outcome,
 )
+from services.otc_delivery_guard import claim
 from services.otc_market_archive import MarketArchive
 from services.otc_strategy import Candle
 
@@ -99,6 +100,26 @@ class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
             bot = SimpleNamespace(edit_message_text=AsyncMock())
             await engine.update_cards(bot, 1)
             self.assertIn("Цикл: ✅ WIN", bot.edit_message_text.call_args.args[0])
+
+    async def test_first_win_releases_shared_claim_for_other_strategies(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            clock = [2080]
+            journal = CycleJournal(root / "cycles.db", per_horizon=True)
+            engine = BollingerCycles(journal, clock=lambda: clock[0])
+            plan = LiveCycleTests().plan()
+            identifier = journal.reserve(plan, 2080)
+            journal.sent(identifier, 2080, message_id=1)
+            guard = root / "signal-delivery.db"
+            self.assertTrue(claim(guard, plan, engine.label, 2080))
+            engine.research.samples([
+                ("A", 2100, 2100, 2100, 100),
+                ("A", 2400, 2400, 2400, 101),
+            ])
+            clock[0] = 2400
+            await engine.settle_pending({})
+            next_plan = dict(plan, entry_at=2400, expires_at=3300)
+            self.assertTrue(claim(guard, next_plan, "bb_reentry", 2390))
 
     async def test_confirmed_expiry_tick_settles_without_fixed_two_second_delay(self):
         with tempfile.TemporaryDirectory() as folder:
