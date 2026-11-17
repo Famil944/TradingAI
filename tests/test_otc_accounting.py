@@ -27,11 +27,11 @@ class AccountingTests(unittest.TestCase):
             running=lambda: True,
             phase="поток активен",
             main_ready=preview("main"),
-            ml_preview=preview("ml"),
+            main_broad=preview("broad"),
         )
         outcomes = {
             "main": ["WIN", "LOSS"],
-            "ml": ["WIN", "WIN", "LOSS", "PENDING"],
+            "broad": ["WIN", "WIN", "LOSS", "PENDING"],
         }
         with patch.object(
             otc_commands,
@@ -39,7 +39,10 @@ class AccountingTests(unittest.TestCase):
             side_effect=lambda name, *args: [{"outcome": s} for s in outcomes[name]],
         ):
             text = otc_commands.strategy_status(current)
-        self.assertIn("XGBoost · 4 · WIN 2 / LOSS 1 · 66.7%", text)
+        self.assertIn(
+            "Без чрезмерного движения M5 · 4 · WIN 2 / LOSS 1 · 66.7%", text
+        )
+        self.assertNotIn("XGBoost", text)
         self.assertNotIn("Groq ·", text)
         with patch.object(otc_commands, "service", None):
             buttons = [
@@ -47,7 +50,7 @@ class AccountingTests(unittest.TestCase):
                 for row in otc_commands.menu(1, expanded=True).inline_keyboard
                 for b in row
             ]
-        self.assertIn("otc:mlstats:all:today", buttons)
+        self.assertNotIn("otc:mlstats:all:today", buttons)
         self.assertIn("otc:groqrecovery", buttons)
 
     def test_cycles_remain_and_period_survives_switching(self):

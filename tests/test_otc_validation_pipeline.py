@@ -18,16 +18,13 @@ class ValidationPipelineTests(unittest.TestCase):
 
         from services.otc_session import OTCSession
 
-        preview = SimpleNamespace(snapshot=({}, {}, {"A": 100}, None), observe=Mock())
         session = SimpleNamespace(
             _quotes={"A": 100},
             clock=lambda: 101,
-            ml_preview=preview,
             data_readiness=Mock(),
         )
         OTCSession._clear_quotes(session)
         self.assertEqual(session._quotes, {})
-        self.assertEqual(preview.observe.call_args.args[2], {})
         session.data_readiness.reset.assert_called_once()
 
     def test_recovery_requires_stability_history_and_records_gap(self):

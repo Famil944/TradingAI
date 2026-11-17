@@ -42,8 +42,8 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
         from zoneinfo import ZoneInfo
 
         for action, attribute in (
-            ("mlstats", "ml_preview"),
-            ("groqstats", "groq_preview"),
+            ("primarystats", "main_ready"),
+            ("broadstats", "main_broad"),
         ):
             journal = SimpleNamespace(stats=Mock(return_value="source stats"))
             preview = SimpleNamespace(

@@ -101,7 +101,6 @@ class OTCSession:
         for name in (
             "main_ready",
             "main_broad",
-            "ml_preview",
             "groq_preview",
             "cycle_preview",
         ):
@@ -179,8 +178,6 @@ class OTCSession:
                 )
                 self.main_broad.allowed_timeframes = (300,)
                 self.main_broad.sent_count = 0
-            if hasattr(self, "ml_preview"):
-                self.ml_preview.enabled = not cycles_only
             if hasattr(self, "groq_preview"):
                 self.groq_preview.enabled = (
                     getattr(self.config, "groq_enabled", False) and not cycles_only
@@ -210,8 +207,6 @@ class OTCSession:
 
     async def stop(self):
         async with self._lock:
-            if hasattr(self, "ml_preview"):
-                await self.ml_preview.stop()
             if hasattr(self, "groq_preview"):
                 await self.groq_preview.stop()
             if hasattr(self, "main_ready"):
@@ -797,12 +792,6 @@ class OTCSession:
                                 send_quotes = self.data_readiness.observe(
                                     tick, now, history, active, self._quotes
                                 )
-                            if hasattr(self, "ml_preview"):
-                                self.ml_preview.observe(
-                                    history, active, send_quotes, self.ends_at
-                                )
-                                if hasattr(self.ml_preview, "observe_audit_tick"):
-                                    self.ml_preview.observe_audit_tick(tick, now)
                             if hasattr(self, "cycle_preview"):
                                 self.cycle_preview.observe(
                                     history, active, send_quotes, self.ends_at
