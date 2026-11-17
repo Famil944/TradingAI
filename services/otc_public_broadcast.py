@@ -93,6 +93,11 @@ class PublicPublisher:
                     message_id INTEGER NOT NULL,
                     PRIMARY KEY(channel_id,batch_key)
                 );
+                CREATE TABLE IF NOT EXISTS shadow_flags(
+                    channel_id INTEGER NOT NULL,method TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(channel_id,method)
+                );
             """)
             db.execute(
                 "INSERT OR IGNORE INTO channels(channel_id,enabled_at) VALUES(?,?)",
@@ -102,21 +107,48 @@ class PublicPublisher:
             self.enabled_at = db.execute(
                 "SELECT enabled_at FROM channels WHERE channel_id=?", (self.channel_id,)
             ).fetchone()[0]
-        self.shadow_enabled = set(
+        defaults = set(
             (os.getenv("OTC_PUBLIC_SHADOW_METHODS") or "").replace(" ", "").split(",")
         ) & set(METHOD_LABELS)
+        with closing(self._connect()) as db:
+            for method in METHOD_LABELS:
+                db.execute(
+                    "INSERT OR IGNORE INTO shadow_flags VALUES(?,?,?)",
+                    (self.channel_id, method, int(method in defaults)),
+                )
+            db.commit()
+
+    def flags(self):
+        with closing(self._connect()) as db:
+            return dict(db.execute(
+                "SELECT method,enabled FROM shadow_flags WHERE channel_id=?",
+                (self.channel_id,),
+            ).fetchall())
+
+    def toggle_shadow(self, method):
+        if method not in METHOD_LABELS:
+            raise ValueError("Unknown background strategy")
+        with closing(self._connect()) as db:
+            db.execute(
+                "UPDATE shadow_flags SET enabled=1-enabled "
+                "WHERE channel_id=? AND method=?",
+                (self.channel_id, method),
+            )
+            db.commit()
+        return bool(self.flags()[method])
 
     def _connect(self):
         return sqlite3.connect(self.path, timeout=5)
 
     def _snapshot(self):
         rows = main_signals(self.root / "data" / "bollinger-cycles.db", self.enabled_at)
-        if self.shadow_enabled:
+        enabled = {method for method, flag in self.flags().items() if flag}
+        if enabled:
             rows.extend(
                 row for row in shadow_signals(
                     self.root / "data" / "community-cycles.db", self.enabled_at
                 )
-                if row["strategy"] in self.shadow_enabled
+                if row["strategy"] in enabled
             )
         return sorted(rows, key=lambda r: (r["created_at"], r["id"]))
 
