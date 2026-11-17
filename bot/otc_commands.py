@@ -25,7 +25,6 @@ SHADOW_STATS_EPOCH = ROOT / "data" / "shadow-stats-epoch.txt"
 SOURCES = (
     ("Основной", "main_ready"),
     ("Без чрезмерного движения M5", "main_broad"),
-    ("Groq", "groq_preview"),
     ("XGBoost", "ml_preview"),
 )
 
@@ -184,7 +183,7 @@ def menu(chat_id, expanded=False):
                     text="Винрейт XGBoost", callback_data="otc:mlstats:all:today"
                 ),
                 InlineKeyboardButton(
-                    text="Винрейт Groq", callback_data="otc:groqstats:all:today"
+                    text="Groq recovery", callback_data="otc:groqrecovery"
                 ),
             ]
         )
@@ -201,17 +200,25 @@ def strategy_status(current):
         text = (
             "🟢" if running and preview and preview.enabled else "🔴"
         ) + " Боллинджер ×3"
-        return text + (
+        text += (
             "\n" + preview.journal.stats(since=stats_epoch())
             if preview
             else " · запуск"
         )
+        recovery = getattr(current, "unknown_recovery", None)
+        if recovery is not None:
+            status = (
+                recovery.groq.status()
+                if recovery.groq is not None
+                else "Groq recovery · без API-ключа"
+            )
+            text += (
+                f"\n🟣 Recovery · восстановлено за проход {recovery.last_recovered}"
+                f" · осталось символов {recovery.last_pending}\n{status}"
+            )
+        return text
     streaming = bool(current and current.running() and current.phase == "поток активен")
     boost = getattr(current, "ml_preview", None)
-    groq = getattr(current, "groq_preview", None)
-    groq_health = groq.client.health() if groq else (False, "не запущен")
-    if groq and not getattr(getattr(current, "config", None), "groq_enabled", False):
-        groq_health = (False, "отключён пользователем")
     active = {
         "Основной": streaming,
         "Без чрезмерного движения M5": bool(
@@ -222,7 +229,6 @@ def strategy_status(current):
         "XGBoost": bool(
             streaming and boost and boost.enabled and boost.runtime.preview_ready()
         ),
-        "Groq": bool(streaming and groq and groq.enabled and groq_health[0]),
     }
     since, now = stats_epoch(), time.time()
     lines = ["После сброса статистики · только отправленные сигналы"]
@@ -233,9 +239,7 @@ def strategy_status(current):
         wins = sum(r["outcome"] == "WIN" for r in records)
         losses = sum(r["outcome"] == "LOSS" for r in records)
         rate = f"{100 * wins / (wins + losses):.1f}%" if wins + losses else "—"
-        detail = (
-            f" · {groq_health[1]}" if label == "Groq" and not groq_health[0] else ""
-        )
+        detail = ""
         lines.append(
             f"{'🟢' if active[label] else '🔴'} {label} · {count} · WIN {wins} / LOSS {losses} · {rate}{detail}"
         )
@@ -571,6 +575,25 @@ async def callback(query: types.CallbackQuery):
     if action == "validation":
         await query.answer()
         await validation(query.message)
+        return
+    if action == "groqrecovery":
+        await query.answer()
+        recovery = getattr(service, "unknown_recovery", None)
+        if recovery is None:
+            await query.message.answer("Groq recovery ещё не запущен.")
+            return
+        status = (
+            recovery.groq.status()
+            if recovery.groq is not None
+            else "Groq recovery · API-ключ не подключён"
+        )
+        await query.message.answer(
+            "🟣 UNKNOWN recovery\n"
+            f"Последний проход: восстановлено {recovery.last_recovered}\n"
+            f"Осталось символов с неизвестными исходами: {recovery.last_pending}\n"
+            + status,
+            parse_mode=None,
+        )
         return
     if action == "shadow":
         await query.answer()
