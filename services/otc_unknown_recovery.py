@@ -244,7 +244,8 @@ class UnknownRecovery:
                             seconds,
                             row["direction"],
                             old_attempts,
-                            ["otcharts_history"] * len(old_attempts),
+                            plan.get("attempt_sources")
+                            or ["unconfirmed"] * len(old_attempts),
                         )
                     )
                     plan["attempt_outcomes"] = attempts

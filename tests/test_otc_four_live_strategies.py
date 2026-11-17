@@ -104,6 +104,19 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         await self.publisher.update_owner_cards(self.bot, 777)
         self.assertTrue(any("✅" in text for _, _, text in self.bot.edited))
 
+    async def test_live_result_can_settle_at_confirmed_expiry_boundary(self):
+        self.candidates.record([candidate("bb_reentry", "BTC")])
+        await self.publisher.publish(self.bot, 777)
+        self.candidates.samples([
+            ("BTC", 1020, 1020, 1020, 100),
+            ("BTC", 1140, 1140, 1140, 101),
+        ])
+        self.now[0] = 1140
+        await self.publisher.settle()
+        rows = load_live_signals(self.root / "data" / "community-live.db")
+        self.assertEqual(rows[0]["outcome"], "WIN")
+        self.assertEqual(rows[0]["attempt_sources"], ["otcharts_tick"])
+
     async def test_secondary_signals_are_not_sent_late_or_outside_owner_durations(self):
         self.candidates.record([
             candidate("bb_reentry", "BTC", seconds=120),
