@@ -158,9 +158,9 @@ async def main(*, session_minutes=None, session_end=None):
             settings.groq_api_key,
             ROOT / "data" / "groq-recovery.db",
             model=settings.groq_model,
-            interval=settings.groq_interval_seconds,
-            max_requests=settings.groq_max_requests,
-            max_tokens=settings.groq_max_tokens,
+            interval=settings.groq_recovery_interval_seconds,
+            max_requests=settings.groq_recovery_max_requests,
+            max_tokens=settings.groq_recovery_max_tokens,
         )
         if settings.groq_recovery_enabled
         else None
@@ -212,7 +212,7 @@ async def main(*, session_minutes=None, session_end=None):
         ROOT,
         service.provider,
         groq_client,
-        interval=60,
+        interval=settings.groq_recovery_interval_seconds,
     )
     service.unknown_recovery = recovery
     recovery_task = asyncio.create_task(recovery.run())
