@@ -25,7 +25,6 @@ SHADOW_STATS_EPOCH = ROOT / "data" / "shadow-stats-epoch.txt"
 SOURCES = (
     ("Основной", "main_ready"),
     ("Без чрезмерного движения M5", "main_broad"),
-    ("XGBoost", "ml_preview"),
 )
 
 
@@ -158,12 +157,7 @@ def menu(chat_id, expanded=False):
         ]
     )
     rows.append(
-        [
-            InlineKeyboardButton(text="📊 4 стратегии", callback_data="c:sources"),
-            InlineKeyboardButton(
-                text="Качество · дни · XGBoost", callback_data="otc:validation"
-            ),
-        ]
+        [InlineKeyboardButton(text="📊 4 стратегии", callback_data="c:sources")]
     )
     if expanded:
         rows.append(
@@ -178,14 +172,7 @@ def menu(chat_id, expanded=False):
             ]
         )
         rows.append(
-            [
-                InlineKeyboardButton(
-                    text="Винрейт XGBoost", callback_data="otc:mlstats:all:today"
-                ),
-                InlineKeyboardButton(
-                    text="Groq recovery", callback_data="otc:groqrecovery"
-                ),
-            ]
+            [InlineKeyboardButton(text="Groq recovery", callback_data="otc:groqrecovery")]
         )
         rows.append(
             [InlineKeyboardButton(text="Обновить", callback_data="otc:panel:show")]
@@ -218,16 +205,12 @@ def strategy_status(current):
             )
         return text
     streaming = bool(current and current.running() and current.phase == "поток активен")
-    boost = getattr(current, "ml_preview", None)
     active = {
         "Основной": streaming,
         "Без чрезмерного движения M5": bool(
             streaming
             and getattr(current, "main_broad", None)
             and current.main_broad.enabled
-        ),
-        "XGBoost": bool(
-            streaming and boost and boost.enabled and boost.runtime.preview_ready()
         ),
     }
     since, now = stats_epoch(), time.time()
@@ -348,8 +331,7 @@ async def quality(message: types.Message):
     journals = {}
     for label, attr in (
         ("Основной", "main_ready"),
-        ("Groq", "groq_preview"),
-        ("XGBoost", "ml_preview"),
+        ("Без чрезмерного движения M5", "main_broad"),
     ):
         preview = getattr(service, attr, None)
         if preview:
@@ -371,18 +353,6 @@ async def quality(message: types.Message):
         chunk += line + "\n"
     if chunk:
         await message.answer(chunk, parse_mode=None)
-
-
-@router.message(Command("otc_validation"))
-async def validation(message: types.Message):
-    from services.otc_validation_report import format_report, report
-
-    data = await asyncio.to_thread(
-        report, ROOT / "data", max(stats_epoch(), shadow_stats_epoch()), time.time()
-    )
-    text = format_report(data)
-    for offset in range(0, len(text), 3500):
-        await message.answer(text[offset : offset + 3500], parse_mode=None)
 
 
 @router.message(Command("otc_research"))
@@ -573,8 +543,7 @@ async def callback(query: types.CallbackQuery):
         )
         return
     if action == "validation":
-        await query.answer()
-        await validation(query.message)
+        await query.answer("XGBoost отключён", show_alert=True)
         return
     if action == "groqrecovery":
         await query.answer()
@@ -617,11 +586,13 @@ async def callback(query: types.CallbackQuery):
         await query.answer()
         await send_confirmations(query.message)
         return
-    if action in ("mlstats", "groqstats", "primarystats", "broadstats", "cyclestats"):
+    if action == "mlstats":
+        await query.answer("XGBoost отключён", show_alert=True)
+        return
+    if action in ("groqstats", "primarystats", "broadstats", "cyclestats"):
         preview_name = {
             "cyclestats": "cycle_preview",
             "groqstats": "groq_preview",
-            "mlstats": "ml_preview",
             "primarystats": "main_ready",
             "broadstats": "main_broad",
         }[action]
