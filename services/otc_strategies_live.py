@@ -289,7 +289,7 @@ class LiveStrategyPublisher:
         self.started_at = self.clock()
         self._last_settlement = 0
 
-    async def publish(self, bot, owner, enabled=True):
+    async def publish(self, bot, owner, enabled=True, allowed_timeframes=(120, 300, 900)):
         if not enabled:
             return
         now = self.clock()
@@ -297,7 +297,8 @@ class LiveStrategyPublisher:
         for row in rows:
             now = self.clock()
             if (
-                row["observed_at"] < self.started_at - 2
+                row["experiment"]["cycle_seconds"] not in allowed_timeframes
+                or row["observed_at"] < self.started_at - 2
                 or not MIN_LEAD < row["entry_at"] - now <= MAX_LEAD
             ):
                 continue
@@ -393,7 +394,8 @@ class LiveStrategyPublisher:
                     session and session.running()
                     and cycles and getattr(cycles, "enabled", False)
                 )
-                await self.publish(bot, owner, enabled)
+                allowed = tuple(getattr(cycles, "allowed_timeframes", (120, 300, 900)))
+                await self.publish(bot, owner, enabled, allowed)
                 await self.settle()
                 await self.update_owner_cards(bot, owner)
             except asyncio.CancelledError:
