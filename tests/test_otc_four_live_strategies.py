@@ -184,6 +184,26 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
             await relay.update(bot)
             self.assertEqual(len(bot.sent), 1)
 
+    def test_export_uses_delivered_signals_not_unpublished_research_by_default(self):
+        from scripts.recover_otc_history import export
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            research = CandidateJournal(root / "data" / "community-cycles.db")
+            research.record([candidate("bb_reentry", "BTC")])
+            journal = LiveStrategyJournal(root / "data" / "community-live.db")
+            ident = journal.reserve(candidate("bb_reentry", "BTC"), 1001)
+            journal.sent(ident, 1001, 1)
+            journal.save_outcome(
+                ident, ["WIN"], ["otcharts_tick"], "WIN", 1143
+            )
+            result = export(root, root / "exports", now=1500)
+            self.assertEqual(result["signals"], 1)
+            text = (root / "exports" / "signals.csv").read_text(encoding="utf-8-sig")
+            self.assertIn("bb_reentry", text)
+            self.assertIn("live", text)
+            self.assertNotIn("shadow:", text)
+            self.assertNotIn("ФОН", text)
+
     def test_canonical_recovery_requires_exact_unrevised_history(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
