@@ -11,7 +11,7 @@ from services.otc_candidate_research import CandidateJournal
 from services.otc_community_cycles import VERSION
 from services.otc_strategies_live import (
     LiveStrategyJournal, LiveStrategyPublisher, candidate_list,
-    evaluate_cycle, load_live_signals,
+    evaluate_cycle, load_live_signals, reconcile_unknown,
 )
 from services.otc_public_stats import metrics, metric_units
 from services.otc_public_broadcast import PublicPublisher
@@ -211,6 +211,35 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
                 row, {}, 1400, archive
             )
             self.assertEqual(state, "UNKNOWN")
+
+    def test_unknown_recovery_does_not_fabricate_unentered_coverage(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "market-history.db"
+            with sqlite3.connect(path) as db:
+                db.execute(
+                    "CREATE TABLE bars("
+                    "symbol TEXT,time INTEGER,open REAL,source TEXT,revisions INTEGER)"
+                )
+                db.executemany(
+                    "INSERT INTO bars VALUES(?,?,?,?,?)",
+                    [("BTC", 1020, 100, "otcharts_history", 0),
+                     ("BTC", 1140, 99, "otcharts_history", 0)],
+                )
+            record = {
+                "symbol": "BTC", "direction": "UP", "entry_at": 1020,
+                "seconds": 120, "attempts_json": '["UNKNOWN"]',
+                "attempt_sources_json": '["unconfirmed"]',
+            }
+            attempts, sources, state = reconcile_unknown(record, {}, 1700, path)
+            self.assertEqual(attempts, ["LOSS"])
+            self.assertEqual(sources, ["otcharts_history"])
+            # No synthetic attempt 2/3: cycle remains UNKNOWN.
+            self.assertEqual(state, "UNKNOWN")
+            with sqlite3.connect(path) as db:
+                db.execute("UPDATE bars SET open=101 WHERE time=1140")
+            attempts, _, state = reconcile_unknown(record, {}, 1700, path)
+            self.assertEqual(attempts, ["WIN"])
+            self.assertEqual(state, "WIN")
 
     def test_compact_overview_has_four_named_winrates(self):
         from bot import community
