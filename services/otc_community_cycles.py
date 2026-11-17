@@ -63,9 +63,12 @@ def prepare(snapshot, now):
         if not aligned_entry(entry, seconds):
             continue
         for symbol, minutes in history.items():
+            asset = assets.get(symbol)
+            if asset is None:
+                continue
             row = dict(
                 symbol=symbol,
-                name=getattr(assets[symbol], "name", None) or symbol,
+                name=getattr(asset, "name", None) or symbol,
                 entry_at=entry,
                 expires_at=entry + 3 * seconds,
                 feature_asof=entry - 60,
@@ -81,7 +84,7 @@ def prepare(snapshot, now):
                         row,
                         version=method + "-cycles-v1",
                         direction=decision["direction"],
-                        payout=assets[symbol].payout,
+                        payout=asset.payout,
                         evidence={"pattern": decision},
                         experiment=dict(
                             version=VERSION,
