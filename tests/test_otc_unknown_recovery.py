@@ -45,6 +45,48 @@ class NoopProvider:
 
 
 class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_live_session_pauses_old_unknown_without_using_quota(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            data = root / "data"
+            journal = LiveStrategyJournal(data / "community-live.db")
+            plan = {
+                "symbol": "BTC_otc", "direction": "UP", "entry_at": 1200,
+                "expires_at": 1560, "payout": 92,
+                "experiment": {"method": "ema_pullback", "cycle_seconds": 120},
+            }
+            ident = journal.reserve(plan, 1180)
+            journal.sent(ident, 1181, 5)
+            journal.save_outcome(ident, ["UNKNOWN"], ["unconfirmed"], "UNKNOWN", 1600)
+            provider = SimpleNamespace(
+                usage=AsyncMock(return_value=SimpleNamespace(remaining=2000)),
+                candles=AsyncMock(return_value=[]),
+            )
+            running = [True]
+            foreground = SimpleNamespace(running=lambda: running[0])
+            recovery = UnknownRecovery(root, provider, foreground=foreground, clock=lambda: 1700)
+            self.assertEqual(await recovery.sweep(), (0, 0))
+            self.assertTrue(recovery.paused_for_signals)
+            provider.usage.assert_not_awaited()
+            provider.candles.assert_not_awaited()
+            running[0] = False
+            self.assertEqual(await recovery.sweep(), (0, 1))
+            self.assertFalse(recovery.paused_for_signals)
+            provider.candles.assert_awaited_once()
+
+    async def test_recovery_reserves_quota_for_new_signals(self):
+        with tempfile.TemporaryDirectory() as folder:
+            provider = SimpleNamespace(
+                usage=AsyncMock(return_value=SimpleNamespace(remaining=100)),
+                candles=AsyncMock(return_value=[]),
+            )
+            recovery = UnknownRecovery(folder, provider, quota_reserve=100)
+            await recovery._backfill({"BTC_otc", "ETH_otc"})
+            provider.candles.assert_not_awaited()
+            provider.usage.return_value = SimpleNamespace(remaining=101)
+            await recovery._backfill({"BTC_otc", "ETH_otc"})
+            self.assertEqual(provider.candles.await_count, 1)
+
     async def test_live_unknown_becomes_win_from_canonical_history(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -277,7 +319,7 @@ class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
             recovered, pending = await recovery.sweep()
             self.assertEqual(recovered, 0)
             self.assertEqual(pending, 1)
-            now[0] += 61
+            now[0] += 121  # bounded retry after a temporary upstream failure
             recovered, pending = await recovery.sweep()
             self.assertEqual(recovered, 1)
             self.assertEqual(pending, 0)

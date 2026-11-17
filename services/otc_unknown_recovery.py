@@ -31,7 +31,9 @@ class UnknownRecovery:
         *,
         clock=time.time,
         interval=60,
-        fetch_limit=3,
+        fetch_limit=1,
+        foreground=None,
+        quota_reserve=100,
     ):
         self.root = Path(root)
         self.provider = provider
@@ -39,6 +41,10 @@ class UnknownRecovery:
         self.clock = clock
         self.interval = max(15, interval)
         self.fetch_limit = max(1, fetch_limit)
+        # A live signal session always has priority over old UNKNOWN records.
+        # Historical backfills resume when the owner stops the live session.
+        self.foreground = foreground
+        self.quota_reserve = max(100, int(quota_reserve))
         self.archive_path = self.root / "data" / "market-history.db"
         self.live_path = self.root / "data" / "community-live.db"
         self.bollinger_path = self.root / "data" / "bollinger-cycles.db"
@@ -46,6 +52,10 @@ class UnknownRecovery:
         self.last_scan = 0
         self.last_recovered = 0
         self.last_pending = 0
+        self.paused_for_signals = False
+
+    def _foreground_running(self):
+        return self.foreground is not None and self.foreground.running()
 
     @staticmethod
     def _open(path):
@@ -248,25 +258,33 @@ class UnknownRecovery:
                             or ["unconfirmed"] * len(old_attempts),
                         )
                     )
-                    plan["attempt_outcomes"] = attempts
-                    plan["recovered_unknown_at"] = self.clock()
-                    plan["attempt_sources"] = sources
-                    if outcome in ("WIN", "DRAW"):
-                        plan["stopped_after_index"] = attempts.index(outcome)
-                    elif outcome == "UNKNOWN":
-                        plan["stopped_after_index"] = attempts.index("UNKNOWN")
-                    else:
-                        plan.pop("stopped_after_index", None)
-                    db.execute(
-                        "UPDATE predictions SET evidence=?,outcome=?,resolved_at=? "
-                        "WHERE id=? AND outcome='UNKNOWN'",
-                        (
-                            json.dumps(plan, ensure_ascii=False, allow_nan=False),
-                            outcome,
-                            self.clock(),
-                            row["id"],
-                        ),
-                    )
+                    old_sources = plan.get("attempt_sources") or [
+                        "unconfirmed"
+                    ] * len(old_attempts)
+                    if (
+                        attempts != old_attempts
+                        or sources != old_sources
+                        or outcome != row["outcome"]
+                    ):
+                        plan["attempt_outcomes"] = attempts
+                        plan["recovered_unknown_at"] = self.clock()
+                        plan["attempt_sources"] = sources
+                        if outcome in ("WIN", "DRAW"):
+                            plan["stopped_after_index"] = attempts.index(outcome)
+                        elif outcome == "UNKNOWN":
+                            plan["stopped_after_index"] = attempts.index("UNKNOWN")
+                        else:
+                            plan.pop("stopped_after_index", None)
+                        db.execute(
+                            "UPDATE predictions SET evidence=?,outcome=?,resolved_at=? "
+                            "WHERE id=? AND outcome='UNKNOWN'",
+                            (
+                                json.dumps(plan, ensure_ascii=False, allow_nan=False),
+                                outcome,
+                                self.clock(),
+                                row["id"],
+                            ),
+                        )
                     for item in recovered:
                         audits.append(
                             dict(
@@ -290,6 +308,8 @@ class UnknownRecovery:
         return live_audits + boll_audits, live_missing | boll_missing
 
     async def _backfill(self, symbols):
+        if self._foreground_running():
+            return
         now = self.clock()
         eligible = [
             symbol
@@ -301,16 +321,18 @@ class UnknownRecovery:
         try:
             plan = await self.provider.usage()
             remaining = getattr(plan, "remaining", None)
-            if isinstance(remaining, int) and remaining <= 10:
+            if not isinstance(remaining, int) or remaining <= self.quota_reserve:
                 LOG.warning("UNKNOWN recovery paused: OTCharts request reserve is low")
                 return
         except Exception:
-            # Usage is advisory; a later candle call will still fail closed.
-            pass
+            # Do not spend signal quota when its remaining balance is unknown.
+            return
         for symbol in eligible:
+            if self._foreground_running():
+                return
             try:
                 bars = await self.provider.candles(symbol, self.clock())
-                self.next_retry[symbol] = self.clock() + (600 if bars else 300)
+                self.next_retry[symbol] = self.clock() + (900 if bars else 600)
                 LOG.info(
                     "UNKNOWN recovery backfilled %s: %d canonical bars",
                     symbol,
@@ -319,7 +341,7 @@ class UnknownRecovery:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self.next_retry[symbol] = self.clock() + 60
+                self.next_retry[symbol] = self.clock() + 120
                 LOG.info(
                     "UNKNOWN recovery will retry %s after network/data error: %s",
                     symbol,
@@ -327,6 +349,10 @@ class UnknownRecovery:
                 )
 
     async def sweep(self):
+        self.paused_for_signals = self._foreground_running()
+        if self.paused_for_signals:
+            self.last_recovered = 0
+            return 0, self.last_pending
         self.last_scan = self.clock()
         audits, missing = await asyncio.to_thread(self.recover_local)
         if missing:

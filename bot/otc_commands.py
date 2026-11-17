@@ -203,6 +203,8 @@ def strategy_status(current):
                 f"\n🟣 Recovery · восстановлено за проход {recovery.last_recovered}"
                 f" · осталось символов {recovery.last_pending}\n{status}"
             )
+            if getattr(recovery, "paused_for_signals", False):
+                text += "\n⏸ Исторический UNKNOWN: пауза ради новых сигналов"
         return text
     streaming = bool(current and current.running() and current.phase == "поток активен")
     active = {
@@ -560,6 +562,8 @@ async def callback(query: types.CallbackQuery):
             "🟣 UNKNOWN recovery\n"
             f"Последний проход: восстановлено {recovery.last_recovered}\n"
             f"Осталось символов с неизвестными исходами: {recovery.last_pending}\n"
+            + ("⏸ Архивная проверка на паузе до завершения торгового сеанса\n"
+               if getattr(recovery, "paused_for_signals", False) else "")
             + status,
             parse_mode=None,
         )

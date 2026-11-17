@@ -1,21 +1,174 @@
 """Network timeouts must never masquerade as session expiry."""
 
 import asyncio
+import sqlite3
 import tempfile
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from database.db import Database
 from services.otc_data import AccessUnavailable, OTChartsProvider, RetryableFeedError
-from services.otc_market import Tick
-from services.otc_session import OTCSession
+from services.otc_market import Asset, Tick
+from services.otc_market_archive import MarketArchive
+from services.otc_session import OTCSession, db_call
+from services.otc_strategy import Candle
 from tests.test_otc_core import FakeProvider
+from services.otc_readiness import DataReadiness
 
 
 class ConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transient_stream_sqlite_lock_recovers_without_stopping(self):
+        calls = [0]
+        resumed = asyncio.Event()
+        hold = asyncio.Event()
+
+        async def ticks(symbols):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise sqlite3.OperationalError("database is locked")
+            resumed.set()
+            yield Tick("A", self.clock[0], 1)
+            await hold.wait()
+
+        self.provider.ticks = ticks
+        self.session._restore_stream_history = AsyncMock(return_value={})
+        async def paused(*_):
+            await hold.wait()
+        self.session._refresh_stream_assets = paused
+        with patch("services.otc_session.reconnect_delay", return_value=0):
+            scan = asyncio.create_task(self.session._scan(self.bot, {"A": []}, {"A": None}))
+            try:
+                await asyncio.wait_for(resumed.wait(), 3)
+                self.assertGreaterEqual(calls[0], 2)
+                self.assertGreaterEqual(self.session._health_counts["sqlite_busy"], 1)
+                self.assertFalse(scan.done())
+            finally:
+                scan.cancel()
+                await asyncio.gather(scan, return_exceptions=True)
+
+    async def test_sqlite_lock_retries_but_schema_errors_fail_closed(self):
+        operation = Mock(side_effect=[sqlite3.OperationalError("database is locked"),
+                                      sqlite3.OperationalError("database is busy"), 5])
+        with patch("services.otc_session.asyncio.sleep", new_callable=AsyncMock):
+            self.assertEqual(await db_call(operation), 5)
+        self.assertEqual(operation.call_count, 3)
+        fatal = Mock(side_effect=sqlite3.OperationalError("no such table: signals"))
+        with self.assertRaisesRegex(sqlite3.OperationalError, "no such table"):
+            await db_call(fatal)
+        fatal.assert_called_once()
+
+    async def test_readiness_db_lock_cannot_stop_safe_stream_warmup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "readiness.db"
+            readiness = DataReadiness(path, now=1000)
+            with sqlite3.connect(path, timeout=1) as db:
+                db.execute("BEGIN EXCLUSIVE")
+                readiness.reset(1010, "stream_reset")
+                self.assertTrue(readiness.gap_open)
+                self.assertEqual(readiness.ticks, {})
+                with patch("services.otc_readiness.check_data", return_value=None):
+                    result = {}
+                    for when in (1010, 1015, 1021):
+                        result = readiness.observe(
+                            Tick("A", when, 1), when, {}, {}, {"A": when}
+                        )
+                self.assertEqual(result, {"A": 1021})
+            readiness.reset(1030, "after_lock")
+
+    async def test_concurrent_history_downloads_serialize_archive_writes(self):
+        busy = [0]
+        maximum = [0]
+
+        def save(*_):
+            busy[0] += 1
+            maximum[0] = max(maximum[0], busy[0])
+            time.sleep(.01)
+            busy[0] -= 1
+
+        archive = SimpleNamespace(bars=save)
+        provider = OTChartsProvider("offline-test", archive=archive)
+        now = self.clock[0]
+        provider._get = AsyncMock(return_value={
+            "candles": [dict(time=now + 7200 - 60, open=1, high=1,
+                             low=1, close=1)]
+        })
+        await asyncio.gather(
+            provider.candles("A", now),
+            provider.candles("B", now),
+        )
+        self.assertEqual(maximum[0], 1)
+
+    async def test_archive_bulk_read_preserves_duplicate_tick_revisions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "bars.db"
+            archive = MarketArchive(path)
+            archive.bars("A", [Candle(60, 1, 1, 1, 1),
+                               Candle(60, 2, 2, 2, 2)], 180, "otcharts_ticks")
+            with sqlite3.connect(path) as db:
+                self.assertEqual(
+                    db.execute("SELECT open,revisions FROM bars").fetchone(),
+                    (2, 1),
+                )
+
+    @staticmethod
+    def continuous_bars(now, count=600):
+        last = int(now) // 60 * 60 - 60
+        return [Candle(last - 60 * i, 1, 1, 1, 1) for i in range(count - 1, -1, -1)]
+
+    async def test_short_reconnect_reuses_verified_history_without_five_calls(self):
+        now = self.clock[0]
+        history = {s: self.continuous_bars(now) for s in ("A", "B")}
+        self.provider.candles = AsyncMock()
+        self.provider.symbols = AsyncMock(return_value=[
+            Asset(s, True, True, 92, now, s, now) for s in ("A", "B")
+        ])
+        chosen = {s: None for s in history}
+        active = await self.session._restore_stream_history(chosen, history)
+        self.assertEqual(set(active), {"A", "B"})
+        self.provider.candles.assert_not_awaited()
+
+    async def test_long_reconnect_only_refetches_stale_history_two_at_once(self):
+        now = self.clock[0]
+        history = {"A": self.continuous_bars(now)}
+        for symbol in ("B", "C", "D"):
+            history[symbol] = self.continuous_bars(now - 180)
+        self.provider.symbols = AsyncMock(return_value=[
+            Asset(s, True, True, 92, now, s, now) for s in history
+        ])
+        current = [0]
+        peak = [0]
+        async def candles(symbol, _):
+            current[0] += 1
+            peak[0] = max(peak[0], current[0])
+            await asyncio.sleep(.01)
+            current[0] -= 1
+            return self.continuous_bars(now)
+        self.provider.candles = AsyncMock(side_effect=candles)
+        active = await self.session._restore_stream_history(dict.fromkeys(history), history)
+        self.assertEqual(set(active), set(history))
+        self.assertEqual(self.provider.candles.await_count, 3)
+        self.assertLessEqual(peak[0], 2)
+        self.assertTrue(all(self.session._can_reuse_stream_history(v, now) for v in history.values()))
+
+    async def test_history_refusal_is_not_hidden_by_parallel_fetch(self):
+        self.provider.candles = AsyncMock(side_effect=AccessUnavailable("invalid key"))
+        with self.assertRaises(AccessUnavailable):
+            await self.session._restore_stream_history({"A": None}, {})
+        self.provider.candles.assert_awaited_once()
+
+    async def test_reconnect_waits_for_single_stream_slot_release(self):
+        plan = await self.provider.usage()
+        self.session._usage_with_retry = AsyncMock(
+            return_value=replace(plan, streams_open=1)
+        )
+        self.session._wait_rotation_slot = AsyncMock()
+        await self.session._restore_stream_history({"A": None}, {})
+        self.session._wait_rotation_slot.assert_awaited_once()
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.temp.name) / "test.db")

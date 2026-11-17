@@ -116,7 +116,9 @@ class Settings:
     snapshot_max_age: float = 30.0
     max_tick_age: float = 8.0
     max_tick_gap: float = 8.0
-    stream_stale_timeout: float = 15.0
+    # Quiet SSE connections can send keepalives only every 20 seconds.
+    # Quotes remain unsafe for signalling after max_tick_age (8 s).
+    stream_stale_timeout: float = 30.0
     payout_max_age: float = 60.0
     settlement_tolerance: float = 2.0
 

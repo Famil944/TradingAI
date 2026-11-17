@@ -1,16 +1,21 @@
 """Conservative stream warm-up and persistent observed downtime intervals."""
 
+import logging
 import sqlite3
 from contextlib import closing
 
 from services.otc_delivery_guard import check_data
+
+LOG = logging.getLogger(__name__)
 
 
 class DataReadiness:
     def __init__(self, path, now):
         self.path = path
         self.ticks = {}
-        with closing(sqlite3.connect(path)) as db:
+        self._journal_retry_at = 0
+        with closing(sqlite3.connect(path, timeout=1)) as db:
+            db.execute("PRAGMA journal_mode=WAL")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS gaps(start REAL, end REAL, reason TEXT)"
             )
@@ -20,10 +25,18 @@ class DataReadiness:
     def reset(self, now, reason):
         self.ticks.clear()
         self.gap_open = True
-        with closing(sqlite3.connect(self.path)) as db:
-            if not db.execute("SELECT 1 FROM gaps WHERE end IS NULL").fetchone():
-                db.execute("INSERT INTO gaps VALUES(?,NULL,?)", (now, reason))
-            db.commit()
+        if now < self._journal_retry_at:
+            return
+        try:
+            with closing(sqlite3.connect(self.path, timeout=0.1)) as db:
+                if not db.execute("SELECT 1 FROM gaps WHERE end IS NULL").fetchone():
+                    db.execute("INSERT INTO gaps VALUES(?,NULL,?)", (now, reason))
+                db.commit()
+        except sqlite3.OperationalError as exc:
+            # Gap history is diagnostic, not source evidence. Never let this
+            # optional write tear down the live market feed or bypass warmup.
+            LOG.warning("OTC readiness journal reset deferred (%s)", type(exc).__name__)
+            self._journal_retry_at = now + 10
 
     def observe(self, tick, now, history, assets, quotes):
         previous = self.ticks.get(tick.symbol)
@@ -38,11 +51,15 @@ class DataReadiness:
             selected = dict(symbol=symbol, feature_asof=now, expires_at=now + 300)
             if check_data(selected, (history, assets, quotes, None), now) is None:
                 ready[symbol] = quotes[symbol]
-        if ready and self.gap_open:
-            with closing(sqlite3.connect(self.path)) as db:
-                db.execute("UPDATE gaps SET end=? WHERE end IS NULL", (now,))
-                db.commit()
-            self.gap_open = False
+        if ready and self.gap_open and now >= self._journal_retry_at:
+            try:
+                with closing(sqlite3.connect(self.path, timeout=0.1)) as db:
+                    db.execute("UPDATE gaps SET end=? WHERE end IS NULL", (now,))
+                    db.commit()
+                self.gap_open = False
+            except sqlite3.OperationalError as exc:
+                LOG.warning("OTC readiness journal close deferred (%s)", type(exc).__name__)
+                self._journal_retry_at = now + 10
         return ready
 
 

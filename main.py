@@ -201,6 +201,8 @@ async def main(*, session_minutes=None, session_end=None):
         service.provider,
         groq_client,
         interval=settings.groq_recovery_interval_seconds,
+        foreground=service,
+        quota_reserve=settings.pair_rotation_quota_reserve,
     )
     service.unknown_recovery = recovery
     recovery_task = asyncio.create_task(recovery.run())

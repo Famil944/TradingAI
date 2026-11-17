@@ -32,6 +32,9 @@ class Database:
 
     def init_db(self):
         with self.connect() as conn:
+            # Readers (status/settlement) must not block live writes on Termux.
+            # WAL changes the journaling mode without modifying existing rows.
+            conn.execute("PRAGMA journal_mode=WAL")
             exists = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE name='otc_journal_meta'"
             ).fetchone()
