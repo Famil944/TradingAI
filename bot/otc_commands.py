@@ -110,7 +110,7 @@ def menu(chat_id, expanded=False):
                         text="Виртуальный баланс", callback_data="otc:wallet:show"
                     ),
                     InlineKeyboardButton(
-                        text="Фон ×3", callback_data="otc:shadowcycles:2"
+                        text="📊 Стратегии", callback_data="c:sources"
                     ),
                 ],
             ]
@@ -160,7 +160,7 @@ def menu(chat_id, expanded=False):
     )
     rows.append(
         [
-            InlineKeyboardButton(text="Фоновый винрейт", callback_data="otc:shadow:2"),
+            InlineKeyboardButton(text="📊 4 стратегии", callback_data="c:sources"),
             InlineKeyboardButton(
                 text="Качество · дни · XGBoost", callback_data="otc:validation"
             ),
