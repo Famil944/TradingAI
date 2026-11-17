@@ -86,12 +86,12 @@ class LiveStrategyJournal:
             db.commit()
             return ident if cursor.rowcount else None
 
-    def sent(self, ident, when, message_id):
+    def sent(self, ident, when, message_id, content_sha=None):
         with closing(_connect(self.path)) as db:
             db.execute(
-                "UPDATE signals SET sent_at=?,message_id=?,outcome='PENDING'"
+                "UPDATE signals SET sent_at=?,message_id=?,outcome='PENDING',card_sha=?"
                 " WHERE id=? AND outcome='RESERVED'",
-                (when, message_id, ident),
+                (when, message_id, content_sha, ident),
             )
             db.commit()
 
@@ -316,8 +316,9 @@ class LiveStrategyPublisher:
             )
             try:
                 timeout = min(3, max(0.1, row["entry_at"] - MIN_LEAD - self.clock()))
+                card_text = public_text(signal)
                 message = await asyncio.wait_for(
-                    bot.send_message(owner, public_text(signal), parse_mode=None),
+                    bot.send_message(owner, card_text, parse_mode=None),
                     timeout,
                 )
                 when = self.clock()
@@ -326,7 +327,8 @@ class LiveStrategyPublisher:
                     await asyncio.to_thread(self.journal.not_delivered, ident)
                     continue
                 await asyncio.to_thread(
-                    self.journal.sent, ident, when, message.message_id
+                    self.journal.sent, ident, when, message.message_id,
+                    hashlib.sha256(card_text.encode()).hexdigest()
                 )
             except Exception as exc:
                 LOG.warning("Strategy %s delivery failed: %s", method, type(exc).__name__)
