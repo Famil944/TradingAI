@@ -90,7 +90,7 @@ class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(groq.calls), 1)
             self.assertEqual(groq.calls[0][0]["outcome"], "WIN")
 
-    async def test_bollinger_unknown_loss_does_not_invent_later_entries(self):
+    async def test_bollinger_unknown_cycle_is_reconstructed_until_win(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             data = root / "data"
@@ -121,14 +121,15 @@ class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 data / "market-history.db",
                 [
                     ("PFE_otc", 1200, 100.0),
-                    ("PFE_otc", 1320, 99.0),
+                    ("PFE_otc", 1320, 99.0),   # attempt 1 LOSS
+                    ("PFE_otc", 1440, 101.0),  # attempt 2 WIN
                 ],
             )
             recovery = UnknownRecovery(
                 root, NoopProvider(), None, clock=lambda: 1500
             )
             recovered, pending = await recovery.sweep()
-            self.assertEqual(recovered, 1)
+            self.assertEqual(recovered, 2)
             self.assertEqual(pending, 0)
             with sqlite3.connect(journal.path) as db:
                 outcome, evidence = db.execute(
@@ -136,15 +137,97 @@ class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     (ident,),
                 ).fetchone()
             payload = json.loads(evidence)
-            self.assertEqual(outcome, "UNKNOWN")
-            self.assertEqual(
-                payload["attempt_outcomes"],
-                ["LOSS", "PENDING", "PENDING"],
-            )
-            self.assertEqual(payload["stopped_after_index"], 0)
+            self.assertEqual(outcome, "WIN")
+            self.assertEqual(payload["attempt_outcomes"], ["LOSS", "WIN"])
+            self.assertEqual(payload["stopped_after_index"], 1)
             rendered = card(payload, payload["attempt_outcomes"], outcome)
             self.assertIn("1. 03:20 · ❌", rendered)
-            self.assertEqual(rendered.count("— отменена"), 2)
+            self.assertIn("2. 03:22 · ✅", rendered)
+            self.assertEqual(rendered.count("— отменена"), 1)
+
+    async def test_live_unknown_cycle_recovers_all_three_losses(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            data = root / "data"
+            journal = LiveStrategyJournal(data / "community-live.db")
+            plan = {
+                "symbol": "TSLA_otc",
+                "name": "Tesla OTC",
+                "direction": "DOWN",
+                "entry_at": 1800,
+                "expires_at": 2160,
+                "payout": 92,
+                "experiment": {"method": "ema_pullback", "cycle_seconds": 120},
+            }
+            ident = journal.reserve(plan, 1780)
+            journal.sent(ident, 1781, 1)
+            journal.save_outcome(
+                ident,
+                ["LOSS", "UNKNOWN"],
+                ["otcharts_tick", "unconfirmed"],
+                "UNKNOWN",
+                2100,
+            )
+            archive(
+                data / "market-history.db",
+                [
+                    ("TSLA_otc", 1920, 100.0),
+                    ("TSLA_otc", 2040, 101.0),  # attempt 2 LOSS for DOWN
+                    ("TSLA_otc", 2160, 102.0),  # attempt 3 LOSS for DOWN
+                ],
+            )
+            recovery = UnknownRecovery(
+                root, NoopProvider(), None, clock=lambda: 2200
+            )
+            recovered, pending = await recovery.sweep()
+            self.assertEqual(recovered, 2)
+            self.assertEqual(pending, 0)
+            with sqlite3.connect(journal.path) as db:
+                outcome, attempts = db.execute(
+                    "SELECT outcome,attempts_json FROM signals WHERE id=?",
+                    (ident,),
+                ).fetchone()
+            self.assertEqual(outcome, "LOSS")
+            self.assertEqual(json.loads(attempts), ["LOSS", "LOSS", "LOSS"])
+
+    async def test_recovery_stays_unknown_when_next_required_price_is_missing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            data = root / "data"
+            journal = LiveStrategyJournal(data / "community-live.db")
+            plan = {
+                "symbol": "AEDCNY_otc",
+                "name": "AED/CNY OTC",
+                "direction": "UP",
+                "entry_at": 1800,
+                "expires_at": 2160,
+                "payout": 92,
+                "experiment": {"method": "break_retest", "cycle_seconds": 120},
+            }
+            ident = journal.reserve(plan, 1780)
+            journal.sent(ident, 1781, 1)
+            journal.save_outcome(
+                ident,
+                ["LOSS", "UNKNOWN"],
+                ["otcharts_tick", "unconfirmed"],
+                "UNKNOWN",
+                2100,
+            )
+            archive(
+                data / "market-history.db",
+                [("AEDCNY_otc", 1920, 100.0)],
+            )
+            recovery = UnknownRecovery(
+                root, NoopProvider(), None, clock=lambda: 2200
+            )
+            recovered, pending = await recovery.sweep()
+            self.assertEqual(recovered, 0)
+            self.assertEqual(pending, 1)
+            with sqlite3.connect(journal.path) as db:
+                outcome = db.execute(
+                    "SELECT outcome FROM signals WHERE id=?", (ident,)
+                ).fetchone()[0]
+            self.assertEqual(outcome, "UNKNOWN")
 
     async def test_network_failure_is_retried_and_backfill_recovers(self):
         with tempfile.TemporaryDirectory() as folder:
