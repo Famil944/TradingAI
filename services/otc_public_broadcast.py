@@ -1,17 +1,18 @@
 """Opt-in allowlisted public Telegram publisher. No virtual account reads or writes."""
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import sqlite3
 import time
-from collections import defaultdict
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from services.otc_public_stats import (
-    MAIN_LABEL, METHOD_LABELS, main_signals, metric_units, shadow_signals,
+    METHOD_LABELS, main_signals, metric_units, shadow_signals,
 )
 
 LOG = logging.getLogger(__name__)
@@ -76,6 +77,8 @@ class PublicPublisher:
     def __init__(self, root, channel_id):
         self.root = Path(root)
         self.channel_id = int(channel_id)
+        if not str(self.channel_id).startswith("-100"):
+            raise ValueError("OTC_PUBLIC_CHANNEL_ID must be a Telegram channel ID (-100...)")
         self.path = self.root / "data" / "public-telegram.db"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as db:
@@ -96,9 +99,27 @@ class PublicPublisher:
                 CREATE TABLE IF NOT EXISTS shadow_flags(
                     channel_id INTEGER NOT NULL,method TEXT NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 0,
+                    enabled_at REAL NOT NULL DEFAULT 0,
                     PRIMARY KEY(channel_id,method)
                 );
+                CREATE TABLE IF NOT EXISTS report_units(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id INTEGER NOT NULL,
+                    group_key TEXT NOT NULL,
+                    unit_id TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    batch_key TEXT,
+                    UNIQUE(channel_id,group_key,unit_id)
+                );
+                CREATE INDEX IF NOT EXISTS report_units_pending
+                    ON report_units(channel_id,group_key,batch_key,id);
             """)
+            # Additive migration for channels created by the previous preview version.
+            columns = {row[1] for row in db.execute("PRAGMA table_info(shadow_flags)")}
+            if "enabled_at" not in columns:
+                db.execute(
+                    "ALTER TABLE shadow_flags ADD COLUMN enabled_at REAL NOT NULL DEFAULT 0"
+                )
             db.execute(
                 "INSERT OR IGNORE INTO channels(channel_id,enabled_at) VALUES(?,?)",
                 (self.channel_id, time.time()),
@@ -113,8 +134,10 @@ class PublicPublisher:
         with closing(self._connect()) as db:
             for method in METHOD_LABELS:
                 db.execute(
-                    "INSERT OR IGNORE INTO shadow_flags VALUES(?,?,?)",
-                    (self.channel_id, method, int(method in defaults)),
+                    "INSERT OR IGNORE INTO shadow_flags"
+                    "(channel_id,method,enabled,enabled_at) VALUES(?,?,?,?)",
+                    (self.channel_id, method, int(method in defaults), 
+                     self.enabled_at if method in defaults else 0),
                 )
             db.commit()
 
@@ -125,30 +148,64 @@ class PublicPublisher:
                 (self.channel_id,),
             ).fetchall())
 
+    def _flag_windows(self):
+        with closing(self._connect()) as db:
+            return {
+                name: float(at)
+                for name, enabled, at in db.execute(
+                    "SELECT method,enabled,enabled_at FROM shadow_flags "
+                    "WHERE channel_id=?", (self.channel_id,)
+                ).fetchall()
+                if enabled
+            }
+
     def toggle_shadow(self, method):
         if method not in METHOD_LABELS:
             raise ValueError("Unknown background strategy")
         with closing(self._connect()) as db:
-            db.execute(
-                "UPDATE shadow_flags SET enabled=1-enabled "
-                "WHERE channel_id=? AND method=?",
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT enabled FROM shadow_flags WHERE channel_id=? AND method=?",
                 (self.channel_id, method),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Missing strategy switch")
+            new_status = not bool(row[0])
+            db.execute(
+                "UPDATE shadow_flags SET enabled=?,enabled_at=? "
+                "WHERE channel_id=? AND method=?",
+                (int(new_status), time.time() if new_status else 0,
+                 self.channel_id, method),
             )
+            # A paused channel must not later publish a stale or mixed batch.
+            for (key,) in db.execute(
+                "SELECT DISTINCT group_key FROM report_units "
+                "WHERE channel_id=? AND batch_key IS NULL",
+                (self.channel_id,),
+            ).fetchall():
+                if json.loads(key)[2] == method:
+                    db.execute(
+                        "DELETE FROM report_units WHERE channel_id=? "
+                        "AND group_key=? AND batch_key IS NULL",
+                        (self.channel_id, key),
+                    )
             db.commit()
-        return bool(self.flags()[method])
+        return new_status
 
     def _connect(self):
         return sqlite3.connect(self.path, timeout=5)
 
     def _snapshot(self):
         rows = main_signals(self.root / "data" / "bollinger-cycles.db", self.enabled_at)
-        enabled = {method for method, flag in self.flags().items() if flag}
-        if enabled:
+        windows = self._flag_windows()
+        if windows:
+            oldest = min(max(self.enabled_at, t) for t in windows.values())
             rows.extend(
                 row for row in shadow_signals(
-                    self.root / "data" / "community-cycles.db", self.enabled_at
+                    self.root / "data" / "community-cycles.db", oldest
                 )
-                if row["strategy"] in enabled
+                if row["strategy"] in windows
+                and row["created_at"] >= max(self.enabled_at, windows[row["strategy"]])
             )
         return sorted(rows, key=lambda r: (r["created_at"], r["id"]))
 
@@ -170,18 +227,78 @@ class PublicPublisher:
             )
             db.commit()
 
-    def _has_batch(self, key):
+    def _enqueue_units(self, rows):
+        # Queue only newly confirmed outcomes. Immutable IDs prevent a late
+        # UNKNOWN->WIN reconciliation from shifting previously sent batches.
         with closing(self._connect()) as db:
-            return db.execute(
-                "SELECT 1 FROM sent_batches WHERE channel_id=? AND batch_key=?",
-                (self.channel_id, key),
-            ).fetchone() is not None
+            db.execute("BEGIN IMMEDIATE")
+            for metric in ("A", "B", "C"):
+                for row in metric_units(rows, metric):
+                    if (row["outcome"] not in ("WIN", "LOSS")
+                            or row["created_at"] < self.enabled_at):
+                        continue
+                    key = json.dumps([
+                        metric, row["origin"], row["strategy"], row["version"],
+                        row["seconds"],
+                    ], separators=(",", ":"))
+                    payload = {
+                        name: row[name] for name in (
+                            "id", "origin", "strategy", "version", "seconds",
+                            "label", "symbol", "created_at", "resolved_at", "outcome",
+                        )
+                    }
+                    db.execute(
+                        "INSERT OR IGNORE INTO report_units"
+                        "(channel_id,group_key,unit_id,payload,batch_key)"
+                        " VALUES(?,?,?,? ,NULL)",
+                        (self.channel_id, key, row["id"],
+                         json.dumps(payload, ensure_ascii=False)),
+                    )
+            db.commit()
 
-    def _record_batch(self, key, message_id):
+    def _pending_batches(self):
         with closing(self._connect()) as db:
+            keys = [
+                r[0] for r in db.execute(
+                    "SELECT DISTINCT group_key FROM report_units "
+                    "WHERE channel_id=? AND batch_key IS NULL",
+                    (self.channel_id,),
+                ).fetchall()
+            ]
+            active = self._flag_windows()
+            pending = []
+            for key in keys:
+                metric, origin, method, version, seconds = json.loads(key)
+                if origin == "shadow" and method not in active:
+                    continue
+                group = db.execute(
+                    "SELECT id,unit_id,payload FROM report_units "
+                    "WHERE channel_id=? AND group_key=? AND batch_key IS NULL "
+                    "ORDER BY id LIMIT 10",
+                    (self.channel_id, key),
+                ).fetchall()
+                if len(group) == 10:
+                    unit_ids = [r[1] for r in group]
+                    batch_key = hashlib.sha256(
+                        json.dumps([key, unit_ids], separators=(",", ":")).encode()
+                    ).hexdigest()
+                    payload = [json.loads(r[2]) for r in group]
+                    pending.append((key, batch_key, [r[0] for r in group],
+                                    metric, seconds, payload))
+            return pending
+
+    def _commit_batch(self, batch_key, identifiers, message_id):
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute(
-                "INSERT OR IGNORE INTO sent_batches VALUES(?,?,?)",
-                (self.channel_id, key, message_id),
+                "INSERT OR IGNORE INTO sent_batches(channel_id,batch_key,message_id)"
+                " VALUES(?,?,?)",
+                (self.channel_id, batch_key, message_id),
+            )
+            db.executemany(
+                "UPDATE report_units SET batch_key=? "
+                "WHERE channel_id=? AND id=? AND batch_key IS NULL",
+                [(batch_key, self.channel_id, key) for key in identifiers],
             )
             db.commit()
 
@@ -204,27 +321,19 @@ class PublicPublisher:
                 await asyncio.to_thread(
                     self._record, row["id"], previous[0], row["outcome"]
                 )
-        for metric in ("A", "B", "C"):
-            units = metric_units(rows, metric)
-            groups = defaultdict(list)
-            for row in units:
-                if row["outcome"] in ("WIN", "LOSS") and row["created_at"] >= self.enabled_at:
-                    groups[(row["origin"], row["strategy"], row["version"], row["seconds"])].append(row)
-            for key, group in groups.items():
-                group.sort(key=lambda r: (r["resolved_at"], r["id"]))
-                for start in range(0, len(group) - 9, 10):
-                    ten = group[start:start + 10]
-                    # Include version and immutable last ID; never republish this batch.
-                    batch_key = ":".join(map(str, (metric,) + key + (ten[-1]["id"],)))
-                    if await asyncio.to_thread(self._has_batch, batch_key):
-                        continue
-                    msg = await bot.send_message(
-                        self.channel_id, batch_report(ten, metric, key[3]),
-                        parse_mode=None,
-                    )
-                    await asyncio.to_thread(
-                        self._record_batch, batch_key, msg.message_id
-                    )
+        await asyncio.to_thread(self._enqueue_units, rows)
+        while True:
+            batches = await asyncio.to_thread(self._pending_batches)
+            if not batches:
+                break
+            for key, batch_key, ids, metric, seconds, payload in batches:
+                msg = await bot.send_message(
+                    self.channel_id, batch_report(payload, metric, seconds),
+                    parse_mode=None,
+                )
+                await asyncio.to_thread(
+                    self._commit_batch, batch_key, ids, msg.message_id
+                )
 
     async def run(self, bot):
         while True:
