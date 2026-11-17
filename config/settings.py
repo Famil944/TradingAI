@@ -14,8 +14,12 @@ load_dotenv(ROOT / ".env", override=False)
 class Settings:
     cycles_only: bool = True
     groq_enabled: bool = field(
+        default_factory=lambda: False
+    )
+    groq_recovery_enabled: bool = field(
         default_factory=lambda: (
-            os.getenv("OTC_GROQ_ENABLED", "false").lower() in ("1", "true", "yes")
+            os.getenv("OTC_GROQ_RECOVERY_ENABLED", "true").lower()
+            in ("1", "true", "yes")
         )
     )
     primary_mode: str = field(
@@ -35,6 +39,21 @@ class Settings:
     )
     groq_max_tokens: int = field(
         default_factory=lambda: max(0, int(os.getenv("GROQ_MAX_TOKENS", "150000")))
+    )
+    groq_recovery_interval_seconds: int = field(
+        default_factory=lambda: max(
+            60, int(os.getenv("GROQ_RECOVERY_INTERVAL_SECONDS", "60"))
+        )
+    )
+    groq_recovery_max_requests: int = field(
+        default_factory=lambda: max(
+            0, int(os.getenv("GROQ_RECOVERY_MAX_REQUESTS", "1000"))
+        )
+    )
+    groq_recovery_max_tokens: int = field(
+        default_factory=lambda: max(
+            0, int(os.getenv("GROQ_RECOVERY_MAX_TOKENS", "150000"))
+        )
     )
     telegram_bot_token: str = field(
         default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""), repr=False

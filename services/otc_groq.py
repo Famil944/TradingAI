@@ -267,6 +267,136 @@ class GroqClient:
             logger.warning("Groq request skipped: %s", type(exc).__name__)
             return None
 
+    async def audit_recovery(self, records):
+        """Audit already-deterministic UNKNOWN recoveries; never invent market data."""
+        if not self.key or not records:
+            return None
+        compact = [
+            {
+                "id": str(r["id"]),
+                "direction": r["direction"],
+                "entry_price": r["entry_price"],
+                "expiry_price": r["expiry_price"],
+                "outcome": r["outcome"],
+            }
+            for r in records[:25]
+        ]
+        payload = json.dumps(compact, separators=(",", ":"), allow_nan=False)
+        identifier = await asyncio.to_thread(
+            self.reserve, len(payload.encode()) // 2 + 500
+        )
+        if identifier is None:
+            return None
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["records"],
+            "properties": {
+                "records": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["id", "outcome"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "outcome": {
+                                "type": "string",
+                                "enum": ["WIN", "LOSS", "DRAW"],
+                            },
+                        },
+                    },
+                }
+            },
+        }
+        body = dict(
+            model=self.model,
+            temperature=0,
+            reasoning_effort="low",
+            max_completion_tokens=256,
+            messages=[
+                dict(
+                    role="system",
+                    content=(
+                        "You are an audit-only checker for recovered OTC outcomes. "
+                        "Use only direction, entry_price and expiry_price supplied. "
+                        "UP wins when expiry>entry; DOWN wins when expiry<entry; equal is DRAW. "
+                        "Return every id exactly once. Never infer or invent missing prices."
+                    ),
+                ),
+                dict(role="user", content=payload),
+            ],
+            response_format=dict(
+                type="json_schema",
+                json_schema=dict(name="recovery_audit", strict=True, schema=schema),
+            ),
+        )
+        try:
+            if self.session is None:
+                self.session = aiohttp.ClientSession(
+                    proxy=os.getenv("TRADINGAI_HTTP_PROXY"),
+                    timeout=aiohttp.ClientTimeout(total=10),
+                )
+            async with self.session.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": "Bearer " + self.key},
+                json=body,
+            ) as response:
+                if response.status != 200:
+                    try:
+                        pause = min(
+                            86400,
+                            max(60, float(response.headers.get("retry-after", "300"))),
+                        )
+                    except ValueError:
+                        pause = 300
+                    await asyncio.to_thread(
+                        self.complete,
+                        identifier,
+                        "HTTP_" + str(response.status),
+                        None,
+                        None,
+                        pause,
+                    )
+                    return None
+                data = await response.json()
+                result = json.loads(data["choices"][0]["message"]["content"])
+                returned = {
+                    str(item.get("id")): item.get("outcome")
+                    for item in result.get("records", [])
+                    if isinstance(item, dict)
+                }
+                expected = {str(r["id"]): r["outcome"] for r in compact}
+                if returned != expected:
+                    raise ValueError("Groq recovery audit disagreed with deterministic outcome")
+                tokens = data.get("usage", {}).get("total_tokens")
+                if type(tokens) is not int or tokens < 0:
+                    tokens = None
+                evidence = {
+                    "mode": "unknown_recovery_audit",
+                    "records": compact,
+                    "response_id": data.get("id"),
+                    "received_at": self.clock(),
+                }
+                pause = (
+                    86400
+                    if response.headers.get("x-ratelimit-remaining-requests") == "0"
+                    else 0
+                )
+                await asyncio.to_thread(
+                    self.complete, identifier, "OK", evidence, tokens, pause
+                )
+                return evidence
+        except asyncio.CancelledError:
+            await asyncio.to_thread(self.complete, identifier, "CANCELLED")
+            raise
+        except Exception as exc:
+            await asyncio.to_thread(
+                self.complete, identifier, type(exc).__name__, None, None, 300
+            )
+            logger.warning("Groq recovery audit skipped: %s", type(exc).__name__)
+            return None
+
     async def close(self):
         if self.session is not None:
             await self.session.close()

@@ -31,20 +31,28 @@ def card(plan, outcomes=None, result=None):
         plan.get("name", plan["symbol"]),
     ]
     won = False
+    stopped_after = plan.get("stopped_after_index")
     virtual = plan.get("virtual")
     for i, outcome in enumerate(outcomes):
         at = datetime.fromtimestamp(
             plan["entry_at"] + i * seconds, ZoneInfo("Europe/Moscow")
         ).strftime("%H:%M")
+        cancelled = won or (
+            isinstance(stopped_after, int) and i > stopped_after
+        )
         lines.append(
-            f"{i + 1}. {at} · {'— отменена' if won else icons.get(outcome, '❔')}"
+            f"{i + 1}. {at} · {'— отменена' if cancelled else icons.get(outcome, '❔')}"
             + (
                 f" · {virtual['stakes'][i] / 100:g} ₽"
                 if virtual and virtual.get("status") != "SKIPPED"
                 else ""
             )
         )
-        won = won or outcome in ("WIN", "DRAW", "UNKNOWN")
+        won = (
+            won
+            or outcome in ("WIN", "DRAW", "UNKNOWN")
+            or (isinstance(stopped_after, int) and i >= stopped_after)
+        )
     lines.append("МСК · после WIN остановиться")
     lines.append("Повтор — только после LOSS; при ничьей или ❔ пропустить остаток.")
     if result:
@@ -393,7 +401,9 @@ class BollingerCycles(MLPreview):
         for identifier, message_id, evidence, result in rows:
             plan = json.loads(evidence)
             outcomes = self.card_cache.get(identifier)
-            if outcomes is None:
+            if plan.get("recovered_unknown_at") and plan.get("attempt_outcomes"):
+                outcomes = list(plan["attempt_outcomes"])
+            elif outcomes is None:
                 _, prices = await asyncio.to_thread(
                     load, self.research.path, 0, self.clock()
                 )

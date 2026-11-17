@@ -27,7 +27,7 @@ from database.db import Database
 from services.otc_data import OTChartsProvider
 from services.otc_entry_checks import EntryChecks
 from services.otc_evaluation import configured as configured_evaluator
-from services.otc_groq import GroqClient, GroqPreview
+from services.otc_groq import GroqClient
 from services.otc_market_archive import MarketArchive
 from services.otc_ml.preview import MLPreview, PreviewJournal
 from services.otc_ml.runtime import RuntimeML
@@ -35,6 +35,7 @@ from services.otc_preflight import PreflightChecks
 from services.otc_ready import ReadyPrimary
 from services.otc_session import OTCSession
 from services.otc_supervisor import heartbeat
+from services.otc_unknown_recovery import UnknownRecovery
 
 COMMANDS = [
     ("start", "Начать"),
@@ -152,23 +153,18 @@ async def main(*, session_minutes=None, session_end=None):
     await asyncio.to_thread(preview.journal.cancel_future, time.time())
     service.ml_preview = preview
     preview_task = asyncio.create_task(preview.run(bot, settings.admin_chat_id))
-    groq_journal = PreviewJournal(ROOT / "data" / "groq-preview.db", label="Groq")
-    groq = GroqPreview(
-        groq_journal,
+    groq_client = (
         GroqClient(
             settings.groq_api_key,
-            groq_journal.path,
+            ROOT / "data" / "groq-recovery.db",
             model=settings.groq_model,
-            interval=settings.groq_interval_seconds,
-            max_requests=settings.groq_max_requests,
-            max_tokens=settings.groq_max_tokens,
-        ),
-        settlement_provider=evaluator.provider,
+            interval=settings.groq_recovery_interval_seconds,
+            max_requests=settings.groq_recovery_max_requests,
+            max_tokens=settings.groq_recovery_max_tokens,
+        )
+        if settings.groq_recovery_enabled
+        else None
     )
-    await asyncio.to_thread(groq_journal.cancel_future, time.time())
-    service.groq_preview = groq
-    groq.enabled = settings.groq_enabled
-    groq_task = asyncio.create_task(groq.run(bot, settings.admin_chat_id))
     ready_journal = PreviewJournal(
         ROOT / "data" / "primary-ready.db", label="Основной v9", per_horizon=True
     )
@@ -212,6 +208,14 @@ async def main(*, session_minutes=None, session_end=None):
     strategy_task = asyncio.create_task(
         strategy_engine.run(bot, settings.admin_chat_id, service, cycles)
     )
+    recovery = UnknownRecovery(
+        ROOT,
+        service.provider,
+        groq_client,
+        interval=settings.groq_recovery_interval_seconds,
+    )
+    service.unknown_recovery = recovery
+    recovery_task = asyncio.create_task(recovery.run())
     # New signals are mirrored immediately after the owner's send succeeds.
     # The relay loop remains a fallback and mirrors later WIN/LOSS edits.
     subscriber_task = asyncio.create_task(subscriber_relay.run(bot))
@@ -224,7 +228,7 @@ async def main(*, session_minutes=None, session_end=None):
         public_publisher = PublicPublisher(ROOT, int(public_channel), live_cycle=cycles)
         public_task = asyncio.create_task(public_publisher.run(bot))
     if settings.cycles_only:
-        ready.enabled = broad.enabled = preview.enabled = groq.enabled = False
+        ready.enabled = broad.enabled = preview.enabled = False
     (ROOT / "logs").mkdir(exist_ok=True)
     if os.getenv("OTC_ML_TRAINING", "true").lower() in ("1", "true", "yes"):
         for name, extra in (
@@ -285,8 +289,10 @@ async def main(*, session_minutes=None, session_end=None):
         await asyncio.gather(ready_task, return_exceptions=True)
         heartbeat_task.cancel()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
-        groq_task.cancel()
-        await asyncio.gather(groq_task, return_exceptions=True)
+        recovery_task.cancel()
+        await asyncio.gather(recovery_task, return_exceptions=True)
+        if groq_client is not None:
+            await groq_client.close()
         preflight_task.cancel()
         await asyncio.gather(preflight_task, return_exceptions=True)
         preview_task.cancel()

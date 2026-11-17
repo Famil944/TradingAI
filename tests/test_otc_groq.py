@@ -123,32 +123,6 @@ class GroqTests(unittest.IsolatedAsyncioTestCase):
             "secret", self.path, max_tokens=2000, clock=lambda: self.now[0]
         )
         self.assertIn("лимит исчерпан", restarted.health()[1])
-        from bot import otc_commands as commands
-
-        current = SimpleNamespace(
-            config=SimpleNamespace(groq_enabled=True),
-            running=lambda: True,
-            phase="поток активен",
-            groq_preview=SimpleNamespace(
-                client=restarted, enabled=True, journal=self.journal
-            ),
-            ml_preview=SimpleNamespace(
-                enabled=True,
-                journal=self.journal,
-                runtime=SimpleNamespace(preview_ready=lambda: True),
-            ),
-        )
-        with (
-            patch.object(commands, "read_journal", return_value=[]),
-            patch.object(commands, "stats_epoch", return_value=0),
-        ):
-            text = commands.strategy_status(current)
-        groq_line = next(line for line in text.splitlines() if "Groq ·" in line)
-        self.assertIn("🔴 Groq · 0", groq_line)
-        self.assertIn("лимит исчерпан", groq_line)
-        self.assertIn("🟢 Основной", text)
-        self.assertIn("🟢 XGBoost", text)
-        self.assertTrue(current.groq_preview.enabled)
         self.now[0] += 86400
         self.assertNotIn("лимит исчерпан", restarted.health()[1])
         self.assertIsNotNone(restarted.reserve(1000))
@@ -199,6 +173,40 @@ class GroqTests(unittest.IsolatedAsyncioTestCase):
         result = await self.client.ask(self.packet)
         self.assertEqual(result["decision"]["action"], "SKIP")
         self.assertNotIn("secret", str(result))
+
+    async def test_recovery_audit_only_accepts_deterministic_outcomes(self):
+        session = Mock()
+        session.post.return_value = Response(
+            200,
+            dict(
+                id="audit-response",
+                usage=dict(total_tokens=80),
+                choices=[
+                    dict(
+                        message=dict(
+                            content='{"records":[{"id":"x","outcome":"WIN"}]}'
+                        )
+                    )
+                ],
+            ),
+        )
+        self.client.session = session
+        result = await self.client.audit_recovery(
+            [
+                dict(
+                    id="x",
+                    direction="UP",
+                    entry_price=1.0,
+                    expiry_price=1.1,
+                    outcome="WIN",
+                )
+            ]
+        )
+        self.assertEqual(result["mode"], "unknown_recovery_audit")
+        body = session.post.call_args.kwargs["json"]
+        system = body["messages"][0]["content"]
+        self.assertIn("audit-only", system)
+        self.assertNotIn("forecast", system.lower())
 
     async def test_late_answer_never_publishes(self):
         now = [1800000030.0]
