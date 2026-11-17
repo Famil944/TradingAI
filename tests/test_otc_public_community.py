@@ -219,6 +219,21 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
 
 
 
+class PublicationFlagsTests(unittest.TestCase):
+    def test_owner_shadow_switch_is_durable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            a = PublicPublisher(root, -100123456)
+            before = a.flags()["ema_pullback"]
+            after = a.toggle_shadow("ema_pullback")
+            self.assertEqual(after, not bool(before))
+            b = PublicPublisher(root, -100123456)
+            self.assertEqual(bool(b.flags()["ema_pullback"]), after)
+            self.assertEqual(b.toggle_shadow("ema_pullback"), bool(before))
+            with self.assertRaises(ValueError):
+                a.toggle_shadow("admin")
+
+
 class ExportTests(unittest.TestCase):
     def test_daily_csv_exports_known_and_unknown_without_wallet(self):
         import csv
