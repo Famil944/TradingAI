@@ -178,7 +178,7 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(
             from_user=owner, chat=SimpleNamespace(id=999, type="private")
         )
-        with patch.object(community.settings, "admin_chat_id", 999), patch.object(
+        with patch.object(community, "settings", SimpleNamespace(admin_chat_id=999)), patch.object(
             otc_commands, "show_menu", handler
         ):
             await community.start(message)
