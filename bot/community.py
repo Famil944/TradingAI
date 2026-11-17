@@ -167,7 +167,20 @@ def report_for(source, timeframe, metric, limit=10, period="all"):
         group = [row for row in rows if row["version"] == version]
         text += "\n\nВерсия: " + version[:64] + "\n"
         text += describe(group, metric, seconds, since=since, limit=limit, now=now)
-    return text[:3800]
+    return text
+
+def split_messages(text, limit=3500):
+    """Keep Telegram messages within limits without hiding requested rows."""
+    while text:
+        if len(text) <= limit:
+            yield text
+            return
+        end = text.rfind("\n", 0, limit)
+        if end < limit // 2:
+            end = limit
+        yield text[:end]
+        text = text[end:].lstrip("\n")
+
 
 def timestamp(value):
     return datetime.fromtimestamp(value, MZ).strftime("%d.%m %H:%M МСК")
@@ -293,11 +306,16 @@ async def callbacks(query: types.CallbackQuery):
         text = await asyncio.to_thread(
             report_for, action[2], action[3], action[4], limit, period
         )
-        await query.message.answer(
-            text,
-            reply_markup=metrics_menu(action[2], action[3], action[4], limit, period),
-            parse_mode=None,
-        )
+        messages = list(split_messages(text))
+        for index, part in enumerate(messages):
+            await query.message.answer(
+                part,
+                reply_markup=(
+                    metrics_menu(action[2], action[3], action[4], limit, period)
+                    if index == len(messages) - 1 else None
+                ),
+                parse_mode=None,
+            )
         return
     if not owner:
         await query.answer("Нет доступа", show_alert=True)
