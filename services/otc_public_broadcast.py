@@ -369,4 +369,4 @@ class PublicPublisher:
                 raise
             except Exception as exc:
                 LOG.warning("Public publisher skipped tick: %s", type(exc).__name__)
-            await asyncio.sleep(12)
+            await asyncio.sleep(2)
