@@ -35,6 +35,10 @@ class RetryableFeedError(RuntimeError):
         self.retry_after = retry_after
 
 
+class StreamSlotBusy(RetryableFeedError):
+    """A stream-only HTTP 429; unlike a REST 429, quota is not exhausted."""
+
+
 @dataclass(frozen=True)
 class Plan:
     plan_name: str
@@ -70,6 +74,9 @@ class OTChartsProvider:
         self._session = session
         self._owned = session is None
         self.connected = False
+        # Monotonic timestamp of the last SSE accepted by OTCharts. On a
+        # one-stream plan, a previous stream can be replaced after 60 seconds.
+        self.stream_opened_at = None
         self.payout_evidence = False
         self.closed_symbols = set()
         self.catalogue = {}
@@ -95,16 +102,26 @@ class OTChartsProvider:
         return self._session
 
     @staticmethod
-    def _check(response):
+    def _check(response, *, stream=False):
         messages = {
             401: "OTCharts отклонил API-ключ (HTTP 401). Проверьте OTCHARTS_API_KEY в локальном .env.",
             402: "OTCharts: тариф не разрешает доступ к данным (HTTP 402).",
             403: "OTCharts запретил запрос (HTTP 403): ограничения доступа или тарифа.",
             404: "Запрошенные данные OTCharts не найдены (HTTP 404).",
-            429: "OTCharts ограничил запрос или соединение (HTTP 429). Это не обязательно исчерпание дневной квоты.",
         }
         if response.status in messages:
             raise AccessUnavailable(messages[response.status])
+        if response.status == 429:
+            if stream:
+                try:
+                    delay = max(1, min(300, int(response.headers.get("Retry-After", "60"))))
+                except (TypeError, ValueError):
+                    delay = 60
+                raise StreamSlotBusy(delay)
+            raise AccessUnavailable(
+                "OTCharts: исчерпана квота запросов (HTTP 429). "
+                "Проверьте /v1/usage и время сброса лимита."
+            )
         if response.status == 503:
             try:
                 delay = max(1, min(300, int(response.headers.get("Retry-After", "30"))))
@@ -223,7 +240,9 @@ class OTChartsProvider:
                 headers={"Accept": "text/event-stream"},
                 timeout=timeout,
             ) as response:
-                self._check(response)
+                self._check(response, stream=True)
+                self.connected = True
+                self.stream_opened_at = time.monotonic()
                 closed = response.headers.get("x-otc-closed", "")
                 self.closed_symbols.update(
                     x.strip() for x in closed.split(",") if x.strip() in symbols
@@ -262,6 +281,8 @@ class OTChartsProvider:
 
     async def close(self):
         self.connected = False
+        # A later session must not claim ownership of an earlier SSE lease.
+        self.stream_opened_at = None
         if self._session is not None and self._owned:
             await self._session.close()
             self._session = None

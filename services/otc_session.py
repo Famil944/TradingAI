@@ -20,10 +20,17 @@ from services.otc_conditional import (
 from services.otc_conditional import (
     message as conditional_message,
 )
-from services.otc_data import AccessUnavailable, OTChartsProvider, RetryableFeedError
+from services.otc_data import (
+    AccessUnavailable,
+    OTChartsProvider,
+    RetryableFeedError,
+    StreamSlotBusy,
+)
 from services.otc_market import TIMEFRAMES, MinuteBuilder, Tick, eligible, settle
 from services.otc_pair_rotation import (
-    choose_pair_swap, journal_activity, usable_history,
+    choose_pair_swap,
+    journal_activity,
+    usable_history,
 )
 from services.otc_strategy import candidate, normalize_candles
 from services.otc_stream import reconnect_delay
@@ -401,6 +408,7 @@ class OTCSession:
             "incomplete_candle": "неполные свечи",
             "stream_no_fresh_ticks": "поток без свежих цен",
             "stream_disconnected": "разрывы потока",
+            "stream_slot_busy": "единственный поток OTCharts ещё занят",
             "sqlite_busy": "временная занятость SQLite",
             "cooldown": "пауза между сигналами",
             "late_signal": "запоздалый расчёт",
@@ -532,14 +540,32 @@ class OTCSession:
         await asyncio.sleep(5)
 
     async def _wait_rotation_slot(self):
-        """Never open a replacement SSE until the old tariff slot is released."""
+        """Wait for a free slot or an old stream this process may replace.
+
+        OTCharts keeps a disconnected slot visible until its lease expires.
+        After 60 seconds it permits a new SSE to replace the old one; a
+        too-young stream instead returns 429 with Retry-After.
+        """
         for _ in range(3):
+            if self._can_replace_own_stream():
+                logger.info("OTC prior stream is older than 60 s; retrying SSE")
+                return
             await self._wait_stream_release()
             plan = await self._usage_with_retry()
             self.plan = plan
             if plan.streams_open < plan.streams_limit:
                 return
+        if self._can_replace_own_stream():
+            return
         raise RetryableFeedError()
+
+    def _can_replace_own_stream(self):
+        opened = getattr(self.provider, "stream_opened_at", None)
+        return (
+            opened is not None
+            and not getattr(self.provider, "connected", False)
+            and time.monotonic() - opened >= 60
+        )
 
     async def _catalogue_with_retry(self):
         for attempt in range(3):
@@ -874,7 +900,7 @@ class OTCSession:
 
     async def _refresh_stream_assets(self, active, chosen):
         while True:
-            await asyncio.sleep(getattr(self.config, "catalogue_refresh_seconds", 30))
+            await asyncio.sleep(getattr(self.config, "catalogue_refresh_seconds", 45))
             try:
                 # The symbols response enforces API access/quota itself. A failure
                 # of the separate usage endpoint must not prevent refreshing payouts.
@@ -1095,6 +1121,8 @@ class OTCSession:
                 reason = (
                     "sqlite_busy"
                     if sqlite_busy(exc)
+                    else "stream_slot_busy"
+                    if isinstance(exc, StreamSlotBusy)
                     else "stream_no_fresh_ticks"
                     if isinstance(exc, TimeoutError)
                     else "stream_disconnected"
@@ -1119,6 +1147,11 @@ class OTCSession:
             try:
                 plan = await self._usage_with_retry()
                 self.plan = plan
+                # A closed stream can retain the sole Lite slot briefly.
+                # Check it before spending paid requests on catalogue/history;
+                # an old stream owned here may be replaced after 60 seconds.
+                if plan.streams_open >= plan.streams_limit:
+                    await self._wait_rotation_slot()
                 now = self.clock()
                 # The archive remains valid across short disconnects within
                 # the same minute. Do not spend 5 candle calls every reconnect.
@@ -1130,7 +1163,22 @@ class OTCSession:
                     raise AccessUnavailable(
                         "Недостаточно запросов для восстановления истории."
                     )
-                catalogue = await self.provider.symbols()
+                # The latest catalogue is reusable while its payout/open
+                # metadata is safely inside the freshness window. Never use
+                # stale cached payouts merely to save a request.
+                cached = getattr(self.provider, "catalogue", None)
+                max_cached_age = min(30, self.config.payout_max_age / 2)
+                if (
+                    cached
+                    and all(
+                        a.observed_at is not None
+                        and 0 <= now - a.observed_at <= max_cached_age
+                        for a in cached.values()
+                    )
+                ):
+                    catalogue = list(cached.values())
+                else:
+                    catalogue = await self.provider.symbols()
                 if missing:
                     # Bound network parallelism, cancel siblings on failure,
                     # and never open another SSE while a fetch is incomplete.
@@ -1175,8 +1223,6 @@ class OTCSession:
                     )
                 else:
                     logger.info("OTC reconnect: reused current continuous history")
-                if plan.streams_open >= plan.streams_limit:
-                    await self._wait_rotation_slot()
                 return {
                     a.symbol: a
                     for a in self._eligible(

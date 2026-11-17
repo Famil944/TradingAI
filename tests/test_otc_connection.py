@@ -11,16 +11,64 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from database.db import Database
-from services.otc_data import AccessUnavailable, OTChartsProvider, RetryableFeedError
+from services.otc_data import (
+    AccessUnavailable,
+    OTChartsProvider,
+    RetryableFeedError,
+    StreamSlotBusy,
+)
 from services.otc_market import Asset, Tick
 from services.otc_market_archive import MarketArchive
+from services.otc_readiness import DataReadiness
 from services.otc_session import OTCSession, db_call
 from services.otc_strategy import Candle
 from tests.test_otc_core import FakeProvider
-from services.otc_readiness import DataReadiness
 
 
 class ConnectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_http_429_distinguishes_exhausted_quota_from_busy_stream(self):
+        response = SimpleNamespace(status=429, headers={"Retry-After": "43"})
+        with self.assertRaisesRegex(AccessUnavailable, "квота запросов"):
+            OTChartsProvider._check(response)
+        with self.assertRaises(StreamSlotBusy) as error:
+            OTChartsProvider._check(response, stream=True)
+        self.assertEqual(error.exception.retry_after, 43)
+        response.headers["Retry-After"] = "not-a-number"
+        with self.assertRaises(StreamSlotBusy) as error:
+            OTChartsProvider._check(response, stream=True)
+        self.assertEqual(error.exception.retry_after, 60)
+
+    async def test_stream_lifecycle_records_open_time_and_closes_on_cancel(self):
+        class Response:
+            status = 200
+            headers = {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return False
+
+        response = Response()
+        stamp = time.time()
+
+        async def content():
+            yield (
+                f'data: {{"symbol":"A","time":{stamp + 7200},"price":1.2}}\n'
+            ).encode()
+
+        response.content = content()
+        provider = OTChartsProvider("offline-test")
+        provider._http = AsyncMock(
+            return_value=SimpleNamespace(get=Mock(return_value=response))
+        )
+        stream = provider.ticks(["A"])
+        await anext(stream)
+        self.assertTrue(provider.connected)
+        self.assertIsNotNone(provider.stream_opened_at)
+        await stream.aclose()
+        self.assertFalse(provider.connected)
+
     async def test_transient_stream_sqlite_lock_recovers_without_stopping(self):
         calls = [0]
         resumed = asyncio.Event()
@@ -168,6 +216,60 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.session._wait_rotation_slot = AsyncMock()
         await self.session._restore_stream_history({"A": None}, {})
         self.session._wait_rotation_slot.assert_awaited_once()
+
+    async def test_busy_stream_slot_does_not_spend_catalogue_or_candle_calls(self):
+        plan = await self.provider.usage()
+        self.session._usage_with_retry = AsyncMock(
+            return_value=replace(plan, streams_open=1)
+        )
+        self.session._wait_rotation_slot = AsyncMock(
+            side_effect=AccessUnavailable("slot not released")
+        )
+        self.provider.symbols = AsyncMock()
+        self.provider.candles = AsyncMock()
+        with self.assertRaises(AccessUnavailable):
+            await self.session._restore_stream_history({"A": None}, {})
+        self.provider.symbols.assert_not_awaited()
+        self.provider.candles.assert_not_awaited()
+
+    async def test_fresh_cached_catalogue_skips_paid_reconnect_request(self):
+        now = self.clock[0]
+        self.provider.catalogue = {
+            "A": Asset("A", True, True, 95, now - 10, "A", now - 10)
+        }
+        self.provider.symbols = AsyncMock()
+        history = {"A": self.continuous_bars(now)}
+        active = await self.session._restore_stream_history({"A": None}, history)
+        self.assertIn("A", active)
+        self.provider.symbols.assert_not_awaited()
+
+    async def test_stale_cached_catalogue_must_be_refreshed(self):
+        now = self.clock[0]
+        self.provider.catalogue = {
+            "A": Asset("A", True, True, 95, now - 50, "A", now - 50)
+        }
+        self.provider.symbols = AsyncMock(return_value=[
+            Asset("A", True, True, 95, now, "A", now)
+        ])
+        history = {"A": self.continuous_bars(now)}
+        await self.session._restore_stream_history({"A": None}, history)
+        self.provider.symbols.assert_awaited_once()
+
+    async def test_only_our_closed_aged_stream_can_replace_busy_slot(self):
+        plan = await self.provider.usage()
+        self.session._usage_with_retry = AsyncMock(
+            return_value=replace(plan, streams_open=1)
+        )
+        self.session._wait_stream_release = AsyncMock()
+        with patch("services.otc_session.time.monotonic", return_value=1000):
+            self.provider.stream_opened_at = 930
+            self.provider.connected = False
+            await self.session._wait_rotation_slot()
+            self.session._wait_stream_release.assert_not_awaited()
+            self.provider.connected = True
+            with self.assertRaises(RetryableFeedError):
+                await self.session._wait_rotation_slot()
+            self.assertEqual(self.session._wait_stream_release.await_count, 3)
 
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()

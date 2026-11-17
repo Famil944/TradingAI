@@ -86,6 +86,13 @@ class Settings:
     pair_rotation_quota_reserve: int = field(
         default_factory=lambda: max(100, int(os.getenv("OTC_PAIR_ROTATION_QUOTA_RESERVE", "100")))
     )
+    # A payout is trusted for at most 60 s; refresh within that window while
+    # avoiding 2,880 paid catalogue requests per day at a 30 s interval.
+    catalogue_refresh_seconds: int = field(
+        default_factory=lambda: max(
+            15, min(50, int(os.getenv("OTC_CATALOGUE_REFRESH_SECONDS", "45")))
+        )
+    )
     cooldown_seconds: int = field(
         default_factory=lambda: max(60, int(os.getenv("OTC_COOLDOWN_SECONDS", "120")))
     )
