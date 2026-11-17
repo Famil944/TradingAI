@@ -14,7 +14,7 @@ from pathlib import Path
 
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-from services.otc_public_broadcast import public_text
+from services.otc_public_broadcast import safe_card
 from services.otc_public_stats import main_signals
 
 LOG = logging.getLogger(__name__)
@@ -119,10 +119,11 @@ class Subscribers:
 
 
 class SubscriberRelay:
-    def __init__(self, root, store=None, clock=time.time):
+    def __init__(self, root, store=None, clock=time.time, live_cycle=None):
         self.root = Path(root)
         self.store = store or Subscribers(self.root / "data" / "subscribers.db")
         self.clock = clock
+        self.live_cycle = live_cycle
 
     def _signals(self):
         since = self.store.min_active_since()
@@ -148,7 +149,7 @@ class SubscriberRelay:
             for chat_id, joined_at in subscribers:
                 for row in rows:
                     current_time = self.clock()
-                    safe_text = public_text(row)
+                    safe_text = safe_card(row, self.live_cycle)
                     content_sha = hashlib.sha256(safe_text.encode("utf-8")).hexdigest()
                     # Only explicitly delivered main Bollinger forecasts; background
                     # research stays in the read-only stats, not a live signal feed.
