@@ -47,9 +47,14 @@ def main_signals(path, since=0):
         return []
     with closing(_db(path)) as db:
         db.row_factory = sqlite3.Row
+        # Project only safe JSON subfields. Never SELECT/load the private
+        # virtual-account segment embedded in older journal evidence.
         rows = db.execute(
             "SELECT id,symbol,created_at,entry_at,expires_at,direction,model_sha,"
-            "evidence,sent_at,outcome,resolved_at FROM predictions "
+            "json_extract(evidence,'$.cycle_seconds') AS cycle_seconds,"
+            "json_extract(evidence,'$.name') AS display_name,"
+            "json_extract(evidence,'$.attempt_outcomes') AS attempts_json,"
+            "sent_at,outcome,resolved_at FROM predictions "
             "WHERE sent_at IS NOT NULL AND sent_at >= ? "
             "AND outcome NOT IN ('LATE','CANCELLED','NOT_DELIVERED') "
             "ORDER BY created_at,id", (since,)
@@ -57,13 +62,13 @@ def main_signals(path, since=0):
     result = []
     for raw in rows:
         row = dict(raw)
-        try:
-            plan = json.loads(row["evidence"] or "{}")
-        except (TypeError, ValueError):
-            plan = {}
-        seconds = plan.get("cycle_seconds")
+        seconds = row["cycle_seconds"]
         if seconds not in (120, 300, 900):
             continue
+        try:
+            attempts = json.loads(row["attempts_json"] or "[]")
+        except (TypeError, ValueError):
+            attempts = []
         result.append(dict(
             id="main:" + str(row["id"]),
             origin="main",
@@ -71,7 +76,7 @@ def main_signals(path, since=0):
             version=row["model_sha"] or "unknown",
             label=MAIN_LABEL,
             seconds=seconds,
-            symbol=str(plan.get("name") or row["symbol"])[:90],
+            symbol=str(row["display_name"] or row["symbol"])[:90],
             direction=row["direction"] if row["direction"] in ("UP", "DOWN") else "?",
             created_at=float(row["created_at"]),
             sent_at=float(row["sent_at"]),
@@ -79,7 +84,7 @@ def main_signals(path, since=0):
             expires_at=float(row["expires_at"]),
             resolved_at=float(row["resolved_at"] or row["expires_at"]),
             outcome=_state(row["outcome"]),
-            attempts=_attempts(plan.get("attempt_outcomes", [])),
+            attempts=_attempts(attempts),
             provenance="OTCharts · сохранённый цикл; не подтверждено брокером",
         ))
     return result
