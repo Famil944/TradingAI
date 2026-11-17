@@ -28,12 +28,10 @@ class AccountingTests(unittest.TestCase):
             phase="поток активен",
             main_ready=preview("main"),
             ml_preview=preview("ml"),
-            groq_preview=preview("groq"),
         )
         outcomes = {
             "main": ["WIN", "LOSS"],
             "ml": ["WIN", "WIN", "LOSS", "PENDING"],
-            "groq": ["LOSS", "UNKNOWN"],
         }
         with patch.object(
             otc_commands,
@@ -42,7 +40,7 @@ class AccountingTests(unittest.TestCase):
         ):
             text = otc_commands.strategy_status(current)
         self.assertIn("XGBoost · 4 · WIN 2 / LOSS 1 · 66.7%", text)
-        self.assertIn("Groq · 2 · WIN 0 / LOSS 1 · 0.0%", text)
+        self.assertNotIn("Groq ·", text)
         with patch.object(otc_commands, "service", None):
             buttons = [
                 b.callback_data
@@ -50,7 +48,7 @@ class AccountingTests(unittest.TestCase):
                 for b in row
             ]
         self.assertIn("otc:mlstats:all:today", buttons)
-        self.assertIn("otc:groqstats:all:today", buttons)
+        self.assertIn("otc:groqrecovery", buttons)
 
     def test_cycles_remain_and_period_survives_switching(self):
         from bot import otc_commands
