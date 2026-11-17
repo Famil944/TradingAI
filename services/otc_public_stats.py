@@ -251,11 +251,18 @@ def describe(group, metric, seconds, since=0, limit=10, now=None):
         f"WIN {m['win']} · LOSS {m['loss']} · WR {wr}",
         f"Всего {m['total']} · известных {m['known']} · ничьи {m['draw']}",
         f"UNKNOWN {m['unknown']} · ожидают {m['pending']} · без пары {m['incomplete']}",
+        f"Охват подтверждённых WIN/LOSS: {m['known']}/{m['total']} "
+        + (f"({100*m['known']/m['total']:.1f}%)" if m["total"] else "(—)"),
         "OTCharts, модельные исходы · не сделки брокера",
     ]
     if rows:
         lines.append("")
         for i, row in enumerate(rows[-max(1, min(limit, 100)):], 1):
             icon = {"WIN": "✅", "LOSS": "❌", "DRAW": "➖", "UNKNOWN": "❔"}.get(row["outcome"], "⏳")
-            lines.append(f"{i}. {row['symbol']} — {icon}")
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            local = datetime.fromtimestamp(
+                row["created_at"], ZoneInfo("Europe/Moscow")
+            ).strftime("%d.%m %H:%M")
+            lines.append(f"{i}. {local} · {row['symbol']} — {icon}")
     return "\n".join(lines)
