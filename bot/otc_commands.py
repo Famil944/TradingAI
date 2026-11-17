@@ -559,68 +559,26 @@ async def callback(query: types.CallbackQuery):
                 ),
             )
         return
-    if action == "shadowcycles" and len(parts) == 3 and parts[2] in ("2", "5", "15"):
+    if action == "shadowcycles":
+        # Older Telegram messages can still contain legacy buttons.
         await query.answer()
-        from services.otc_community_cycles import report, text_report
-
-        data = await asyncio.to_thread(
-            report, ROOT / "data/community-cycles.db", shadow_stats_epoch(), time.time()
+        from bot.community import overview_text, sources
+        await query.message.answer(
+            await asyncio.to_thread(overview_text),
+            reply_markup=sources(), parse_mode=None,
         )
-        text = text_report(data, int(parts[2]) * 60)
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=("✅ " if key == parts[2] else "") + "M" + key,
-                        callback_data="otc:shadowcycles:" + key,
-                    )
-                    for key in ("2", "5", "15")
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="Обновить", callback_data="otc:shadowcycles:" + parts[2]
-                    ),
-                    InlineKeyboardButton(text="Меню", callback_data="otc:panel:hide"),
-                ],
-            ]
-        )
-        if query.message.text != text or query.message.reply_markup != keyboard:
-            await query.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
         return
     if action == "validation":
         await query.answer()
         await validation(query.message)
         return
     if action == "shadow":
-        if len(parts) != 3 or parts[2] not in ("2", "5", "15"):
-            await query.answer("Выберите M2, M5 или M15")
-            return
         await query.answer()
-        from services.otc_shadow_report import format_active_rates, report
-
-        data = await asyncio.to_thread(
-            report, ROOT / "data/ready-candidates.db", shadow_stats_epoch(), time.time()
+        from bot.community import overview_text, sources
+        await query.message.answer(
+            await asyncio.to_thread(overview_text),
+            reply_markup=sources(), parse_mode=None,
         )
-        text = format_active_rates(data, int(parts[2]) * 60)
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=("✅ " if key == parts[2] else "") + "M" + key,
-                        callback_data=f"otc:shadow:{key}",
-                    )
-                    for key in ("2", "5", "15")
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="Обновить", callback_data=f"otc:shadow:{parts[2]}"
-                    ),
-                    InlineKeyboardButton(text="Меню", callback_data="otc:panel:hide"),
-                ],
-            ]
-        )
-        if query.message.text != text or query.message.reply_markup != keyboard:
-            await query.message.edit_text(text, reply_markup=keyboard, parse_mode=None)
         return
     if action == "panel" and len(parts) == 3 and parts[2] in ("show", "hide"):
         await query.answer()
