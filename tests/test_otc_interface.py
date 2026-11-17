@@ -11,33 +11,32 @@ from services.otc_data import AccessUnavailable, OTChartsProvider
 
 
 class InterfaceTests(unittest.IsolatedAsyncioTestCase):
-    async def test_shadow_rates_route_and_timeframe_buttons(self):
-        message = SimpleNamespace(
-            chat=SimpleNamespace(id=1),
-            text="menu",
-            reply_markup=None,
-            edit_text=AsyncMock(),
-        )
-        query = SimpleNamespace(
-            data="otc:shadow:5", message=message, answer=AsyncMock()
-        )
-        with (
-            patch(
-                "services.otc_shadow_report.report", return_value={"filters": []}
-            ) as report,
-            patch.object(commands, "shadow_stats_epoch", return_value=12345),
-        ):
-            await commands.callback(query)
-        self.assertEqual(report.call_args.args[1], 12345)
-        self.assertIn("Фоновый винрейт · M5", message.edit_text.call_args.args[0])
-        buttons = [
-            b.callback_data
-            for row in message.edit_text.call_args.kwargs[
-                "reply_markup"
-            ].inline_keyboard
-            for b in row
-        ]
-        self.assertTrue(all(f"otc:shadow:{key}" in buttons for key in ("2", "5", "15")))
+    async def test_legacy_shadow_buttons_open_compact_four_strategy_view(self):
+        for legacy_action in ("otc:shadow:5", "otc:shadowcycles:2"):
+            message = SimpleNamespace(
+                chat=SimpleNamespace(id=1),
+                text="menu", reply_markup=None,
+                answer=AsyncMock(), edit_text=AsyncMock(),
+            )
+            query = SimpleNamespace(
+                data=legacy_action, message=message, answer=AsyncMock()
+            )
+            with patch(
+                "bot.community.overview_text", return_value="📊 ЧЕТЫРЕ СТРАТЕГИИ"
+            ):
+                await commands.callback(query)
+            message.answer.assert_awaited_once()
+            self.assertIn("ЧЕТЫРЕ СТРАТЕГИИ", message.answer.call_args.args[0])
+            buttons = [
+                button.callback_data
+                for row in message.answer.call_args.kwargs["reply_markup"].inline_keyboard
+                for button in row
+            ]
+            self.assertTrue(all(
+                "c:source:" + code in buttons
+                for code in ("main", "bb_reentry", "break_retest", "ema_pullback")
+            ))
+            message.edit_text.assert_not_awaited()
 
     async def test_separate_source_stats_today_routes_and_preserves_period(self):
         from zoneinfo import ZoneInfo
