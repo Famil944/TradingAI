@@ -47,5 +47,16 @@ class CommunityCyclesTests(unittest.TestCase):
                 all(r["counts"].get("PENDING") == 1 for r in report(path, 0, 10801))
             )
 
+    def test_history_symbol_missing_from_current_catalogue_is_skipped(self):
+        now = 10780
+        bars = [
+            Candle(10740 - i * 60, 100, 101, 99, 100.5)
+            for i in range(60, 0, -1)
+        ]
+        self.assertEqual(
+            prepare(({"AMD_otc": bars}, {}, {"AMD_otc": now}, None), now),
+            [],
+        )
+
     def test_no_lookahead_or_past_entries(self):
         self.assertEqual(prepare(({}, {}, {}, None), 10790), [])
