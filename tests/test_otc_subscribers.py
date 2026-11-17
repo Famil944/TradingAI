@@ -81,8 +81,8 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             journal(root / "data" / "bollinger-cycles.db", [
                 {"id": "new", "created": 1000, "outcome": "PENDING"}
             ])
-            times = iter([1005, 1410, 1420])
-            relay = SubscriberRelay(root, store=store, clock=lambda: next(times))
+            current = [1005]
+            relay = SubscriberRelay(root, store=store, clock=lambda: current[0])
             bot = FakeBot()
             await relay.update(bot)
             self.assertEqual(len(bot.sent), 1)
@@ -99,6 +99,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
                     }),),
                 )
             await relay.update(bot)
+            current[0] = 1410
             await relay.update(bot)
             self.assertEqual(len(bot.sent), 1)
             self.assertEqual(len(bot.edited), 1)
