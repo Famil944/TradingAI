@@ -66,17 +66,22 @@ def sources():
     ])
 
 
-def metrics_menu(source, timeframe="2"):
+def metrics_menu(source, timeframe="2", metric="B", limit=10, period="all"):
+    def action(m=metric, n=limit, p=period):
+        return f"c:stats:{source}:{timeframe}:{m}:{n}:{p}"
+
     return keyboard([
         [("M2", f"c:source_tf:{source}:2"),
          ("M5", f"c:source_tf:{source}:5"),
          ("M15", f"c:source_tf:{source}:15")],
-        [("Входы A", f"c:stats:{source}:{timeframe}:A"),
-         ("Сигналы ×3 B", f"c:stats:{source}:{timeframe}:B")],
-        [("Циклы ×6 C", f"c:stats:{source}:{timeframe}:C")],
+        [("Входы A", action("A")),
+         ("Сигналы ×3 B", action("B"))],
+        [("Циклы ×6 C", action("C"))],
+        [("10", action(n=10)), ("50", action(n=50)), ("100", action(n=100))],
+        [("Сегодня", action(p="today")), ("7 дней", action(p="7d")),
+         ("Все", action(p="all"))],
         [("Другие стратегии", "c:sources")],
     ])
-
 
 def source_title(source):
     return "ОСНОВНОЙ · Боллинджер ×3" if source == "main" else METHOD_LABELS[source]
@@ -91,13 +96,21 @@ def snapshots(source):
     ]
 
 
-def report_for(source, timeframe, metric):
-    rows = snapshots(source)
+def report_for(source, timeframe, metric, limit=10, period="all"):
+    now = time.time()
+    if period == "today":
+        since = datetime.now(MZ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    elif period == "7d":
+        since = now - 7 * 86400
+    else:
+        since = 0
+    rows = [r for r in snapshots(source) if r["created_at"] >= since]
     seconds = SECONDS[timeframe]
     label = source_title(source)
     versions = sorted({row["version"] for row in rows})
     text = label + ("\nФОН · ТЕСТ, сигналы не отправлялись в реальный рынок."
                     if source != "main" else "\nПрогнозы, не подтверждённые сделки.")
+    text += "\nПериод: " + {"today": "сегодня МСК", "7d": "7 дней", "all": "вся история"}[period]
     if not rows:
         return text + "\n\nПока нет сохранённых исходов."
     if len(versions) > 1:
@@ -105,9 +118,8 @@ def report_for(source, timeframe, metric):
     for version in versions:
         group = [row for row in rows if row["version"] == version]
         text += "\n\nВерсия: " + version[:64] + "\n"
-        text += describe(group, metric, seconds, limit=10, now=time.time())
+        text += describe(group, metric, seconds, since=since, limit=limit, now=now)
     return text[:3800]
-
 
 def timestamp(value):
     return datetime.fromtimestamp(value, MZ).strftime("%d.%m %H:%M МСК")
@@ -220,14 +232,23 @@ async def callbacks(query: types.CallbackQuery):
         await query.message.answer(source_title(source), reply_markup=metrics_menu(source, tf))
         return
     if target == "stats":
-        if (len(action) != 5 or action[2] not in ("main",) + METHODS
-                or action[3] not in SECONDS or action[4] not in ("A", "B", "C")):
+        if (len(action) not in (5, 7) or action[2] not in ("main",) + METHODS
+                or action[3] not in SECONDS or action[4] not in ("A", "B", "C")
+                or (len(action) == 7 and
+                    (action[5] not in ("10", "50", "100")
+                     or action[6] not in ("all", "today", "7d")))):
             await query.answer("Некорректный выбор")
             return
+        limit = int(action[5]) if len(action) == 7 else 10
+        period = action[6] if len(action) == 7 else "all"
         await query.answer()
-        text = await asyncio.to_thread(report_for, action[2], action[3], action[4])
+        text = await asyncio.to_thread(
+            report_for, action[2], action[3], action[4], limit, period
+        )
         await query.message.answer(
-            text, reply_markup=metrics_menu(action[2], action[3]), parse_mode=None
+            text,
+            reply_markup=metrics_menu(action[2], action[3], action[4], limit, period),
+            parse_mode=None,
         )
         return
     if not owner:
