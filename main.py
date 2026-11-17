@@ -11,7 +11,12 @@ import time
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError
-from aiogram.types import BotCommand
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
+)
 from aiohttp import ClientSession
 
 from bot import community, otc_commands
@@ -42,12 +47,33 @@ COMMANDS = [
     ("suggestions", "Предложения владельцу"),
 ]
 
+# Menu commands are a convenience only; the owner-only middleware is the
+# actual authorization boundary. Never advertise trading controls to viewers.
+SUBSCRIBER_COMMANDS = [
+    ("start", "Подписаться на сигналы"),
+    ("help", "Справка"),
+    ("signal_stats", "Статистика прогнозов"),
+    ("suggest", "Предложить улучшение"),
+    ("stop_signals", "Отписаться от сигналов"),
+]
+
 
 async def initialize_telegram(bot):
     for attempt in range(3):
         try:
+            # Set public commands in both default and private scopes to
+            # replace a previously global admin command list.
+            public = [BotCommand(command=c, description=d)
+                      for c, d in SUBSCRIBER_COMMANDS]
+            owner = [BotCommand(command=c, description=d) for c, d in COMMANDS]
             await bot.set_my_commands(
-                [BotCommand(command=c, description=d) for c, d in COMMANDS],
+                public, scope=BotCommandScopeDefault(), request_timeout=10
+            )
+            await bot.set_my_commands(
+                public, scope=BotCommandScopeAllPrivateChats(), request_timeout=10
+            )
+            await bot.set_my_commands(
+                owner, scope=BotCommandScopeChat(chat_id=settings.admin_chat_id),
                 request_timeout=10,
             )
             return await bot.get_me(request_timeout=10)
@@ -176,6 +202,11 @@ async def main(*, session_minutes=None, session_end=None):
     cycles = BollingerCycles(cycle_journal)
     service.cycle_preview = cycles
     cycle_task = asyncio.create_task(cycles.run(bot, settings.admin_chat_id))
+    # Subscribers receive safe forecast cards automatically after /start.
+    # This relay does not start/stop the owner's trading strategy.
+    from services.otc_subscribers import SubscriberRelay
+
+    subscriber_task = asyncio.create_task(SubscriberRelay(ROOT).run(bot))
     # Opt-in public reporting; independent from the private virtual wallet.
     public_task = None
     public_channel = os.getenv("OTC_PUBLIC_CHANNEL_ID", "").strip()
@@ -231,6 +262,8 @@ async def main(*, session_minutes=None, session_end=None):
             await service._notify(bot, text + "\n\n" + indicators)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        subscriber_task.cancel()
+        await asyncio.gather(subscriber_task, return_exceptions=True)
         if public_task is not None:
             public_task.cancel()
             await asyncio.gather(public_task, return_exceptions=True)
