@@ -316,7 +316,9 @@ def reconcile_unknown(row, prices, now, archive_path=None):
 
 
 class LiveStrategyPublisher:
-    def __init__(self, root, *, clock=time.time, journal=None):
+    def __init__(
+        self, root, *, clock=time.time, journal=None, subscriber_relay=None
+    ):
         self.root = Path(root)
         self.clock = clock
         self.journal = journal or LiveStrategyJournal(
@@ -326,6 +328,7 @@ class LiveStrategyPublisher:
         self.archive_path = self.root / "data" / "market-history.db"
         self.started_at = self.clock()
         self._last_settlement = 0
+        self.subscriber_relay = subscriber_relay
 
     async def publish(self, bot, owner, enabled=True, allowed_timeframes=(120, 300, 900)):
         if not enabled:
@@ -376,6 +379,19 @@ class LiveStrategyPublisher:
                     self.journal.sent, ident, when, message.message_id,
                     hashlib.sha256(card_text.encode()).hexdigest()
                 )
+                if self.subscriber_relay is not None:
+                    await self.subscriber_relay.publish_now(
+                        bot,
+                        dict(
+                            signal,
+                            created_at=now,
+                            sent_at=when,
+                            expires_at=row["expires_at"],
+                            strategy=method,
+                            version=row["experiment"].get("version", "unknown"),
+                            resolved_at=row["expires_at"],
+                        ),
+                    )
             except Exception as exc:
                 LOG.warning("Strategy %s delivery failed: %s", method, type(exc).__name__)
                 await asyncio.to_thread(self.journal.not_delivered, ident)
