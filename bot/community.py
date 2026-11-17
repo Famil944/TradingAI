@@ -1,6 +1,5 @@
 """Subscriber read-only menus and owner-only suggestion moderation."""
 import asyncio
-import os
 import time
 from datetime import datetime
 from functools import lru_cache
@@ -14,8 +13,9 @@ from bot import otc_commands
 from config.settings import ROOT, settings
 from services.otc_feedback import FeedbackStore, LABELS, STATUSES
 from services.otc_subscribers import Subscribers
+from services.otc_strategies_live import load_live_signals
 from services.otc_public_stats import (
-    METHOD_LABELS, describe, main_signals, shadow_signals,
+    METHOD_LABELS, describe, main_signals, metrics,
 )
 
 router = Router(name="community")
@@ -61,22 +61,54 @@ def home(owner=False):
         rows.append([("🔕 Отписаться от сигналов", "c:unsubscribe")])
     if owner:
         rows.append([("📥 Предложения пользователей", "c:queue")])
-        rows.append([("📡 Публикация фоновых тестов", "c:shadow")])
         rows.append([("🔧 Административное меню", "c:owner")])
     return keyboard(rows)
 
 
+STRATEGIES = (
+    ("main", "① Боллинджер ×3"),
+    ("bb_reentry", "② Возврат внутрь"),
+    ("break_retest", "③ Пробой/ретест"),
+    ("ema_pullback", "④ EMA9/19"),
+)
+
+
 def sources():
+    """One 2×2 grid, not a forest of strategy submenus."""
     return keyboard([
-        [("ОСНОВНОЙ · Боллинджер ×3", "c:source:main")],
-        [("ФОН · Боллинджер — возврат внутрь", "c:source:bb_reentry")],
-        [("ФОН · Пробой и ретест", "c:source:break_retest")],
-        [("ФОН · Откат EMA9/19", "c:source:ema_pullback")],
-        [("Меню", "c:home")],
+        [(STRATEGIES[0][1], "c:source:main"),
+         (STRATEGIES[1][1], "c:source:bb_reentry")],
+        [(STRATEGIES[2][1], "c:source:break_retest"),
+         (STRATEGIES[3][1], "c:source:ema_pullback")],
+        [("💡 Предложение", "c:suggest"), ("◀ Меню", "c:home")],
     ])
 
 
-def metrics_menu(source, timeframe="2", metric="B", limit=10, period="all"):
+def overview_text():
+    lines = [
+        "📊 ЧЕТЫРЕ СТРАТЕГИИ · M2/M5/M15",
+        "WIN/LOSS — подтверждённые исходы опубликованных прогнозов",
+        "",
+    ]
+    for i, (code, _) in enumerate(STRATEGIES, 1):
+        rows = snapshots(code)
+        m = metrics(rows)
+        rate = f"{m['wr']:.1f}%" if m["wr"] is not None else "—"
+        title = "Боллинджер ×3" if code == "main" else METHOD_LABELS[code]
+        lines.append(
+            f"{i}. {title}: ✅{m['win']} ❌{m['loss']} · WR {rate}"
+            + (f" · ❔{m['unknown']}" if m["unknown"] else "")
+        )
+    lines.extend([
+        "",
+        "У каждой стратегии своя история и винрейт ×3/×6.",
+        "Это статистика OTCharts, не подтверждённые сделки брокера.",
+        "Выбери стратегию:",
+    ])
+    return "\n".join(lines)
+
+
+def metrics_menu(source, timeframe="all", metric="B", limit=10, period="all"):
     def action(m=metric, n=limit, p=period):
         return f"c:stats:{source}:{timeframe}:{m}:{n}:{p}"
 
@@ -85,41 +117,12 @@ def metrics_menu(source, timeframe="2", metric="B", limit=10, period="all"):
          ("M5", f"c:source_tf:{source}:5"),
          ("M15", f"c:source_tf:{source}:15"),
          ("Все", f"c:source_tf:{source}:all")],
-        [("Входы A", action("A")),
-         ("Сигналы ×3 B", action("B"))],
-        [("Циклы ×6 C", action("C"))],
+        [("Входы", action("A")), ("×3", action("B")), ("×6", action("C"))],
         [("10", action(n=10)), ("50", action(n=50)), ("100", action(n=100))],
         [("Сегодня", action(p="today")), ("7 дней", action(p="7d")),
-         ("Все", action(p="all"))],
-        [("Другие стратегии", "c:sources")],
+         ("Всё", action(p="all"))],
+        [("◀ 4 стратегии", "c:sources")],
     ])
-
-def publisher():
-    channel = os.getenv("OTC_PUBLIC_CHANNEL_ID", "").strip()
-    if not channel:
-        return None
-    from services.otc_public_broadcast import PublicPublisher
-    return PublicPublisher(ROOT, int(channel))
-
-
-async def show_shadow_flags(message):
-    worker = publisher()
-    if worker is None:
-        await message.answer(
-            "Общий канал ещё не настроен. Укажи OTC_PUBLIC_CHANNEL_ID в локальном .env."
-        )
-        return
-    flags = worker.flags()
-    buttons = [[(
-        ("✅ " if flags.get(method) else "⬜ ") + METHOD_LABELS[method],
-        "c:toggle:" + method,
-    )] for method in METHODS]
-    buttons.append([("Меню", "c:home")])
-    await message.answer(
-        "📡 Фоновые ТЕСТЫ — публикация в канале.\n"
-        "Выключенные стратегии по-прежнему доступны в статистике.",
-        reply_markup=keyboard(buttons), parse_mode=None,
-    )
 
 
 def source_health(source):
@@ -136,18 +139,18 @@ def source_health(source):
         strategy = getattr(current, "cycle_preview", None)
         if not strategy or not getattr(strategy, "enabled", False):
             return "Основной алгоритм не активен"
-    return "Данные свежие · исследовательский режим" if source != "main" else "Данные свежие"
+    return "Данные свежие"
 
 
 def source_title(source):
-    return "ОСНОВНОЙ · Боллинджер ×3" if source == "main" else METHOD_LABELS[source]
+    return "Боллинджер ×3" if source == "main" else METHOD_LABELS[source]
 
 
 def snapshots(source):
     if source == "main":
         return main_signals(ROOT / "data" / "bollinger-cycles.db")
     return [
-        row for row in shadow_signals(ROOT / "data" / "community-cycles.db")
+        row for row in load_live_signals(ROOT / "data" / "community-live.db")
         if row["strategy"] == source
     ]
 
@@ -164,8 +167,7 @@ def report_for(source, timeframe, metric, limit=10, period="all"):
     seconds = SECONDS[timeframe]
     label = source_title(source)
     versions = sorted({row["version"] for row in rows})
-    text = label + "\nСтатус: " + source_health(source) + ("\nФОН · ТЕСТ, сигналы не отправлялись в реальный рынок."
-                    if source != "main" else "\nПрогнозы, не подтверждённые сделки.")
+    text = label + "\nСтатус: " + source_health(source) + "\nОпубликованные прогнозы OTCharts (не сделки брокера)."
     text += "\nПериод: " + {"today": "сегодня МСК", "7d": "7 дней", "all": "вся история"}[period]
     if not rows:
         return text + "\n\nПока нет сохранённых исходов."
@@ -244,7 +246,8 @@ async def stop_signals(message: types.Message):
 @router.message(Command("signal_stats"))
 async def signal_stats(message: types.Message):
     if private(message):
-        await message.answer("Выбери алгоритм:", reply_markup=sources())
+        text = await asyncio.to_thread(overview_text)
+        await message.answer(text, reply_markup=sources(), parse_mode=None)
 
 
 @router.message(Command("suggest", "feedback"))
@@ -329,7 +332,8 @@ async def callbacks(query: types.CallbackQuery):
         return
     if target == "sources":
         await query.answer()
-        await query.message.answer("Выбери алгоритм:", reply_markup=sources())
+        text = await asyncio.to_thread(overview_text)
+        await query.message.answer(text, reply_markup=sources(), parse_mode=None)
         return
     if target == "suggest":
         await query.answer()
@@ -342,12 +346,15 @@ async def callbacks(query: types.CallbackQuery):
         return
     if target in ("source", "source_tf"):
         source = action[2] if len(action) > 2 else ""
-        tf = action[3] if target == "source_tf" and len(action) == 4 else "2"
+        tf = action[3] if target == "source_tf" and len(action) == 4 else "all"
         if source not in ("main",) + METHODS or tf not in SECONDS:
             await query.answer("Некорректный выбор")
             return
         await query.answer()
-        await query.message.answer(source_title(source), reply_markup=metrics_menu(source, tf))
+        text = await asyncio.to_thread(report_for, source, tf, "B")
+        await query.message.answer(
+            text, reply_markup=metrics_menu(source, tf), parse_mode=None
+        )
         return
     if target == "stats":
         if (len(action) not in (5, 7) or action[2] not in ("main",) + METHODS
@@ -377,18 +384,11 @@ async def callbacks(query: types.CallbackQuery):
     if not owner:
         await query.answer("Нет доступа", show_alert=True)
         return
-    if target == "shadow":
-        await query.answer()
-        await show_shadow_flags(query.message)
-        return
-    if target == "toggle" and len(action) == 3 and action[2] in METHODS:
-        worker = publisher()
-        if worker is None:
-            await query.answer("Канал не настроен", show_alert=True)
-            return
-        switched = worker.toggle_shadow(action[2])
-        await query.answer("Включено" if switched else "Выключено")
-        await show_shadow_flags(query.message)
+    if target in ("shadow", "toggle"):
+        await query.answer(
+            "Старое тестовое меню отключено. Все 4 стратегии включаются вместе "
+            "при запуске владельцем.", show_alert=True
+        )
         return
     if target == "queue":
         await query.answer()
