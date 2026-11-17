@@ -32,13 +32,28 @@ class Settings:
         default_factory=lambda: os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
     )
     groq_interval_seconds: int = field(
-        default_factory=lambda: max(60, int(os.getenv("GROQ_INTERVAL_SECONDS", "60")))
+        default_factory=lambda: max(60, int(os.getenv("GROQ_INTERVAL_SECONDS", "300")))
     )
     groq_max_requests: int = field(
-        default_factory=lambda: max(0, int(os.getenv("GROQ_MAX_REQUESTS", "1000")))
+        default_factory=lambda: max(0, int(os.getenv("GROQ_MAX_REQUESTS", "100")))
     )
     groq_max_tokens: int = field(
         default_factory=lambda: max(0, int(os.getenv("GROQ_MAX_TOKENS", "150000")))
+    )
+    groq_recovery_interval_seconds: int = field(
+        default_factory=lambda: max(
+            60, int(os.getenv("GROQ_RECOVERY_INTERVAL_SECONDS", "60"))
+        )
+    )
+    groq_recovery_max_requests: int = field(
+        default_factory=lambda: max(
+            0, int(os.getenv("GROQ_RECOVERY_MAX_REQUESTS", "1000"))
+        )
+    )
+    groq_recovery_max_tokens: int = field(
+        default_factory=lambda: max(
+            0, int(os.getenv("GROQ_RECOVERY_MAX_TOKENS", "150000"))
+        )
     )
     telegram_bot_token: str = field(
         default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""), repr=False
