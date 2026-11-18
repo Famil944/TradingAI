@@ -81,7 +81,7 @@ class Settings:
         in ("1", "true", "yes", "on")
     )
     pair_rotation_seconds: int = field(
-        default_factory=lambda: max(300, int(os.getenv("OTC_PAIR_ROTATION_SECONDS", "600")))
+        default_factory=lambda: max(300, int(os.getenv("OTC_PAIR_ROTATION_SECONDS", "300")))
     )
     pair_rotation_quota_reserve: int = field(
         default_factory=lambda: max(100, int(os.getenv("OTC_PAIR_ROTATION_QUOTA_RESERVE", "100")))
