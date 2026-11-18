@@ -9,9 +9,12 @@ import hashlib
 import logging
 import sqlite3
 import time
+from datetime import datetime, timedelta
 from contextlib import closing
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
+from aiogram import BaseMiddleware, types
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from services.otc_public_broadcast import subscriber_card
@@ -29,6 +32,7 @@ MAX_USERS_PER_TICK = 200
 TRIAL_DAYS = 7
 SIGNAL_SOURCES = ("main", "bb_reentry", "break_retest", "ema_pullback")
 DAY = 86400
+MSK = ZoneInfo("Europe/Moscow")
 
 
 class Subscribers:
@@ -42,6 +46,19 @@ class Subscribers:
                     enabled INTEGER NOT NULL DEFAULT 1,
                     subscribed_at REAL NOT NULL,
                     updated_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS subscriber_profiles(
+                    chat_id INTEGER PRIMARY KEY,
+                    first_name TEXT NOT NULL DEFAULT '',
+                    last_name TEXT NOT NULL DEFAULT '',
+                    username TEXT,
+                    last_interaction REAL
+                );
+                CREATE TABLE IF NOT EXISTS subscriber_activity_daily(
+                    chat_id INTEGER NOT NULL,
+                    day TEXT NOT NULL,
+                    actions INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(chat_id, day)
                 );
                 CREATE TABLE IF NOT EXISTS source_preferences(
                     chat_id INTEGER NOT NULL,
@@ -190,6 +207,78 @@ class Subscribers:
                 "THEN 0 ELSE 1 END, updated_at DESC LIMIT ?", (limit,)
             ).fetchall()
 
+    def record_interaction(self, chat_id, first_name="", last_name="", username=None, now=None):
+        """Only consented users; record actions, not message text or reading time."""
+        now = time.time() if now is None else float(now)
+        day = datetime.fromtimestamp(now, MSK).date().isoformat()
+        with closing(self._connect()) as db:
+            if not db.execute(
+                "SELECT 1 FROM subscribers WHERE chat_id=? AND accepted_at IS NOT NULL",
+                (chat_id,),
+            ).fetchone():
+                return False
+            db.execute(
+                "INSERT INTO subscriber_profiles(chat_id,first_name,last_name,username,last_interaction) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET "
+                "first_name=excluded.first_name,last_name=excluded.last_name,"
+                "username=excluded.username,last_interaction=excluded.last_interaction",
+                (chat_id, str(first_name or "")[:100], str(last_name or "")[:100],
+                 str(username)[:32] if username else None, now),
+            )
+            db.execute(
+                "INSERT INTO subscriber_activity_daily(chat_id,day,actions) VALUES(?,?,1) "
+                "ON CONFLICT(chat_id,day) DO UPDATE SET actions=actions+1",
+                (chat_id, day),
+            )
+            db.commit()
+        return True
+
+    def member_profiles(self, limit=30):
+        """Existing members, with last known public Telegram profile and delivery count."""
+        with closing(self._connect()) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                "SELECT s.chat_id,s.status,s.expires_at,s.trial_used,s.accepted_at,"
+                "p.first_name,p.last_name,p.username,p.last_interaction,"
+                "(SELECT COUNT(*) FROM deliveries d WHERE d.chat_id=s.chat_id) AS delivered "
+                "FROM subscribers s LEFT JOIN subscriber_profiles p ON p.chat_id=s.chat_id "
+                "ORDER BY CASE WHEN s.status='pending' AND s.accepted_at IS NOT NULL "
+                "THEN 0 ELSE 1 END, s.updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def member_activity(self, chat_id, now=None):
+        """Activity means button/command usage, not minutes viewing forecasts."""
+        now = time.time() if now is None else float(now)
+        today = datetime.fromtimestamp(now, MSK).date()
+        day7 = (today - timedelta(days=6)).isoformat()
+        day30 = (today - timedelta(days=29)).isoformat()
+        with closing(self._connect()) as db:
+            db.row_factory = sqlite3.Row
+            profile = db.execute(
+                "SELECT s.chat_id,s.status,s.expires_at,p.first_name,p.last_name,"
+                "p.username,p.last_interaction FROM subscribers s "
+                "LEFT JOIN subscriber_profiles p ON p.chat_id=s.chat_id "
+                "WHERE s.chat_id=?", (chat_id,),
+            ).fetchone()
+            if profile is None:
+                return None
+            usage = db.execute(
+                "SELECT COALESCE(SUM(CASE WHEN day>=? THEN actions ELSE 0 END),0),"
+                "COUNT(DISTINCT CASE WHEN day>=? THEN day END),"
+                "COUNT(DISTINCT CASE WHEN day>=? THEN day END) "
+                "FROM subscriber_activity_daily WHERE chat_id=?",
+                (day7, day7, day30, chat_id),
+            ).fetchone()
+            delivered = db.execute(
+                "SELECT COUNT(*) FROM deliveries WHERE chat_id=?", (chat_id,),
+            ).fetchone()[0]
+        return dict(profile) | {
+            "actions_7d": int(usage[0]), "days_7d": int(usage[1]),
+            "days_30d": int(usage[2]), "delivered": int(delivered),
+        }
+
     def notices_due(self, now=None):
         now = time.time() if now is None else float(now)
         with closing(self._connect()) as db:
@@ -287,6 +376,31 @@ class Subscribers:
                 (chat_id, signal_id, message_id, outcome, content_sha),
             )
             db.commit()
+
+class SubscriberActivityMiddleware(BaseMiddleware):
+    """Observe only accepted users' private interactions, never their reading time."""
+
+    def __init__(self, store):
+        self.store = store
+
+    async def __call__(self, handler, event: types.Update, data):
+        result = await handler(event, data)
+        message = getattr(event, "message", None)
+        callback = getattr(event, "callback_query", None)
+        if callback is not None:
+            message = callback.message
+        user = (callback.from_user if callback else getattr(message, "from_user", None))
+        chat = getattr(message, "chat", None)
+        if not user or not chat or chat.type != "private" or user.id != chat.id:
+            return result
+        try:
+            await asyncio.to_thread(
+                self.store.record_interaction, chat.id,
+                user.first_name, user.last_name, user.username,
+            )
+        except Exception:
+            LOG.exception("Subscriber activity counter failed")
+        return result
 
 
 class SubscriberRelay:
