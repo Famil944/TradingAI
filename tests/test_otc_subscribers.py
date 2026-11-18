@@ -489,13 +489,18 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
         handler = AsyncMock()
         owner = SimpleNamespace(id=999)
         message = SimpleNamespace(
-            from_user=owner, chat=SimpleNamespace(id=999, type="private")
+            from_user=owner, chat=SimpleNamespace(id=999, type="private"),
+            answer=AsyncMock(),
         )
         with patch.object(community, "settings", SimpleNamespace(admin_chat_id=999)), patch.object(
             otc_commands, "show_menu", handler
         ):
             await community.start(message)
         handler.assert_awaited_once()
+        self.assertIsInstance(
+            message.answer.await_args.kwargs["reply_markup"],
+            __import__("aiogram.types", fromlist=["ReplyKeyboardRemove"]).ReplyKeyboardRemove,
+        )
 
 
 if __name__ == "__main__":
