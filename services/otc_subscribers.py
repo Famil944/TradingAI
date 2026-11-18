@@ -9,13 +9,14 @@ import hashlib
 import logging
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from contextlib import closing
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from aiogram import BaseMiddleware, types
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from services.otc_public_broadcast import subscriber_card
 from services.otc_public_stats import main_signals
@@ -32,6 +33,8 @@ MAX_USERS_PER_TICK = 200
 TRIAL_DAYS = 7
 SIGNAL_SOURCES = ("main", "bb_reentry", "break_retest", "ema_pullback")
 DAY = 86400
+SESSION_SECONDS = 3600
+SESSION_REMINDER_SECONDS = 600
 MSK = ZoneInfo("Europe/Moscow")
 
 
@@ -46,6 +49,12 @@ class Subscribers:
                     enabled INTEGER NOT NULL DEFAULT 1,
                     subscribed_at REAL NOT NULL,
                     updated_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS subscriber_sessions(
+                    chat_id INTEGER PRIMARY KEY,
+                    started_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    reminded_at REAL
                 );
                 CREATE TABLE IF NOT EXISTS subscriber_profiles(
                     chat_id INTEGER PRIMARY KEY,
@@ -233,6 +242,95 @@ class Subscribers:
             db.commit()
         return True
 
+    def start_session(self, chat_id, now=None):
+        """Explicitly begin/renew personal notifications, never the OTC engine."""
+        now = time.time() if now is None else float(now)
+        local_date = datetime.fromtimestamp(now, MSK).date()
+        next_midnight = datetime.combine(
+            local_date + timedelta(days=1), dt_time.min, MSK
+        ).timestamp()
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            subscriber = db.execute(
+                "SELECT status,enabled,accepted_at,expires_at FROM subscribers WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+            if (
+                subscriber is None or subscriber[0] != "approved"
+                or not subscriber[1] or subscriber[2] is None
+                or subscriber[3] is None or subscriber[3] <= now
+            ):
+                db.rollback()
+                raise ValueError("Нет активного доступа. Проверь подписку через /start.")
+            expires = min(now + SESSION_SECONDS, next_midnight, subscriber[3])
+            old = db.execute(
+                "SELECT started_at,expires_at FROM subscriber_sessions WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+            started = old[0] if old and old[1] > now else now
+            db.execute(
+                "INSERT INTO subscriber_sessions(chat_id,started_at,expires_at,reminded_at) "
+                "VALUES(?,?,?,NULL) ON CONFLICT(chat_id) DO UPDATE SET "
+                "started_at=excluded.started_at,expires_at=excluded.expires_at,"
+                "reminded_at=NULL",
+                (chat_id, started, expires),
+            )
+            db.commit()
+        return expires
+
+    def stop_session(self, chat_id, now=None):
+        now = time.time() if now is None else float(now)
+        with closing(self._connect()) as db:
+            changed = db.execute(
+                "UPDATE subscriber_sessions SET expires_at=?,reminded_at=NULL "
+                "WHERE chat_id=?", (now, chat_id),
+            ).rowcount
+            db.commit()
+        return bool(changed)
+
+    def session_status(self, chat_id, now=None):
+        now = time.time() if now is None else float(now)
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT started_at,expires_at FROM subscriber_sessions WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+        if row is None or row[0] > now or row[1] <= now:
+            return dict(active=False, expires_at=None)
+        return dict(active=True, expires_at=row[1])
+
+    def session_allows_signal(self, chat_id, sent_at, now=None):
+        """No backfilling signals emitted before a user's current active session."""
+        now = time.time() if now is None else float(now)
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT started_at,expires_at FROM subscriber_sessions WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+        return bool(row and row[0] <= sent_at <= now < row[1])
+
+    def session_reminders_due(self, now=None):
+        now = time.time() if now is None else float(now)
+        with closing(self._connect()) as db:
+            return db.execute(
+                "SELECT s.chat_id,t.expires_at FROM subscriber_sessions t "
+                "JOIN subscribers s ON s.chat_id=t.chat_id "
+                "WHERE s.status='approved' AND s.enabled=1 AND s.accepted_at IS NOT NULL "
+                "AND s.expires_at>? AND t.expires_at>? AND t.expires_at<=? "
+                "AND t.reminded_at IS NULL ORDER BY t.expires_at LIMIT 100",
+                (now, now, now + SESSION_REMINDER_SECONDS),
+            ).fetchall()
+
+    def mark_session_reminded(self, chat_id, expires_at, now=None):
+        now = time.time() if now is None else float(now)
+        with closing(self._connect()) as db:
+            db.execute(
+                "UPDATE subscriber_sessions SET reminded_at=? "
+                "WHERE chat_id=? AND expires_at=? AND reminded_at IS NULL",
+                (now, chat_id, expires_at),
+            )
+            db.commit()
+
     def member_profiles(self, limit=30):
         """Existing members, with last known public Telegram profile and delivery count."""
         with closing(self._connect()) as db:
@@ -240,8 +338,10 @@ class Subscribers:
             rows = db.execute(
                 "SELECT s.chat_id,s.status,s.expires_at,s.trial_used,s.accepted_at,"
                 "p.first_name,p.last_name,p.username,p.last_interaction,"
+                "t.expires_at AS session_expires_at,"
                 "(SELECT COUNT(*) FROM deliveries d WHERE d.chat_id=s.chat_id) AS delivered "
                 "FROM subscribers s LEFT JOIN subscriber_profiles p ON p.chat_id=s.chat_id "
+                "LEFT JOIN subscriber_sessions t ON t.chat_id=s.chat_id "
                 "ORDER BY CASE WHEN s.status='pending' AND s.accepted_at IS NOT NULL "
                 "THEN 0 ELSE 1 END, s.updated_at DESC LIMIT ?",
                 (limit,),
@@ -258,8 +358,9 @@ class Subscribers:
             db.row_factory = sqlite3.Row
             profile = db.execute(
                 "SELECT s.chat_id,s.status,s.expires_at,p.first_name,p.last_name,"
-                "p.username,p.last_interaction FROM subscribers s "
-                "LEFT JOIN subscriber_profiles p ON p.chat_id=s.chat_id "
+                "p.username,p.last_interaction,t.expires_at AS session_expires_at "
+                "FROM subscribers s LEFT JOIN subscriber_profiles p ON p.chat_id=s.chat_id "
+                "LEFT JOIN subscriber_sessions t ON t.chat_id=s.chat_id "
                 "WHERE s.chat_id=?", (chat_id,),
             ).fetchone()
             if profile is None:
@@ -404,11 +505,13 @@ class SubscriberActivityMiddleware(BaseMiddleware):
 
 
 class SubscriberRelay:
-    def __init__(self, root, store=None, clock=time.time, live_cycle=None):
+    def __init__(self, root, store=None, clock=time.time, live_cycle=None,
+                 require_sessions=False):
         self.root = Path(root)
         self.store = store or Subscribers(self.root / "data" / "subscribers.db")
         self.clock = clock
         self.live_cycle = live_cycle
+        self.require_sessions = require_sessions
         self._last_notice_check = 0.0
 
     def _signals(self):
@@ -456,7 +559,10 @@ class SubscriberRelay:
 
             async def deliver(chat_id, joined_at):
                 if (sent_at < joined_at or self.store.status(chat_id, self.clock())["state"] != "approved"
-                        or not self.store.allows_source(chat_id, row["strategy"])):
+                        or not self.store.allows_source(chat_id, row["strategy"])
+                        or (self.require_sessions and not self.store.session_allows_signal(
+                            chat_id, sent_at, self.clock()
+                        ))):
                     return
                 already = await asyncio.to_thread(
                     self.store.delivered, chat_id, row["id"]
@@ -537,7 +643,10 @@ class SubscriberRelay:
                             LOG.warning("Subscriber edit failed: %s", type(exc).__name__)
                         continue
                     if (
-                        row["sent_at"] < joined_at
+                        (self.require_sessions and not self.store.session_allows_signal(
+                            chat_id, row["sent_at"], current_time
+                        ))
+                        or row["sent_at"] < joined_at
                         or row["sent_at"] > current_time
                         or current_time - row["sent_at"] > MAX_SEND_AGE_SECONDS
                         or row["entry_at"] - current_time < MIN_ENTRY_LEAD_SECONDS
@@ -579,6 +688,30 @@ class SubscriberRelay:
             except Exception as exc:
                 LOG.warning("Subscriber expiry notice failed: %s", type(exc).__name__)
 
+    async def notify_session_reminders(self, bot):
+        """Only one opt-in renewal reminder for an active hourly session."""
+        if not self.require_sessions:
+            return
+        due = await asyncio.to_thread(self.store.session_reminders_due, self.clock())
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Я на связи — продлить", callback_data="c:session:start")
+        ]])
+        for chat_id, expires in due:
+            try:
+                await bot.send_message(
+                    chat_id,
+                    "⏳ Сеанс сигналов скоро завершится. "
+                    "Нажми кнопку, чтобы получать новые сигналы ещё до часа.",
+                    reply_markup=keyboard, parse_mode=None,
+                )
+                await asyncio.to_thread(
+                    self.store.mark_session_reminded, chat_id, expires, self.clock()
+                )
+            except TelegramForbiddenError:
+                await asyncio.to_thread(self.store.unsubscribe, chat_id)
+            except Exception as exc:
+                LOG.warning("Subscriber session reminder failed: %s", type(exc).__name__)
+
     async def run(self, bot):
         while True:
             try:
@@ -587,6 +720,7 @@ class SubscriberRelay:
                 if current - self._last_notice_check >= 60:
                     self._last_notice_check = current
                     await self.notify_expiry(bot)
+                    await self.notify_session_reminders(bot)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
