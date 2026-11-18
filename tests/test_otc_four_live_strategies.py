@@ -77,10 +77,12 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
             candidate("break_retest", "ETH", seconds=120),
         ])
         await self.publisher.publish(self.bot, 777)
-        self.assertEqual(len(self.bot.sent), 2)
+        # New rule: ETH M2 is also suppressed until BTC M2's three
+        # attempts complete, regardless of the symbol or strategy.
+        self.assertEqual(len(self.bot.sent), 1)
         rows = load_live_signals(self.root / "data" / "community-live.db")
         self.assertEqual({(r["strategy"], r["symbol"]) for r in rows},
-                         {("bb_reentry", "BTC OTC"), ("break_retest", "ETH OTC")})
+                         {("bb_reentry", "BTC OTC")})
 
     async def test_s1_claim_blocks_secondary_entry_even_with_different_expiry(self):
         self.candidates.record([candidate("bb_reentry", "BTC", seconds=120)])
@@ -105,20 +107,26 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(load_live_signals(
             self.root / "data" / "community-live.db"
         )[0]["outcome"], "WIN")
-        # First S2 plan was booked until 1380; a subsequent S3 at 1200
-        # is now safe because the original series stopped at 1140.
+        # Even after confirmed WIN, the M2 slot remains occupied through
+        # attempt 3's scheduled end at 1380 (user-requested no-overlap).
         self.candidates.record([candidate(
             "break_retest", "BTC", observed=1180, entry=1200
         )])
         self.now[0] = 1187
         await self.publisher.publish(self.bot, 777)
+        self.assertEqual(len(self.bot.sent), 1)
+        self.candidates.record([candidate(
+            "break_retest", "BTC", observed=1360, entry=1380
+        )])
+        self.now[0] = 1367
+        await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 2)
 
     async def test_three_independent_strategies_delivered_with_distinct_names(self):
         self.candidates.record([
-            candidate("bb_reentry", "BTC"),
-            candidate("break_retest", "ETH"),
-            candidate("ema_pullback", "AUDCHF"),
+            candidate("bb_reentry", "BTC", seconds=120),
+            candidate("break_retest", "ETH", seconds=300),
+            candidate("ema_pullback", "AUDCHF", seconds=900),
         ])
         await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 3)
@@ -134,9 +142,9 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_each_strategy_has_own_winrate_with_no_research_backfill(self):
         self.candidates.record([
-            candidate("bb_reentry", "BTC"),
-            candidate("break_retest", "ETH"),
-            candidate("ema_pullback", "AUDCHF"),
+            candidate("bb_reentry", "BTC", seconds=120),
+            candidate("break_retest", "ETH", seconds=300),
+            candidate("ema_pullback", "AUDCHF", seconds=900),
         ])
         await self.publisher.publish(self.bot, 777)
         self.candidates.samples([
@@ -152,7 +160,9 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         rows = load_live_signals(self.root / "data" / "community-live.db")
         states = {r["strategy"]: r["outcome"] for r in rows}
         self.assertEqual(states["bb_reentry"], "WIN")
-        self.assertEqual(states["ema_pullback"], "WIN")
+        # Only M2 had a completed attempt at this simulated time;
+        # M5 and M15 are pending independently of M2.
+        self.assertEqual(states["ema_pullback"], "PENDING")
         self.assertEqual(states["break_retest"], "PENDING")
         self.assertEqual(metrics(
             [r for r in rows if r["strategy"] == "bb_reentry"]
