@@ -55,20 +55,35 @@ def keyboard(rows):
 def home(owner=False):
     if not owner:
         return keyboard([
-            [("📊 Винрейт", "c:wr"), ("💎 Подписка", "c:subscription")],
-            [("ℹ️ О сигналах", "c:info")],
+            [("🎛 Мои сигналы", "c:prefs"), ("📊 Винрейт", "c:wr")],
+            [("💎 Подписка", "c:subscription"), ("💡 Предложение", "c:suggest")],
+            [("ℹ️ Справка", "c:info")],
         ])
+    return keyboard([
+        [("📊 Стратегии", "c:sources"), ("🎛 Мои сигналы", "c:prefs")],
+        [("👥 Пользователи", "c:users")],
+        [("💡 Предложения", "c:queue"), ("🔧 OTC", "c:owner")],
+    ])
+
+
+def preferences_menu(store, user_id):
+    selected = store.source_preferences(user_id)
     rows = [
-        [("📊 Проверить винрейт", "c:sources")],
-        [("💡 Предложить улучшение", "c:suggest")],
+        [(("✅ " if selected[code] else "❌ ") + label, "c:pref:" + code)]
+        for code, label in STRATEGIES
     ]
-    if not owner:
-        rows.append([("🔕 Отписаться от сигналов", "c:unsubscribe")])
-    if owner:
-        rows.append([("📥 Предложения пользователей", "c:queue")])
-        rows.append([("🔐 Доступ подписчиков", "c:access")])
-        rows.append([("🔧 Административное меню", "c:owner")])
+    rows.append([("◀ Меню", "c:home")])
     return keyboard(rows)
+
+
+def preferences_text(store, user_id):
+    selected = store.source_preferences(user_id)
+    count = sum(selected.values())
+    return (
+        f"🎛 Источники сигналов · включено {count}/4\\n"
+        "Нажми на стратегию, чтобы включить или отключить её.\\n"
+        "Настройки индивидуальны. Отключённые сигналы не приходят."
+    )
 
 
 STRATEGIES = (
@@ -465,6 +480,60 @@ async def callbacks(query: types.CallbackQuery):
         elif target == "block" and len(action) == 3 and action[2].isdigit():
             await asyncio.to_thread(subscribers().block, int(action[2]))
             await query.message.answer("⛔ Пользователь заблокирован")
+        return
+    if target == "prefs":
+        if not owner and subscribers().status(query.message.chat.id)["state"] != "approved":
+            await query.answer("Сначала оформите доступ", show_alert=True)
+            return
+        await query.answer()
+        store = subscribers()
+        await query.message.answer(
+            preferences_text(store, query.message.chat.id),
+            reply_markup=preferences_menu(store, query.message.chat.id),
+            parse_mode=None,
+        )
+        return
+    if target == "pref":
+        if len(action) != 3 or action[2] not in IDS:
+            await query.answer("Некорректный источник")
+            return
+        if not owner and subscribers().status(query.message.chat.id)["state"] != "approved":
+            await query.answer("Нет доступа", show_alert=True)
+            return
+        store = subscribers()
+        user_id = query.message.chat.id
+        current = store.source_preferences(user_id)[action[2]]
+        await asyncio.to_thread(store.set_source, user_id, action[2], not current)
+        await query.answer("Включено" if not current else "Отключено")
+        await query.message.edit_text(
+            preferences_text(store, user_id),
+            reply_markup=preferences_menu(store, user_id),
+            parse_mode=None,
+        )
+        return
+    if target == "users":
+        if not admin_chat:
+            await query.answer("Нет доступа", show_alert=True)
+            return
+        await query.answer()
+        await query.message.answer(
+            "👥 Пользователи: заявки, одобрение, продление и блокировка.",
+            reply_markup=keyboard([
+                [("📋 Заявки и доступ", "c:access")],
+                [("➕ Выдать доступ", "c:grant_help"), ("⛔ Блокировка", "c:block_help")],
+                [("◀ Меню", "c:home")],
+            ]),
+        )
+        return
+    if target in ("grant_help", "block_help"):
+        if not admin_chat:
+            await query.answer("Нет доступа", show_alert=True)
+            return
+        await query.answer()
+        await query.message.answer(
+            "Выдать/продлить: /grant ID ДНИ" if target == "grant_help"
+            else "Блокировать: /block ID · Разблокировать: /unblock ID"
+        )
         return
     if target == "info":
         await query.answer()
