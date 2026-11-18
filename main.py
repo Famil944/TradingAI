@@ -8,7 +8,7 @@ import time
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramNetworkError
+from aiogram.exceptions import TelegramNetworkError, TelegramServerError
 from aiogram.types import (
     BotCommand,
     BotCommandScopeAllPrivateChats,
@@ -54,13 +54,13 @@ SUBSCRIBER_COMMANDS = [
 
 
 async def initialize_telegram(bot):
-    for attempt in range(3):
+    """Keep retrying transient Telegram outages without hiding config errors."""
+    public = [BotCommand(command=c, description=d) for c, d in SUBSCRIBER_COMMANDS]
+    owner = [BotCommand(command=c, description=d) for c, d in COMMANDS]
+    attempt = 0
+    while True:
         try:
-            # Set public commands in both default and private scopes to
-            # replace a previously global admin command list.
-            public = [BotCommand(command=c, description=d)
-                      for c, d in SUBSCRIBER_COMMANDS]
-            owner = [BotCommand(command=c, description=d) for c, d in COMMANDS]
+            # Commands are idempotent; repeat them if a partial setup failed.
             await bot.set_my_commands(
                 public, scope=BotCommandScopeDefault(), request_timeout=10
             )
@@ -72,13 +72,14 @@ async def initialize_telegram(bot):
                 request_timeout=10,
             )
             return await bot.get_me(request_timeout=10)
-        except (TelegramNetworkError, TimeoutError):
-            if attempt == 2:
-                raise
+        except (TelegramNetworkError, TelegramServerError, TimeoutError) as exc:
+            attempt += 1
+            delay = min(60, 2 ** min(attempt, 6))
             logging.getLogger(__name__).warning(
-                "Telegram startup retry %d/3", attempt + 2
+                "Telegram temporarily unavailable (%s); retry %d in %ds",
+                type(exc).__name__, attempt, delay,
             )
-            await asyncio.sleep(2)
+            await asyncio.sleep(delay)
 
 
 async def main(*, session_minutes=None, session_end=None):
@@ -200,7 +201,7 @@ async def main(*, session_minutes=None, session_end=None):
         quota_reserve=settings.pair_rotation_quota_reserve,
     )
     service.unknown_recovery = recovery
-    recovery_task = asyncio.create_task(recovery.run())
+    # Historical UNKNOWN backfills are opt-in: preserve API quota by default.\n    recovery_task = (\n        asyncio.create_task(recovery.run())\n        if os.getenv("OTC_UNKNOWN_RECOVERY_ENABLED", "false").strip().lower()\n        in ("1", "true", "yes", "on")\n        else None\n    )
     # New signals are mirrored immediately after the owner's send succeeds.
     # The relay loop remains a fallback and mirrors later WIN/LOSS edits.
     subscriber_task = asyncio.create_task(subscriber_relay.run(bot))
@@ -261,8 +262,9 @@ async def main(*, session_minutes=None, session_end=None):
         await asyncio.gather(ready_task, return_exceptions=True)
         heartbeat_task.cancel()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
-        recovery_task.cancel()
-        await asyncio.gather(recovery_task, return_exceptions=True)
+        if recovery_task is not None:
+            recovery_task.cancel()
+            await asyncio.gather(recovery_task, return_exceptions=True)
         if groq_client is not None:
             await groq_client.close()
         preflight_task.cancel()
