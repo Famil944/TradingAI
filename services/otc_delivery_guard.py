@@ -57,67 +57,103 @@ def check_data(selected, snapshot, now):
 
 
 def claim(path, selected, source, now=None, *, exclusive_timeframe=False):
-    """Reserve an entry atomically.
+    """Atomically reserve a delivery window.
 
-    If exclusive_timeframe=True, all S1-S4 signals sharing the same M2/M5/M15
-    three-attempt duration are serialized, even across symbols or strategies.
-    The slot remains reserved until the scheduled end of all three attempts;
-    early WIN/LOSS settlement must not introduce overlapping notifications.
+    For S1–S4 (exclusive_timeframe=True), each strategy and expiry has its
+    OWN three-attempt lock. Different strategies or M2/M5/M15 never block
+    one another, even when they predict the same instrument/direction.
+
+    Legacy callers keep the original cross-source same-symbol protection.
+    Claims survive restarts and confirmed early WIN/DRAW/UNKNOWN outcomes:
+    the strict scoped lock lasts until the scheduled third attempt ends.
     """
+    duration = selected["expires_at"] - selected["entry_at"]
+    if exclusive_timeframe and duration not in (3 * 120, 3 * 300, 3 * 900):
+        raise ValueError("Exclusive live timeframe must be M2/M5/M15 x3")
     with closing(sqlite3.connect(path, timeout=1)) as db:
         db.execute("BEGIN IMMEDIATE")
         db.execute("""CREATE TABLE IF NOT EXISTS claims(
             symbol TEXT, direction TEXT, entry_at INTEGER, expires_at INTEGER,
             source TEXT, claimed_at REAL,
             PRIMARY KEY(symbol,direction,entry_at,expires_at))""")
-        # Existing installations already have claims without active_until.
-        # Keep the original end for audit, but allow a confirmed early WIN,
-        # DRAW or UNKNOWN to end a three-attempt cycle sooner.
-        columns = {row[1] for row in db.execute("PRAGMA table_info(claims)")}
+        columns = {row[1] for row in db.execute("PRAGMA table_info(claims")}
         if "active_until" not in columns:
             db.execute("ALTER TABLE claims ADD COLUMN active_until REAL")
         db.execute(
             "CREATE INDEX IF NOT EXISTS claims_symbol_entry "
             "ON claims(symbol,entry_at)"
         )
+        if exclusive_timeframe:
+            # Use a separate table rather than rewriting the old primary key:
+            # the legacy PK omits source, so it would wrongly block S2 if
+            # S1 publishes on exactly the same symbol at the same time.
+            db.execute("""CREATE TABLE IF NOT EXISTS strategy_timeframe_claims(
+                source TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                entry_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                claimed_at REAL NOT NULL,
+                PRIMARY KEY(source,symbol,direction,entry_at,expires_at)
+            )""")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS stc_source_entry "
+                "ON strategy_timeframe_claims(source,entry_at)"
+            )
+            # Keep previous-version active claims for the SAME strategy and
+            # timeframe. Previously global claims from unrelated strategies
+            # must not interfere after upgrading.
+            overlaps = (
+                db.execute(
+                    "SELECT 1 FROM strategy_timeframe_claims "
+                    "WHERE source=? AND (expires_at-entry_at)=? "
+                    "AND entry_at<? AND expires_at>? LIMIT 1",
+                    (source, duration, selected["expires_at"], selected["entry_at"]),
+                ).fetchone()
+                or db.execute(
+                    "SELECT 1 FROM claims WHERE source=? "
+                    "AND (expires_at-entry_at)=? "
+                    "AND entry_at<? AND expires_at>? LIMIT 1",
+                    (source, duration, selected["expires_at"], selected["entry_at"]),
+                ).fetchone()
+            )
+            if overlaps:
+                return False
+            db.execute(
+                "INSERT INTO strategy_timeframe_claims "
+                "(source,symbol,direction,entry_at,expires_at,claimed_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    source, selected["symbol"], selected["direction"],
+                    selected["entry_at"], selected["expires_at"],
+                    time.time() if now is None else now,
+                ),
+            )
+            db.commit()
+            return True
+
+        # Legacy behavior is deliberately unchanged for other claim callers.
         if db.execute(
             "SELECT 1 FROM claims WHERE symbol=? AND (entry_at=? OR "
             "(entry_at<? AND COALESCE(active_until,expires_at)>?)) LIMIT 1",
-            (selected["symbol"], selected["entry_at"],
-             selected["expires_at"], selected["entry_at"]),
+            (
+                selected["symbol"], selected["entry_at"],
+                selected["expires_at"], selected["entry_at"],
+            ),
         ).fetchone():
             return False
-        if exclusive_timeframe:
-            # S1-S4 candidates consist of three sequential attempts. Keep
-            # distinct expirations independent (M2 does not block M5/M15).
-            # Read historical claims too so restarting the process cannot
-            # accidentally allow a duplicate active timeframe.
-            duration = selected["expires_at"] - selected["entry_at"]
-            if duration not in (3 * 120, 3 * 300, 3 * 900):
-                raise ValueError("Exclusive live timeframe must be M2/M5/M15 x3")
-            if db.execute(
-                "SELECT 1 FROM claims WHERE (expires_at-entry_at)=? "
-                "AND entry_at<? AND expires_at>? LIMIT 1",
-                (duration, selected["expires_at"], selected["entry_at"]),
-            ).fetchone():
-                return False
         cursor = db.execute(
             "INSERT OR IGNORE INTO claims "
             "(symbol,direction,entry_at,expires_at,source,claimed_at,active_until) "
             "VALUES(?,?,?,?,?,?,?)",
             (
-                selected["symbol"],
-                selected["direction"],
-                selected["entry_at"],
-                selected["expires_at"],
-                source,
-                time.time() if now is None else now,
-                selected["expires_at"],
+                selected["symbol"], selected["direction"], selected["entry_at"],
+                selected["expires_at"], source,
+                time.time() if now is None else now, selected["expires_at"],
             ),
         )
         db.commit()
         return cursor.rowcount == 1
-
 
 def completed(path, selected, source, finished_at):
     """Shorten an acknowledged cycle only after a terminal result is saved.
