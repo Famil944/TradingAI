@@ -291,9 +291,9 @@ async def callbacks(query: types.CallbackQuery):
         drafts[user_id] = {"kind": fields[2], "phase": "body"}
         await query.answer()
         await message.answer(
-            "📊 Напиши вопрос для голосования одним сообщением."
-            if fields[2] == "poll" else
-            "✉️ Напиши сообщение для всех подписчиков одним сообщением."
+            ("📊 Напиши вопрос для голосования одним сообщением."
+             if fields[2] == "poll" else
+             "✉️ Напиши сообщение для всех подписчиков одним сообщением.")
             + "\nОтмена: /cancel",
             parse_mode=None,
         )
@@ -306,8 +306,11 @@ async def callbacks(query: types.CallbackQuery):
         if not draft or draft.get("phase") != "confirm":
             await query.answer("Предпросмотр устарел", show_alert=True)
             return
+        # Remove before any await: duplicate taps must never send two copies.
+        drafts.pop(user_id, None)
         targets = await active_ids()
         if not targets:
+            drafts[user_id] = draft
             await query.answer("Нет активных подписчиков", show_alert=True)
             return
         try:
@@ -315,9 +318,9 @@ async def callbacks(query: types.CallbackQuery):
                 store().create, draft["kind"], draft["body"], draft["options"], targets
             )
         except ValueError as exc:
+            drafts[user_id] = draft
             await query.answer(str(exc), show_alert=True)
             return
-        drafts.pop(user_id, None)
         await query.answer("Отправка началась")
         await message.answer(
             f"✅ Рассылка №{aid} запущена для {len(targets)} подписчиков. "
