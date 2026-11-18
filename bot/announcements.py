@@ -66,7 +66,7 @@ async def open_menu(message):
 
 def vote_keyboard(aid, options, selected=None):
     return kb([
-        [(("✅ " if index == selected else "☐ ") + option[:56],
+        [(("✅ " if index == selected else "☐ ") + f"{index + 1}. " + option[:51],
           f"a:vote:{aid}:{index}")]
         for index, option in enumerate(options)
     ])
@@ -75,7 +75,9 @@ def vote_keyboard(aid, options, selected=None):
 def display(entry):
     if entry["kind"] == "notice":
         return "📢 ОБЪЯВЛЕНИЕ TRADINGAI\n\n" + entry["body"]
+    choices = "\n".join(f"{i}. {option}" for i, option in enumerate(entry["options"], 1))
     return ("📊 ОПРОС TRADINGAI\n\n" + entry["body"]
+            + "\n\n" + choices
             + "\n\nВыбери один вариант ответа. Свой голос можно изменить.")
 
 
