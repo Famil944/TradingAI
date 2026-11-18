@@ -355,12 +355,28 @@ class LiveStrategyPublisher:
         self.started_at = self.clock()
         self._last_settlement = 0
         self.subscriber_relay = subscriber_relay
+        self._diagnostic = {key: 0 for key in (
+            "candidates", "timeframe", "stale_or_timing", "reserved_duplicate",
+            "claim_error", "overlap", "late", "owner_error", "sent", "relay_error",
+        )}
+        self._diagnostic_at = self.clock()
+
+    def _report_diagnostic(self):
+        now = self.clock()
+        if now - self._diagnostic_at < 300:
+            return
+        LOG.info("OTC S2-S4 delivery diagnostics (last %.0fs): %s",
+                 now - self._diagnostic_at, self._diagnostic)
+        self._diagnostic = {key: 0 for key in self._diagnostic}
+        self._diagnostic_at = now
 
     async def publish(self, bot, owner, enabled=True, allowed_timeframes=(120, 300, 900)):
         if not enabled:
             return
         now = self.clock()
         rows = await asyncio.to_thread(candidate_list, self.candidate_path, now)
+        self._diagnostic["candidates"] += len(rows)
+        self._report_diagnostic()
         # Stable, explicitly configured tie-break, not a claimed accuracy score.
         rows.sort(key=lambda r: (
             STRATEGY_PRIORITY[r["experiment"]["method"]],
@@ -368,14 +384,16 @@ class LiveStrategyPublisher:
         ))
         for row in rows:
             now = self.clock()
-            if (
-                row["experiment"]["cycle_seconds"] not in allowed_timeframes
-                or row["observed_at"] < self.started_at - 2
-                or not MIN_LEAD < row["entry_at"] - now <= SECONDARY_MAX_LEAD
-            ):
+            if row["experiment"]["cycle_seconds"] not in allowed_timeframes:
+                self._diagnostic["timeframe"] += 1
+                continue
+            if (row["observed_at"] < self.started_at - 2
+                    or not MIN_LEAD < row["entry_at"] - now <= SECONDARY_MAX_LEAD):
+                self._diagnostic["stale_or_timing"] += 1
                 continue
             ident = await asyncio.to_thread(self.journal.reserve, row, now)
             if not ident:
+                self._diagnostic["reserved_duplicate"] += 1
                 continue
             method, seconds = row["experiment"]["method"], row["experiment"]["cycle_seconds"]
             try:
@@ -385,14 +403,17 @@ class LiveStrategyPublisher:
                     row, method, self.clock(),
                 )
             except Exception as exc:
-                LOG.warning("Strategy claim failed: %s", type(exc).__name__)
+                self._diagnostic["claim_error"] += 1
+                LOG.exception("Strategy claim failed")
                 await asyncio.to_thread(self.journal.not_delivered, ident)
                 continue
             if not claimed:
+                self._diagnostic["overlap"] += 1
                 await asyncio.to_thread(self.journal.not_delivered, ident)
                 LOG.info("Overlapping OTC entry suppressed: %s %s", method, row["symbol"])
                 continue
             if row["entry_at"] - self.clock() <= MIN_LEAD:
+                self._diagnostic["late"] += 1
                 await asyncio.to_thread(self.journal.not_delivered, ident)
                 continue
             from services.otc_public_stats import METHOD_LABELS
@@ -412,6 +433,7 @@ class LiveStrategyPublisher:
                 )
                 when = self.clock()
                 if row["entry_at"] - when <= MIN_LEAD:
+                    self._diagnostic["late"] += 1
                     # A delivered late card is not counted as an actionable win.
                     await asyncio.to_thread(self.journal.not_delivered, ident)
                     try:
@@ -428,6 +450,7 @@ class LiveStrategyPublisher:
                     self.journal.sent, ident, when, message.message_id,
                     hashlib.sha256(card_text.encode()).hexdigest()
                 )
+                self._diagnostic["sent"] += 1
                 if self.subscriber_relay is not None:
                     try:
                         await self.subscriber_relay.publish_now(
@@ -443,8 +466,10 @@ class LiveStrategyPublisher:
                             ),
                         )
                     except Exception:
+                        self._diagnostic["relay_error"] += 1
                         LOG.exception("Strategy %s subscriber relay failed after owner delivery", method)
-            except Exception as exc:
+            except Exception:
+                self._diagnostic["owner_error"] += 1
                 LOG.exception("Strategy %s owner delivery failed", method)
                 await asyncio.to_thread(self.journal.not_delivered, ident)
 
