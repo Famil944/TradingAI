@@ -401,6 +401,7 @@ class LiveStrategyPublisher:
                     claim,
                     self.root / "data" / "signal-delivery.db",
                     row, method, self.clock(),
+                    exclusive_timeframe=True,
                 )
             except Exception as exc:
                 self._diagnostic["claim_error"] += 1
