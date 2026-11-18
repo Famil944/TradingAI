@@ -406,28 +406,6 @@ async def research_quality(message: types.Message):
         await message.answer(text[offset : offset + 3500], parse_mode=None)
 
 
-@router.message(Command("otc_m1"))
-async def m1_shadow_stats(message: types.Message):
-    """Owner-only prospective M1 results; not delivered-signal statistics."""
-    from services.otc_m1_shadow import report, text_report
-
-    args = (message.text or "").split()
-    period = args[1] if len(args) > 1 else "7d"
-    durations = {"24h": 86400, "7d": 604800, "30d": 2592000, "all": None}
-    if period not in durations:
-        await message.answer("Используйте /otc_m1 [24h|7d|30d|all]")
-        return
-    now = time.time()
-    since = max(
-        now - durations[period] if durations[period] is not None else 0,
-        shadow_stats_epoch(),
-    )
-    counts = await asyncio.to_thread(
-        report, ROOT / "data/community-cycles.db", since, now
-    )
-    await message.answer(text_report(counts), parse_mode=None)
-
-
 @router.message(Command("otc_stats"))
 async def stats(message: types.Message):
     if service and getattr(getattr(service, "config", None), "cycles_only", False):
