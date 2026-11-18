@@ -2,6 +2,7 @@
 
 import logging
 import sqlite3
+from collections import Counter
 from contextlib import closing
 
 from services.otc_delivery_guard import check_data
@@ -14,6 +15,9 @@ class DataReadiness:
         self.path = path
         self.ticks = {}
         self._journal_retry_at = 0
+        self._diag = Counter()
+        self._diag_since = now
+        self._diag_last_reason = {}
         with closing(sqlite3.connect(path, timeout=1)) as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute(
@@ -23,6 +27,7 @@ class DataReadiness:
         self.reset(now, "startup")
 
     def reset(self, now, reason):
+        self._diag[('reset', 'system', reason)] += 1
         self.ticks.clear()
         self.gap_open = True
         if now < self._journal_retry_at:
@@ -39,6 +44,7 @@ class DataReadiness:
             self._journal_retry_at = now + 10
 
     def observe(self, tick, now, history, assets, quotes):
+        """Only report gate decisions; do not relax market-data validation."""
         previous = self.ticks.get(tick.symbol)
         if previous is None or now - previous[1] > 8:
             self.ticks[tick.symbol] = (now, now, 1)
@@ -46,11 +52,23 @@ class DataReadiness:
             self.ticks[tick.symbol] = (previous[0], now, previous[2] + 1)
         ready = {}
         for symbol, (start, last, count) in self.ticks.items():
-            if count < 3 or now - start < 10 or now - last > 8:
+            if count < 3 or now - start < 10:
+                self._diag[("not_ready", symbol, "warmup")] += 1
+                self._diag_last_reason[symbol] = "warmup"
+                continue
+            if now - last > 8:
+                self._diag[("not_ready", symbol, "last_tick_stale")] += 1
+                self._diag_last_reason[symbol] = "last_tick_stale"
                 continue
             selected = dict(symbol=symbol, feature_asof=now, expires_at=now + 300)
-            if check_data(selected, (history, assets, quotes, None), now) is None:
+            reason = check_data(selected, (history, assets, quotes, None), now)
+            if reason is None:
                 ready[symbol] = quotes[symbol]
+                self._diag[("ready", symbol, "ok")] += 1
+                self._diag_last_reason[symbol] = "ok"
+            else:
+                self._diag[("not_ready", symbol, reason)] += 1
+                self._diag_last_reason[symbol] = str(reason)
         if ready and self.gap_open and now >= self._journal_retry_at:
             try:
                 with closing(sqlite3.connect(self.path, timeout=0.1)) as db:
@@ -60,6 +78,18 @@ class DataReadiness:
             except sqlite3.OperationalError as exc:
                 LOG.warning("OTC readiness journal close deferred (%s)", type(exc).__name__)
                 self._journal_retry_at = now + 10
+
+        if now - self._diag_since >= 300:
+            reasons = {}
+            for (status, symbol, reason), count in self._diag.items():
+                key = symbol if symbol != "" else "system"
+                reasons.setdefault(key, {})[status + ":" + reason] = count
+            LOG.info(
+                "OTC readiness gate diagnostics (last %.0fs): %s; last=%s",
+                now - self._diag_since, reasons, self._diag_last_reason,
+            )
+            self._diag.clear()
+            self._diag_since = now
         return ready
 
 
