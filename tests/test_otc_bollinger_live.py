@@ -42,6 +42,22 @@ class LiveCycleTests(unittest.TestCase):
             self.assertIsNotNone(journal.reserve(self.plan(3000), 2980))
             self.assertIn("② 1", journal.stats(since=0))
 
+    def test_same_pair_can_have_independent_M2_M5_M15_reservations(self):
+        with tempfile.TemporaryDirectory() as folder:
+            journal = CycleJournal(Path(folder) / "cycles.db", per_horizon=True)
+            entry = 9000
+            for seconds in (120, 300, 900):
+                self.assertIsNotNone(
+                    journal.reserve(self.plan(entry, seconds), 8980),
+                    f"M{seconds // 60} should not be blocked by other expiries",
+                )
+            # Every horizon still rejects a second signal of its own expiry.
+            for seconds in (120, 300, 900):
+                self.assertIsNone(journal.reserve(
+                    dict(self.plan(entry + seconds, seconds), symbol="B"),
+                    entry + seconds - 20,
+                ))
+
     def test_no_fabricated_cycle_win_after_missing_or_draw(self):
         self.assertEqual(live_outcome(["LOSS", "WIN", "PENDING"]), "WIN")
         self.assertEqual(live_outcome(["UNKNOWN", "WIN", "WIN"]), "UNKNOWN")
@@ -80,6 +96,36 @@ class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(journal.pending()), 1)
             self.assertTrue({7200, 7500, 7800, 8100} <= engine.sampler.targets["A"])
             self.assertIn("БОЛЛИНДЖЕР ×3 · M5", bot.send_message.call_args.args[1])
+
+    async def test_same_pair_m2_m5_m15_send_independently_on_aligned_entry(self):
+        with tempfile.TemporaryDirectory() as folder:
+            journal = CycleJournal(Path(folder) / "cycles.db", per_horizon=True)
+            engine = BollingerCycles(journal, clock=lambda: 8981)
+            bars = [
+                Candle(8940 - i * 60, 100, 101, 99, 100.5)
+                for i in range(60, 0, -1)
+            ]
+            asset = SimpleNamespace(
+                open=True, payout=95, observed_at=8981, name="Asset"
+            )
+            snapshot = ({"A": bars}, {"A": asset}, {"A": 8981}, None)
+            engine.observe(*snapshot)
+            message_ids = iter((1, 2, 3))
+            async def send_message(*_args, **_kwargs):
+                return SimpleNamespace(message_id=next(message_ids))
+            bot = SimpleNamespace(send_message=AsyncMock(side_effect=send_message))
+            with patch("services.otc_bollinger_live.check_data", return_value=None), \
+                 patch(
+                     "services.otc_bollinger_live.pattern_directions",
+                     return_value={"bollinger_reversal": {"direction": "UP"}},
+                 ):
+                await engine.plan(bot, 777, snapshot)
+            self.assertEqual(bot.send_message.await_count, 3)
+            pending = journal.pending()
+            self.assertEqual(
+                {r["expires_at"] - r["entry_at"] for r in pending},
+                {360, 900, 2700},
+            )
 
     async def test_first_win_settles_early_and_preserves_attempt(self):
         with tempfile.TemporaryDirectory() as folder:
