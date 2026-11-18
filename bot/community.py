@@ -1,6 +1,7 @@
 """Subscriber read-only menus and owner-only suggestion moderation."""
 import asyncio
 import time
+from html import escape
 from datetime import datetime
 from functools import lru_cache
 from zoneinfo import ZoneInfo
@@ -78,6 +79,8 @@ def keyboard(rows):
 def home(owner=False):
     if not owner:
         return keyboard([
+            [("▶️ Сигналы на 1 час", "c:session:start"),
+             ("⏸ Пауза", "c:session:stop")],
             [("🎛 Мои сигналы", "c:prefs"), ("📊 Винрейт", "c:wr")],
             [("💎 Подписка", "c:subscription"), ("💡 Предложение", "c:suggest")],
             [("ℹ️ Справка", "c:info")],
@@ -125,7 +128,9 @@ TERMS = (
     "доходности или точности. Решение о сделке и риск — только ваши.\n\n"
     "Принимая условия, вы запрашиваете доступ и соглашаетесь получать "
     "уведомления бота. Первая одобренная заявка даёт 7 дней бесплатно. "
-    "Затем продление — только владельцем."
+    "Затем продление — только владельцем. В разделе администратора "
+    "сохраняются отображаемое имя Telegram, @username и число действий в боте "
+    "(без содержания сообщений). Время чтения сигналов определить невозможно."
 )
 INFO = (
     "ℹ️ О сигналах\n"
@@ -180,7 +185,13 @@ def access_text(store, user_id):
     status = store.status(user_id)
     state = status["state"]
     if state == "approved":
-        return f"💎 Доступ активен до {timestamp(status['expires_at'])}"
+        session = store.session_status(user_id)
+        if session["active"]:
+            return (f"💎 Подписка до {timestamp(status['expires_at'])}\n"
+                    f"✅ Сигналы включены до {timestamp(session['expires_at'])}.\n"
+                    "Нажми «Сигналы на 1 час», чтобы продлить сеанс.")
+        return (f"💎 Подписка до {timestamp(status['expires_at'])}\n"
+                "⏸ Сигналы на паузе. Нажми «Сигналы на 1 час».")
     if state == "paused":
         return f"🔕 Уведомления отключены · доступ до {timestamp(status['expires_at'])}"
     if state == "pending":
@@ -385,23 +396,80 @@ async def access_commands(message: types.Message):
         await show_access(message)
 
 
+def profile_name(row):
+    name = " ".join(filter(None, [row.get("first_name"), row.get("last_name")])).strip()
+    return name or ("@" + row["username"] if row.get("username") else "Пользователь")
+
+
+def profile_url(row):
+    username = row.get("username")
+    return ("https://t.me/" + username) if username else "tg://user?id=" + str(int(row["chat_id"]))
+
+
 async def show_access(message):
-    users = await asyncio.to_thread(subscribers().members, 30)
+    users = await asyncio.to_thread(subscribers().member_profiles, 30)
     if not users:
-        await message.answer("🔐 Заявок пока нет.")
+        await message.answer("👥 Пользователей пока нет.")
         return
-    lines = ["🔐 Доступ · последние 30 пользователей"]
-    buttons = []
-    for chat_id, state, expires, used, accepted in users:
-        label = subscribers().status(chat_id)["state"]
-        expiry = f" до {timestamp(expires)}" if expires else ""
-        lines.append(f"{chat_id} · {label}{expiry}")
-        if label == "pending" and accepted is not None:
-            buttons.append([("✅ 7д · " + str(chat_id), f"c:grant:{chat_id}:7"),
-                            ("⛔", f"c:block:{chat_id}")])
-    buttons.append([("🔄 Обновить", "c:access")])
-    await message.answer("\n".join(lines)[:3500],
-                         reply_markup=keyboard(buttons[:25]), parse_mode=None)
+    # Batch the list instead of slicing HTML midway through a Telegram link.
+    for offset in range(0, len(users), 10):
+        portion = users[offset:offset+10]
+        lines = ["👥 Пользователи · профили и доступ"]
+        buttons = []
+        for person in portion:
+            chat_id = int(person["chat_id"])
+            name = escape(profile_name(person))
+            state = subscribers().status(chat_id)["state"]
+            latest = person.get("last_interaction")
+            last = (" · последнее действие " + timestamp(latest)) if latest else ""
+            session_on = bool(person.get("session_expires_at") and person["session_expires_at"] > time.time())
+            lines.append(
+                f'<a href="{profile_url(person)}">{name}</a> · {escape(state)} '
+                + ("· 🟢 сеанс" if session_on else "· ⏸ сеанс")
+                + last
+            )
+            buttons.append([(profile_name(person)[:25], f"c:user:{chat_id}")])
+        buttons.append([("🔄 Обновить", "c:access")])
+        await message.answer(
+            "\n".join(lines), reply_markup=keyboard(buttons), parse_mode="HTML"
+        )
+
+
+async def show_user(message, user_id):
+    info = await asyncio.to_thread(subscribers().member_activity, user_id)
+    if info is None:
+        await message.answer("Пользователь не найден.")
+        return
+    title = escape(profile_name(info))
+    state = subscribers().status(user_id)["state"]
+    session_end = info.get("session_expires_at")
+    session = (
+        f"🟢 До {timestamp(session_end)}" if session_end and session_end > time.time()
+        else "⏸ Неактивен"
+    )
+    last = timestamp(info["last_interaction"]) if info.get("last_interaction") else "Нет данных"
+    expiry = timestamp(info["expires_at"]) if info.get("expires_at") else "Не назначен"
+    text = (
+        f'👤 <a href="{profile_url(info)}">{title}</a>\n'
+        f"Доступ: {escape(state)} · до {expiry}\n"
+        f"Сеанс сигналов: {session}\n"
+        f"Последнее действие: {last}\n"
+        f"Действий за 7 дней: {info['actions_7d']}\n"
+        f"Активных дней: {info['days_7d']} из 7; {info['days_30d']} из 30\n"
+        f"Доставлено уникальных сигналов: {info['delivered']}\n\n"
+        "Это действия в боте, а не время чтения сообщений.\n"
+        f"ID для управления: <code>{user_id}</code>"
+    )
+    action = ("Разблокировать", f"c:unblock:{user_id}") if state == "blocked" else (
+        "⛔ Блокировать", f"c:block:{user_id}"
+    )
+    await message.answer(
+        text, parse_mode="HTML",
+        reply_markup=keyboard([
+            [("✅ Доступ на 7 дней", f"c:grant:{user_id}:7"), action],
+            [("◀ Пользователи", "c:access")],
+        ]),
+    )
 
 
 @router.message(Command("grant"))
@@ -425,7 +493,7 @@ async def grant_access(message, chat_id, days):
     try:
         await message.bot.send_message(
             chat_id, f"✅ Доступ одобрен до {timestamp(expiry)}. "
-            "Новые сигналы будут приходить автоматически.",
+            "Для получения личных сигналов нажми /start и кнопку «Сигналы на 1 час».",
             reply_markup=home(), parse_mode=None,
         )
     except Exception:
@@ -501,18 +569,50 @@ async def callbacks(query: types.CallbackQuery):
     owner = is_owner(query.from_user)
     admin_chat = owner and query.message.chat.id == settings.admin_chat_id
     target = action[1] if len(action) > 1 else ""
-    if target in ("grant", "block", "access"):
+    if target in ("grant", "block", "unblock", "access", "user"):
         if not admin_chat:
             await query.answer("Нет доступа", show_alert=True)
             return
         await query.answer()
         if target == "access":
             await show_access(query.message)
+        elif target == "user" and len(action) == 3 and action[2].isdigit():
+            await show_user(query.message, int(action[2]))
+        elif target == "unblock" and len(action) == 3 and action[2].isdigit():
+            await asyncio.to_thread(subscribers().unblock, int(action[2]))
+            await query.message.answer("✅ Пользователь разблокирован")
         elif target == "grant" and len(action) == 4 and action[2].isdigit() and action[3].isdigit():
             await grant_access(query.message, int(action[2]), int(action[3]))
         elif target == "block" and len(action) == 3 and action[2].isdigit():
             await asyncio.to_thread(subscribers().block, int(action[2]))
             await query.message.answer("⛔ Пользователь заблокирован")
+        return
+    if target == "session":
+        if owner or len(action) != 3 or action[2] not in ("start", "stop"):
+            await query.answer("Недоступно", show_alert=True)
+            return
+        store = subscribers()
+        if action[2] == "start":
+            try:
+                expiry = await asyncio.to_thread(store.start_session, query.message.chat.id)
+            except ValueError as exc:
+                await query.answer(str(exc), show_alert=True)
+                return
+            await query.answer("Сигналы включены")
+            await query.message.answer(
+                f"✅ Сигналы включены до {timestamp(expiry)}.\n"
+                "Продли сеанс кнопкой «Сигналы на 1 час» или напоминанием. "
+                "После окончания новые сигналы перестанут приходить.",
+                reply_markup=home(), parse_mode=None,
+            )
+        else:
+            await asyncio.to_thread(store.stop_session, query.message.chat.id)
+            await query.answer("Сеанс остановлен")
+            await query.message.answer(
+                "⏸ Личные сигналы приостановлены. Подписка сохранена. "
+                "Для возобновления нажми «Сигналы на 1 час».",
+                reply_markup=home(), parse_mode=None,
+            )
         return
     if target == "prefs":
         if not owner and subscribers().status(query.message.chat.id)["state"] != "approved":
