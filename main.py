@@ -173,9 +173,10 @@ async def main(*, session_minutes=None, session_end=None):
     service.main_broad = broad
     broad_task = asyncio.create_task(broad.run(bot, settings.admin_chat_id))
     from services.otc_bollinger_live import BollingerCycles, CycleJournal
-    from services.otc_subscribers import SubscriberRelay
+    from services.otc_subscribers import SubscriberActivityMiddleware, SubscriberRelay
 
     subscriber_relay = SubscriberRelay(ROOT)
+    dp.update.outer_middleware(SubscriberActivityMiddleware(subscriber_relay.store))
     cycle_journal = CycleJournal(
         ROOT / "data" / "bollinger-cycles.db", label="Боллинджер ×3", per_horizon=True
     )
