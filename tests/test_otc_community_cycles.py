@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -57,6 +58,18 @@ class CommunityCyclesTests(unittest.TestCase):
             prepare(({"AMD_otc": bars}, {}, {"AMD_otc": now}, None), now),
             [],
         )
+
+    def test_timeframe_diagnostics_show_actual_M5_M15_boundaries(self):
+        at_quarter = Counter()
+        self.assertEqual(prepare(({}, {}, {}, None), 8981, at_quarter), [])
+        self.assertEqual(at_quarter["aligned_M2"], 1)
+        self.assertEqual(at_quarter["aligned_M5"], 1)
+        self.assertEqual(at_quarter["aligned_M15"], 1)
+        only_m2 = Counter()
+        self.assertEqual(prepare(({}, {}, {}, None), 9041, only_m2), [])
+        self.assertEqual(only_m2["aligned_M2"], 1)
+        self.assertEqual(only_m2["aligned_M5"], 0)
+        self.assertEqual(only_m2["aligned_M15"], 0)
 
     def test_no_lookahead_or_past_entries(self):
         self.assertEqual(prepare(({}, {}, {}, None), 10790), [])
