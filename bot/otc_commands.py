@@ -111,6 +111,7 @@ def menu(chat_id, expanded=False):
                         text="📊 Стратегии", callback_data="c:sources"
                     ),
                 ],
+                [InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")],
             ]
         )
     chosen = choices.get(chat_id, TIMEFRAMES)
@@ -162,6 +163,7 @@ def menu(chat_id, expanded=False):
         InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users"),
         InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue"),
     ])
+    rows.append([InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")])
     if expanded:
         rows.append(
             [
