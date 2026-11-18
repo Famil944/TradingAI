@@ -17,7 +17,7 @@ from pathlib import Path
 from services.otc_candidate_report import outcome as direction_outcome
 from services.otc_community_cycles import METHODS
 from services.otc_community_cycles import VERSION as RESEARCH_VERSION
-from services.otc_delivery_guard import claim, completed
+from services.otc_delivery_guard import blocking_claim, claim, completed
 from services.otc_public_broadcast import public_text
 from services.otc_validation_report import load
 
@@ -411,7 +411,32 @@ class LiveStrategyPublisher:
             if not claimed:
                 self._diagnostic["overlap"] += 1
                 await asyncio.to_thread(self.journal.not_delivered, ident)
-                LOG.info("Overlapping OTC entry suppressed: %s %s", method, row["symbol"])
+                try:
+                    conflict = await asyncio.to_thread(
+                        blocking_claim,
+                        self.root / "data" / "signal-delivery.db",
+                        row, method,
+                    )
+                except Exception:
+                    # Diagnostic lookup must never disrupt the signal pipeline.
+                    LOG.exception("OTC overlap inspection failed")
+                    conflict = None
+                if conflict:
+                    remaining = max(0, conflict["expires_at"] - self.clock())
+                    LOG.info(
+                        "Overlapping OTC entry suppressed: %s %s M%d "
+                        "candidate_entry=%s blocked_by=%s source=%s "
+                        "previous_entry=%s release_at=%s remaining=%.0fs",
+                        method, row["symbol"], seconds // 60, row["entry_at"],
+                        conflict["origin"], conflict["source"],
+                        conflict["entry_at"], conflict["expires_at"], remaining,
+                    )
+                else:
+                    LOG.warning(
+                        "OTC overlap suppressed but blocker not found: %s %s M%d "
+                        "candidate_entry=%s",
+                        method, row["symbol"], seconds // 60, row["entry_at"],
+                    )
                 continue
             if row["entry_at"] - self.clock() <= MIN_LEAD:
                 self._diagnostic["late"] += 1
