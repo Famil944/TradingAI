@@ -141,7 +141,7 @@ INFO = (
 )
 
 
-def compact_overview(timeframe="all", period="today"):
+def compact_overview(timeframe="all", period="all"):
     """Only delivered forecasts; WIN/LOSS exclude virtual or shadow trades."""
     seconds = SECONDS[timeframe]
     since = period_start(period)
@@ -152,14 +152,14 @@ def compact_overview(timeframe="all", period="today"):
     for source, _ in STRATEGIES:
         rows = [
             row for row in snapshots(source)
-            if row["created_at"] >= since
+            if (period == "all" or (row.get("sent_at") or row.get("created_at") or 0) >= since)
             and (seconds is None or row["seconds"] == seconds)
         ]
         m = metrics(rows)
         rate = f"{m['wr']:.1f}%" if m["wr"] is not None else "—"
         lines.append(
             f"{IDS[source]}  {rate} · ✅{m['win']} ❌{m['loss']} "
-            f"❔{m['unknown']} (n={m['known']})"
+            f"(n={m['known']}) ❔{m['unknown']}"
         )
     lines.extend(["", "Только подтверждённые WIN/LOSS · не сделки брокера."])
     return "\n".join(lines)
@@ -208,14 +208,13 @@ def subscription_buttons(store, user_id):
 def sources(period="today"):
     """Owner-only strategy names and a period filter."""
     return keyboard([
-        [(("✅ " if period == name else "") + label, "c:sources:" + name)
-         for name, label in (("today", "Сегодня"), ("7d", "7 дней"),
-                             ("30d", "30 дней"), ("all", "Всё"))],
         [("① Боллинджер ×3", "c:source:main"),
          ("② Возврат внутрь", "c:source:bb_reentry")],
         [("③ Пробой/ретест", "c:source:break_retest"),
          ("④ EMA9/19", "c:source:ema_pullback")],
-        [("💡 Предложение", "c:suggest"), ("◀ Меню", "c:home")],
+        [(("✅ " if period == name else "") + label, "c:sources:" + name)
+         for name, label in (("today", "Сегодня"), ("7d", "7 дней"),
+                             ("30d", "30 дней"), ("all", "Всё"))],
     ])
 
 
@@ -374,7 +373,7 @@ async def signal_stats(message: types.Message):
             text = await asyncio.to_thread(overview_text)
             await message.answer(text, reply_markup=sources(), parse_mode=None)
         elif subscribers().status(message.chat.id)["state"] == "approved":
-            await message.answer(await asyncio.to_thread(compact_overview),
+            await message.answer(await asyncio.to_thread(compact_overview, "all", "today"),
                                  reply_markup=compact_periods(), parse_mode=None)
         else:
             await message.answer("Сначала оформите доступ: /start", reply_markup=home())
