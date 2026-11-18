@@ -155,6 +155,46 @@ def claim(path, selected, source, now=None, *, exclusive_timeframe=False):
         db.commit()
         return cursor.rowcount == 1
 
+def blocking_claim(path, selected, source):
+    """Read-only explanation for a rejected scoped claim; never changes locks.
+
+    Returns the active matching same-strategy, same-expiry reservation and its
+    scheduled end, including claims kept from a prior bot version.
+    """
+    dbpath = Path(path)
+    if not dbpath.is_file():
+        return None
+    duration = selected["expires_at"] - selected["entry_at"]
+    with closing(sqlite3.connect(dbpath, timeout=1)) as db:
+        tables = {
+            row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('strategy_timeframe_claims','claims')"
+            )
+        }
+        blocked = []
+        for table, origin in (
+            ("strategy_timeframe_claims", "scoped"),
+            ("claims", "legacy"),
+        ):
+            if table not in tables:
+                continue
+            found = db.execute(
+                f"SELECT symbol,source,entry_at,expires_at FROM {table} "
+                "WHERE source=? AND (expires_at-entry_at)=? "
+                "AND entry_at<? AND expires_at>? "
+                "ORDER BY expires_at DESC LIMIT 1",
+                (source, duration, selected["expires_at"], selected["entry_at"]),
+            ).fetchone()
+            if found:
+                blocked.append(dict(
+                    symbol=found[0], source=found[1],
+                    entry_at=int(found[2]), expires_at=int(found[3]),
+                    origin=origin,
+                ))
+        return max(blocked, key=lambda row: row["expires_at"]) if blocked else None
+
+
 def completed(path, selected, source, finished_at):
     """Shorten an acknowledged cycle only after a terminal result is saved.
 
