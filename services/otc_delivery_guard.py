@@ -56,7 +56,14 @@ def check_data(selected, snapshot, now):
     return None
 
 
-def claim(path, selected, source, now=None):
+def claim(path, selected, source, now=None, *, exclusive_timeframe=False):
+    """Reserve an entry atomically.
+
+    If exclusive_timeframe=True, all S1-S4 signals sharing the same M2/M5/M15
+    three-attempt duration are serialized, even across symbols or strategies.
+    The slot remains reserved until the scheduled end of all three attempts;
+    early WIN/LOSS settlement must not introduce overlapping notifications.
+    """
     with closing(sqlite3.connect(path, timeout=1)) as db:
         db.execute("BEGIN IMMEDIATE")
         db.execute("""CREATE TABLE IF NOT EXISTS claims(
@@ -80,6 +87,20 @@ def claim(path, selected, source, now=None):
              selected["expires_at"], selected["entry_at"]),
         ).fetchone():
             return False
+        if exclusive_timeframe:
+            # S1-S4 candidates consist of three sequential attempts. Keep
+            # distinct expirations independent (M2 does not block M5/M15).
+            # Read historical claims too so restarting the process cannot
+            # accidentally allow a duplicate active timeframe.
+            duration = selected["expires_at"] - selected["entry_at"]
+            if duration not in (3 * 120, 3 * 300, 3 * 900):
+                raise ValueError("Exclusive live timeframe must be M2/M5/M15 x3")
+            if db.execute(
+                "SELECT 1 FROM claims WHERE (expires_at-entry_at)=? "
+                "AND entry_at<? AND expires_at>? LIMIT 1",
+                (duration, selected["expires_at"], selected["entry_at"]),
+            ).fetchone():
+                return False
         cursor = db.execute(
             "INSERT OR IGNORE INTO claims "
             "(symbol,direction,entry_at,expires_at,source,claimed_at,active_until) "
