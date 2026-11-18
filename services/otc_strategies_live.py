@@ -429,20 +429,23 @@ class LiveStrategyPublisher:
                     hashlib.sha256(card_text.encode()).hexdigest()
                 )
                 if self.subscriber_relay is not None:
-                    await self.subscriber_relay.publish_now(
-                        bot,
-                        dict(
-                            signal,
-                            created_at=now,
-                            sent_at=when,
-                            expires_at=row["expires_at"],
-                            strategy=method,
-                            version=row["experiment"].get("version", "unknown"),
-                            resolved_at=row["expires_at"],
-                        ),
-                    )
+                    try:
+                        await self.subscriber_relay.publish_now(
+                            bot,
+                            dict(
+                                signal,
+                                created_at=now,
+                                sent_at=when,
+                                expires_at=row["expires_at"],
+                                strategy=method,
+                                version=row["experiment"].get("version", "unknown"),
+                                resolved_at=row["expires_at"],
+                            ),
+                        )
+                    except Exception:
+                        LOG.exception("Strategy %s subscriber relay failed after owner delivery", method)
             except Exception as exc:
-                LOG.warning("Strategy %s delivery failed: %s", method, type(exc).__name__)
+                LOG.exception("Strategy %s owner delivery failed", method)
                 await asyncio.to_thread(self.journal.not_delivered, ident)
 
     async def settle(self):
