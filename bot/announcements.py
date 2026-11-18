@@ -255,9 +255,13 @@ def append_options(draft, content):
 
 async def show_preview(message, draft):
     draft["phase"] = "confirm"
+    title = (
+        "👁 Шаг 3 из 3. Проверь вопрос и ответы.\n"
+        if draft["kind"] == "poll" else
+        "👁 Шаг 2 из 2. Проверь объявление.\n"
+    )
     await message.answer(
-        ("👁 Шаг 3 из 3. Проверь вопрос и ответы.\n"\n         if draft["kind"] == "poll" else\n         "👁 Шаг 2 из 2. Проверь объявление.\n")
-        "Подписчики пока ничего не получили.\n\n" + display(draft),
+        title + "Подписчики пока ничего не получили.\n\n" + display(draft),
         reply_markup=preview_controls(draft["kind"]),
         parse_mode=None,
     )
