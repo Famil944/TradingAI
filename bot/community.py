@@ -86,8 +86,7 @@ def home(owner=False):
             [("ℹ️ Справка", "c:info")],
         ])
     return keyboard([
-        [("📊 Стратегии", "c:sources"), ("🎛 Мои сигналы", "c:prefs")],
-        [("👥 Пользователи", "c:users")],
+        [("📊 Стратегии", "c:sources"), ("👥 Пользователи", "c:users")],
         [("💡 Предложения", "c:queue"), ("🔧 OTC", "c:owner")],
     ])
 
@@ -376,13 +375,18 @@ async def help_menu(message: types.Message):
     if not private(message):
         return
     if is_owner(message.from_user):
-        await otc_commands.show_menu(message)
-    else:
         await message.answer(
-            "Сигналы доступны после одобрения владельцем. В меню — "
-            "кнопка «Сигналы на 1 час», подписка, винрейт и пояснения S1–S4.",
-            reply_markup=home(), parse_mode=None,
+            "ℹ️ Управление TradingAI\n"
+            "/start или /otc — главное меню и управление потоком.\n"
+            "/signal_stats — статистика S1–S4.\n"
+            "/otc_stats — виртуальная статистика.\n"
+            "/access — пользователи и подписки.\n"
+            "/suggestions — предложения подписчиков.\n"
+            "Команды управления и подробные отчёты доступны в главном меню.",
+            reply_markup=home(owner=True), parse_mode=None,
         )
+    else:
+        await message.answer(INFO, reply_markup=home(), parse_mode=None)
 
 
 @router.message(Command("stop_signals"))
@@ -538,7 +542,11 @@ async def block_command(message: types.Message):
 async def suggest(message: types.Message):
     if not private(message):
         return
-    if not is_owner(message.from_user) and subscribers().status(message.chat.id)["state"] != "approved":
+    if is_owner(message.from_user):
+        # Legacy /suggest or /feedback: owner reads/moderates, never submits.
+        await show_queue(message)
+        return
+    if subscribers().status(message.chat.id)["state"] != "approved":
         await message.answer("Сначала оформите доступ: /start", reply_markup=home())
         return
     feedback().begin(message.from_user.id)
@@ -763,7 +771,10 @@ async def callbacks(query: types.CallbackQuery):
         return
     if target == "home":
         await query.answer()
-        await query.message.answer("Меню:", reply_markup=home(owner))
+        if owner:
+            await otc_commands.show_menu(query.message)
+        else:
+            await query.message.answer("Меню:", reply_markup=home())
         return
     if target == "unsubscribe" and not owner:
         await asyncio.to_thread(subscribers().unsubscribe, query.message.chat.id)
@@ -789,7 +800,12 @@ async def callbacks(query: types.CallbackQuery):
         await query.message.answer(text, reply_markup=sources(period), parse_mode=None)
         return
     if target == "suggest":
-        if not owner and subscribers().status(query.message.chat.id)["state"] != "approved":
+        if owner:
+            # Old owner keyboards also lead to the read-only inbox.
+            await query.answer()
+            await show_queue(query.message)
+            return
+        if subscribers().status(query.message.chat.id)["state"] != "approved":
             await query.answer("Нет доступа", show_alert=True)
             return
         await query.answer()
@@ -898,6 +914,13 @@ async def receive_text(message: types.Message):
         return
     state = feedback().state(message.from_user.id)
     if not state:
+        return
+    if is_owner(message.from_user) and state["mode"] != "REPLY":
+        feedback().cancel(message.from_user.id)
+        await message.answer(
+            "Владелец не отправляет предложения. Список: /suggestions",
+            reply_markup=home(owner=True), parse_mode=None,
+        )
         return
     if state["mode"] == "REPLY":
         if not is_owner(message.from_user):
