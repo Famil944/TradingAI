@@ -34,14 +34,14 @@ from services.otc_session import OTCSession
 from services.otc_supervisor import heartbeat
 from services.otc_unknown_recovery import UnknownRecovery
 
+# The owner's slash menu is a compact entrypoint; detailed controls stay
+# available through inline buttons and existing commands.
 COMMANDS = [
-    ("start", "Начать"),
-    ("help", "Справка"),
-    ("otc", "OTC меню"),
+    ("start", "Главное меню"),
+    ("signal_stats", "Винрейт S1–S4"),
     ("otc_stats", "Виртуальная статистика"),
-    ("signal_stats", "Винрейт прогнозов"),
-    ("suggest", "Предложить улучшение"),
-    ("access", "Пользователи и доступ"),
+    ("access", "Пользователи"),
+    ("suggestions", "Предложения пользователей"),
 ]
 
 # Menu commands are a convenience only; the owner-only middleware is the
