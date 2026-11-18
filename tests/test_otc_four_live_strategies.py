@@ -69,7 +69,7 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 1)
 
-    async def test_cross_strategy_same_asset_and_entry_only_one_card(self):
+    async def test_different_strategies_and_timeframes_can_deliver_in_parallel(self):
         self.candidates.record([
             candidate("bb_reentry", "BTC", seconds=120),
             candidate("break_retest", "BTC", seconds=300),
@@ -77,14 +77,19 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
             candidate("break_retest", "ETH", seconds=120),
         ])
         await self.publisher.publish(self.bot, 777)
-        # New rule: ETH M2 is also suppressed until BTC M2's three
-        # attempts complete, regardless of the symbol or strategy.
-        self.assertEqual(len(self.bot.sent), 1)
+        # S2 M2, S3 M5, S4 M15 on the same pair may coexist;
+        # the second S3 M2 is also independent of S2 M2.
+        self.assertEqual(len(self.bot.sent), 4)
         rows = load_live_signals(self.root / "data" / "community-live.db")
-        self.assertEqual({(r["strategy"], r["symbol"]) for r in rows},
-                         {("bb_reentry", "BTC OTC")})
+        self.assertEqual(
+            {(r["strategy"], r["symbol"], r["seconds"]) for r in rows},
+            {("bb_reentry", "BTC OTC", 120),
+             ("break_retest", "BTC OTC", 300),
+             ("ema_pullback", "BTC OTC", 900),
+             ("break_retest", "ETH OTC", 120)},
+        )
 
-    async def test_s1_claim_blocks_secondary_entry_even_with_different_expiry(self):
+    async def test_existing_s1_claim_does_not_block_s2(self):
         self.candidates.record([candidate("bb_reentry", "BTC", seconds=120)])
         guard = self.root / "data" / "signal-delivery.db"
         self.assertTrue(claim(guard, dict(
@@ -92,8 +97,10 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
             expires_at=3720,
         ), "Боллинджер ×3", 1001))
         await self.publisher.publish(self.bot, 777)
-        self.assertEqual(self.bot.sent, [])
-        self.assertEqual(load_live_signals(self.root / "data" / "community-live.db"), [])
+        self.assertEqual(len(self.bot.sent), 1)
+        self.assertEqual(len(load_live_signals(
+            self.root / "data" / "community-live.db"
+        )), 1)
 
     async def test_verified_win_releases_symbol_before_original_three_attempt_end(self):
         self.candidates.record([candidate("bb_reentry", "BTC")])
@@ -107,22 +114,26 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(load_live_signals(
             self.root / "data" / "community-live.db"
         )[0]["outcome"], "WIN")
-        # Even after confirmed WIN, the M2 slot remains occupied through
-        # attempt 3's scheduled end at 1380 (user-requested no-overlap).
+        # S3 is allowed while S2 M2 is active: only S2 M2 is locked.
         self.candidates.record([candidate(
             "break_retest", "BTC", observed=1180, entry=1200
         )])
         self.now[0] = 1187
         await self.publisher.publish(self.bot, 777)
-        self.assertEqual(len(self.bot.sent), 1)
-        # Use another pair: the candidate journal still remembers the
-        # suppressed BTC candidate at 1200 and will not reinsert it.
+        self.assertEqual(len(self.bot.sent), 2)
+        # A second S3 M2 waits until the S3 M2 cycle ends at 1560.
         self.candidates.record([candidate(
             "break_retest", "ETH", observed=1360, entry=1380
         )])
         self.now[0] = 1367
         await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 2)
+        self.candidates.record([candidate(
+            "break_retest", "ETH", observed=1540, entry=1560
+        )])
+        self.now[0] = 1547
+        await self.publisher.publish(self.bot, 777)
+        self.assertEqual(len(self.bot.sent), 3)
 
     async def test_three_independent_strategies_delivered_with_distinct_names(self):
         self.candidates.record([
