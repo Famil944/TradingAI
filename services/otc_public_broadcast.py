@@ -32,7 +32,13 @@ def _ts(at):
 
 def public_text(row):
     """Only explicit safe fields; never forward or modify private Telegram cards."""
-    heading = STRATEGY_IDS.get(row["strategy"], "S?")
+    source = row.get("strategy") or row.get("method")
+    if not source:
+        source = next(
+            (key for key, title in METHOD_LABELS.items() if title == row.get("label")),
+            None,
+        )
+    heading = STRATEGY_IDS.get(source, "S?")
     arrow = "🟢⬆️" if row["direction"] == "UP" else "🔴⬇️"
     lines = [
         f"{heading} · M{row['seconds'] // 60} {arrow}",
