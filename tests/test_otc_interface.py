@@ -121,18 +121,10 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             {c for c, _ in COMMANDS},
             {
                 "start",
-                "help",
-                "otc",
                 "otc_stats",
-                "otc_research",
-                "otc_m1",
                 "signal_stats",
-                "suggest",
-                "suggestions",
                 "access",
-                "grant",
-                "block",
-                "unblock",
+                "suggestions",
             },
         )
         commands.choices[1] = (300,)
