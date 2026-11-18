@@ -38,8 +38,8 @@ from services.otc_stream import reconnect_delay
 
 logger = logging.getLogger(__name__)
 MOSCOW = ZoneInfo("Europe/Moscow")
-# Temporary quota-saving mode. Initial candle load is still required.
-HISTORY_RECOVERY_ENABLED = os.getenv("OTC_HISTORY_RECOVERY_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+# Restore missing historical candles by default; users can opt out in .env.
+HISTORY_RECOVERY_ENABLED = os.getenv("OTC_HISTORY_RECOVERY_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 
 
 def sqlite_busy(exc):
@@ -799,7 +799,8 @@ class OTCSession:
         try:
             plan = await self._usage_with_retry()
             self.plan = plan
-            if plan.remaining <= 1:
+            reserve = max(100, getattr(self.config, "pair_rotation_quota_reserve", 100))
+            if plan.remaining <= reserve:
                 await self._event("history_repair_quota", symbol)
                 return
             fresh = await self.provider.candles(symbol, self.clock())
@@ -1212,10 +1213,13 @@ class OTCSession:
                 ]
                 if not HISTORY_RECOVERY_ENABLED:
                     missing = []  # Do not backfill gaps after stream reconnect.
-                if plan.remaining < len(missing) + 2:
-                    raise AccessUnavailable(
-                        "Недостаточно запросов для восстановления истории."
+                reserve = max(100, getattr(self.config, "pair_rotation_quota_reserve", 100))
+                if missing and plan.remaining < len(missing) + reserve + 2:
+                    logger.warning(
+                        "OTC history backfill skipped: available=%d, reserve=%d, missing=%d",
+                        plan.remaining, reserve, len(missing),
                     )
+                    missing = []  # Keep streaming; never bypass history quality checks.
                 # The latest catalogue is reusable while its payout/open
                 # metadata is safely inside the freshness window. Never use
                 # stale cached payouts merely to save a request.
@@ -1275,7 +1279,7 @@ class OTCSession:
                         len(missing), len(chosen),
                     )
                 else:
-                    logger.info("OTC reconnect: history backfill disabled; gaps remain invalid")
+                    logger.info("OTC reconnect: no history backfill needed or permitted; gaps remain invalid")
                 return {
                     a.symbol: a
                     for a in self._eligible(
