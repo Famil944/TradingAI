@@ -115,8 +115,10 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         self.now[0] = 1187
         await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 1)
+        # Use another pair: the candidate journal still remembers the
+        # suppressed BTC candidate at 1200 and will not reinsert it.
         self.candidates.record([candidate(
-            "break_retest", "BTC", observed=1360, entry=1380
+            "break_retest", "ETH", observed=1360, entry=1380
         )])
         self.now[0] = 1367
         await self.publisher.publish(self.bot, 777)
