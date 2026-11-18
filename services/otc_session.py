@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import math
+import os
 import sqlite3
 import time
 from collections import Counter
@@ -37,6 +38,8 @@ from services.otc_stream import reconnect_delay
 
 logger = logging.getLogger(__name__)
 MOSCOW = ZoneInfo("Europe/Moscow")
+# Temporary quota-saving mode. Initial candle load is still required.
+HISTORY_RECOVERY_ENABLED = os.getenv("OTC_HISTORY_RECOVERY_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 def sqlite_busy(exc):
@@ -782,6 +785,8 @@ class OTCSession:
             await self._event("history_repair_failed", symbol)
 
     def _queue_history_repair(self, symbol, history, tasks):
+        if not HISTORY_RECOVERY_ENABLED:
+            return
         now = self.clock()
         # Bound request use without permanently disabling repair in long sessions.
         if now - self._repair_window >= 3600:
@@ -1159,6 +1164,8 @@ class OTCSession:
                     symbol for symbol in chosen
                     if not self._can_reuse_stream_history(history.get(symbol), now)
                 ]
+                if not HISTORY_RECOVERY_ENABLED:
+                    missing = []  # Do not backfill gaps after stream reconnect.
                 if plan.remaining < len(missing) + 2:
                     raise AccessUnavailable(
                         "Недостаточно запросов для восстановления истории."
@@ -1222,7 +1229,7 @@ class OTCSession:
                         len(missing), len(chosen),
                     )
                 else:
-                    logger.info("OTC reconnect: reused current continuous history")
+                    logger.info("OTC reconnect: history backfill disabled; gaps remain invalid")
                 return {
                     a.symbol: a
                     for a in self._eligible(
