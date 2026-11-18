@@ -121,7 +121,7 @@ def menu(chat_id, expanded=False):
     )
     buttons = []
     for key, label, value in [
-        ("all", "Все M2/M5/M15", TIMEFRAMES),
+        ("all", "Все", TIMEFRAMES),
         ("2", "M2", (120,)),
         ("5", "M5", (300,)),
         ("15", "M15", (900,)),
@@ -156,11 +156,12 @@ def menu(chat_id, expanded=False):
             ),
         ]
     )
-    rows.append(
-        [InlineKeyboardButton(text="📊 4 стратегии", callback_data="c:sources")]
-    )
-    rows.append([InlineKeyboardButton(text="🎛 Мои сигналы", callback_data="c:prefs"), InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users")])
-    rows.append([InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue")])
+    # One compact owner navigation row; no subscriber preference controls here.
+    rows.append([
+        InlineKeyboardButton(text="📊 Стратегии", callback_data="c:sources"),
+        InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users"),
+        InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue"),
+    ])
     if expanded:
         rows.append(
             [
@@ -287,10 +288,10 @@ async def edit_virtual_account(message: types.Message):
     await virtual_account(message)
 
 
-MENU_TITLE = "OTC · Боллинджер ×3"
+MENU_TITLE = "TradingAI · OTC"
 
 
-@router.message(Command("start", "help", "otc"))
+@router.message(Command("otc"))
 async def show_menu(message: types.Message):
     await message.answer(MENU_TITLE, reply_markup=menu(message.chat.id))
 
