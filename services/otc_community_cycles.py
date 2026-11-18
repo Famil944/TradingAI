@@ -8,7 +8,6 @@ from statistics import mean, pstdev
 from services.otc_candidate_research import CandidateJournal, TickSampler
 from services.otc_community_patterns import forecasts
 from services.otc_delivery_guard import check_data
-from services.otc_m1_shadow import prepare as prepare_m1
 from services.otc_ml.preview import aligned_entry
 from services.otc_strategy import aggregate
 from services.otc_validation_report import load, resolve
@@ -122,9 +121,6 @@ class ShadowCycles:
         )
         now = self.clock()
         rows = await asyncio.to_thread(prepare, frozen, now)
-        # M1 hypotheses share this journal and already-open market stream.
-        # They remain shadow-only and cannot affect the live signal route.
-        rows.extend(await asyncio.to_thread(prepare_m1, frozen, now))
         await asyncio.to_thread(self.journal.record, rows)
         self.sampler.register(rows, self.clock())
 
