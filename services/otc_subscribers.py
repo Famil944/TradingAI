@@ -339,7 +339,8 @@ class SubscriberRelay:
             offset += len(subscribers)
 
             async def deliver(chat_id, joined_at):
-                if (sent_at < joined_at or self.store.status(chat_id, self.clock())["state"] != "approved"\n                        or not self.store.allows_source(chat_id, row["strategy"])):
+                if (sent_at < joined_at or self.store.status(chat_id, self.clock())["state"] != "approved"
+                        or not self.store.allows_source(chat_id, row["strategy"])):
                     return
                 already = await asyncio.to_thread(
                     self.store.delivered, chat_id, row["id"]
