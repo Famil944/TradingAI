@@ -17,7 +17,7 @@ from aiogram.types import (
 )
 from aiohttp import ClientSession
 
-from bot import community, otc_commands
+from bot import announcements, community, otc_commands
 from config.settings import ROOT, settings
 from core.logging import SecretFormatter
 from core.single_instance import SingleInstance
@@ -121,6 +121,7 @@ async def main(*, session_minutes=None, session_end=None):
         session._should_reset_connector = False
     bot = Bot(token=settings.telegram_bot_token, session=session)
     dp = Dispatcher()
+    dp.include_router(announcements.router)
     dp.include_router(community.router)
     dp.include_router(otc_commands.router)
     evaluator = configured_evaluator(db, bot, settings, ROOT)
@@ -237,6 +238,7 @@ async def main(*, session_minutes=None, session_end=None):
     (ROOT / "logs").mkdir(exist_ok=True)
     try:
         identity = await initialize_telegram(bot)
+        await announcements.resume_pending(bot)
         logging.getLogger(__name__).info(
             "Telegram bot @%s initialized; waiting for /otc (test mode: %s).",
             identity.username,
@@ -259,6 +261,7 @@ async def main(*, session_minutes=None, session_end=None):
             await service._notify(bot, text + "\n\n" + indicators)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        await announcements.stop_workers()
         strategy_task.cancel()
         await asyncio.gather(strategy_task, return_exceptions=True)
         subscriber_task.cancel()
