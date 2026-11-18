@@ -22,6 +22,29 @@ router = Router(name="community")
 MZ = ZoneInfo("Europe/Moscow")
 METHODS = ("bb_reentry", "break_retest", "ema_pullback")
 SECONDS = {"2": 120, "5": 300, "15": 900, "all": None}
+PERIODS = {
+    "today": "Сегодня (МСК)",
+    "7d": "Последние 7 дней",
+    "30d": "Последние 30 дней",
+    "all": "Вся история",
+}
+
+
+def period_start(period, now=None):
+    """Today in Moscow, rolling 7/30 days, or all time."""
+    if period not in PERIODS:
+        raise ValueError("Invalid statistics period")
+    now = time.time() if now is None else now
+    if period == "today":
+        return datetime.fromtimestamp(now, MZ).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).timestamp()
+    if period == "7d":
+        return now - 7 * 86400
+    if period == "30d":
+        return now - 30 * 86400
+    return 0
+
 
 
 @lru_cache(maxsize=1)
@@ -118,28 +141,40 @@ INFO = (
 )
 
 
-def compact_overview(timeframe="all"):
-    """Published ×3 forecasts, never wallet/research or incomplete outcomes."""
+def compact_overview(timeframe="all", period="today"):
+    """Only delivered forecasts; WIN/LOSS exclude virtual or shadow trades."""
     seconds = SECONDS[timeframe]
-    lines = [f"📊 Винрейт · {('Все M2/M5/M15' if seconds is None else 'M' + timeframe)}"]
+    since = period_start(period)
+    lines = [
+        f"📊 Винрейт · {PERIODS[period]}",
+        "Все M2/M5/M15" if seconds is None else "M" + timeframe,
+    ]
     for source, _ in STRATEGIES:
-        rows = snapshots(source)
-        if seconds is not None:
-            rows = [row for row in rows if row["seconds"] == seconds]
+        rows = [
+            row for row in snapshots(source)
+            if row["created_at"] >= since
+            and (seconds is None or row["seconds"] == seconds)
+        ]
         m = metrics(rows)
         rate = f"{m['wr']:.1f}%" if m["wr"] is not None else "—"
-        lines.append(f"{IDS[source]}  {rate} · ✅{m['win']} ❌{m['loss']} (n={m['known']})")
-    lines.extend(["", "Только известные WIN/LOSS · не сделки брокера."])
+        lines.append(
+            f"{IDS[source]}  {rate} · ✅{m['win']} ❌{m['loss']} "
+            f"❔{m['unknown']} (n={m['known']})"
+        )
+    lines.extend(["", "Только подтверждённые WIN/LOSS · не сделки брокера."])
     return "\n".join(lines)
 
 
-def compact_periods():
+def compact_periods(timeframe="all", period="today"):
     return keyboard([
-        [("Все", "c:wr:all"), ("M2", "c:wr:2"),
-         ("M5", "c:wr:5"), ("M15", "c:wr:15")],
+        [(("✅ " if period == name else "") + label, f"c:wr:{name}:{timeframe}")
+         for name, label in (("today", "Сегодня"), ("7d", "7 дней"),
+                             ("30d", "30 дней"), ("all", "Всё"))],
+        [(("✅ " if timeframe == name else "") + label, f"c:wr:{period}:{name}")
+         for name, label in (("all", "Все"), ("2", "M2"),
+                             ("5", "M5"), ("15", "M15"))],
         [("◀ Меню", "c:home")],
     ])
-
 
 def access_text(store, user_id):
     status = store.status(user_id)
@@ -170,9 +205,12 @@ def subscription_buttons(store, user_id):
     return home()
 
 
-def sources():
-    """One 2×2 grid, not a forest of strategy submenus."""
+def sources(period="today"):
+    """Owner-only strategy names and a period filter."""
     return keyboard([
+        [(("✅ " if period == name else "") + label, "c:sources:" + name)
+         for name, label in (("today", "Сегодня"), ("7d", "7 дней"),
+                             ("30d", "30 дней"), ("all", "Всё"))],
         [("① Боллинджер ×3", "c:source:main"),
          ("② Возврат внутрь", "c:source:bb_reentry")],
         [("③ Пробой/ретест", "c:source:break_retest"),
@@ -181,14 +219,16 @@ def sources():
     ])
 
 
-def overview_text():
+def overview_text(period="today"):
+    since = period_start(period)
     lines = [
-        "📊 ЧЕТЫРЕ СТРАТЕГИИ · M2/M5/M15",
+        f"📊 ЧЕТЫРЕ СТРАТЕГИИ · {PERIODS[period]}",
         "WIN/LOSS — подтверждённые исходы опубликованных прогнозов",
+        "M2/M5/M15",
         "",
     ]
     for i, (code, _) in enumerate(STRATEGIES, 1):
-        rows = snapshots(code)
+        rows = [row for row in snapshots(code) if row["created_at"] >= since]
         m = metrics(rows)
         rate = f"{m['wr']:.1f}%" if m["wr"] is not None else "—"
         title = "Боллинджер ×3" if code == "main" else METHOD_LABELS[code]
@@ -204,7 +244,6 @@ def overview_text():
     ])
     return "\n".join(lines)
 
-
 def metrics_menu(source, timeframe="all", metric="B", limit=10, period="all"):
     def action(m=metric, n=limit, p=period):
         return f"c:stats:{source}:{timeframe}:{m}:{n}:{p}"
@@ -217,7 +256,7 @@ def metrics_menu(source, timeframe="all", metric="B", limit=10, period="all"):
         [("Входы", action("A")), ("×3", action("B")), ("×6", action("C"))],
         [("10", action(n=10)), ("50", action(n=50)), ("100", action(n=100))],
         [("Сегодня", action(p="today")), ("7 дней", action(p="7d")),
-         ("Всё", action(p="all"))],
+         ("30 дней", action(p="30d")), ("Всё", action(p="all"))],
         [("◀ 4 стратегии", "c:sources")],
     ])
 
@@ -254,18 +293,13 @@ def snapshots(source):
 
 def report_for(source, timeframe, metric, limit=10, period="all"):
     now = time.time()
-    if period == "today":
-        since = datetime.now(MZ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-    elif period == "7d":
-        since = now - 7 * 86400
-    else:
-        since = 0
+    since = period_start(period, now)
     rows = [r for r in snapshots(source) if r["created_at"] >= since]
     seconds = SECONDS[timeframe]
     label = source_title(source)
     versions = sorted({row["version"] for row in rows})
     text = label + "\nСтатус: " + source_health(source) + "\nОпубликованные прогнозы OTCharts (не сделки брокера)."
-    text += "\nПериод: " + {"today": "сегодня МСК", "7d": "7 дней", "all": "вся история"}[period]
+    text += "\nПериод: " + PERIODS[period]
     if not rows:
         return text + "\n\nПока нет сохранённых исходов."
     if len(versions) > 1:
@@ -581,13 +615,24 @@ async def callbacks(query: types.CallbackQuery):
         if not owner and subscribers().status(query.message.chat.id)["state"] != "approved":
             await query.answer("Сначала оформите доступ через /start", show_alert=True)
             return
-        tf = action[2] if len(action) == 3 else "all"
-        if tf not in SECONDS:
+        # Old c:wr:<timeframe> buttons remain usable.
+        if len(action) == 4:
+            period, tf = action[2], action[3]
+        elif len(action) == 3:
+            period, tf = "today", action[2]
+        elif len(action) == 2:
+            period, tf = "today", "all"
+        else:
+            await query.answer("Некорректный период")
+            return
+        if tf not in SECONDS or period not in PERIODS:
             await query.answer("Некорректный период")
             return
         await query.answer()
-        await query.message.answer(await asyncio.to_thread(compact_overview, tf),
-                                   reply_markup=compact_periods(), parse_mode=None)
+        await query.message.answer(
+            await asyncio.to_thread(compact_overview, tf, period),
+            reply_markup=compact_periods(tf, period), parse_mode=None,
+        )
         return
     if target == "owner":
         if not owner:
@@ -615,9 +660,13 @@ async def callbacks(query: types.CallbackQuery):
         await query.answer("Нет доступа", show_alert=True)
         return
     if target == "sources":
+        period = action[2] if len(action) == 3 else "today"
+        if period not in PERIODS:
+            await query.answer("Некорректный период")
+            return
         await query.answer()
-        text = await asyncio.to_thread(overview_text)
-        await query.message.answer(text, reply_markup=sources(), parse_mode=None)
+        text = await asyncio.to_thread(overview_text, period)
+        await query.message.answer(text, reply_markup=sources(period), parse_mode=None)
         return
     if target == "suggest":
         if not owner and subscribers().status(query.message.chat.id)["state"] != "approved":
@@ -648,7 +697,7 @@ async def callbacks(query: types.CallbackQuery):
                 or action[3] not in SECONDS or action[4] not in ("A", "B", "C")
                 or (len(action) == 7 and
                     (action[5] not in ("10", "50", "100")
-                     or action[6] not in ("all", "today", "7d")))):
+                     or action[6] not in PERIODS))):
             await query.answer("Некорректный выбор")
             return
         limit = int(action[5]) if len(action) == 7 else 10
