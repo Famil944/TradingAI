@@ -1,6 +1,7 @@
 """Shadow-only variants: M2/M5/M15 cycles and two separate M1 methods."""
 
 import asyncio
+import logging
 import time
 from collections import Counter
 from statistics import mean, pstdev
@@ -12,6 +13,7 @@ from services.otc_ml.preview import aligned_entry
 from services.otc_strategy import aggregate
 from services.otc_validation_report import load, resolve
 
+LOG = logging.getLogger(__name__)
 VERSION = "community-cycles-v1"
 METHODS = {
     "bb_reentry": "Боллинджер · возврат внутрь",
@@ -53,18 +55,28 @@ def signals(minutes, seconds, asof):
     return decisions
 
 
-def prepare(snapshot, now):
+def prepare(snapshot, now, diagnostic=None):
     history, assets, quotes, end = snapshot
     entry = int(now) // 60 * 60 + 60
     if not 15 <= entry - now <= 20:
+        if diagnostic is not None:
+            diagnostic["outside_planning_window"] += 1
         return []
+    if diagnostic is not None:
+        diagnostic["planning_windows"] += 1
     rows = []
     for seconds in (120, 300, 900):
         if not aligned_entry(entry, seconds):
+            if diagnostic is not None:
+                diagnostic["unaligned_timeframe"] += 1
             continue
         for symbol, minutes in history.items():
+            if diagnostic is not None:
+                diagnostic["pairs_checked"] += 1
             asset = assets.get(symbol)
             if asset is None:
+                if diagnostic is not None:
+                    diagnostic["missing_asset"] += 1
                 continue
             row = dict(
                 symbol=symbol,
@@ -76,9 +88,20 @@ def prepare(snapshot, now):
                 gates={"cycle": True},
                 selected=False,
             )
-            if check_data(row, snapshot, now):
+            data_reason = check_data(row, snapshot, now)
+            if data_reason:
+                if diagnostic is not None:
+                    diagnostic["data_rejected"] += 1
+                    diagnostic["data_reason:" + str(data_reason)[:64]] += 1
                 continue
-            for method, decision in signals(list(minutes), seconds, entry - 60).items():
+            if diagnostic is not None:
+                diagnostic["data_passed"] += 1
+            decisions = signals(list(minutes), seconds, entry - 60)
+            if diagnostic is not None:
+                diagnostic["no_pattern" if not decisions else "pattern_found"] += 1
+            for method, decision in decisions.items():
+                if diagnostic is not None:
+                    diagnostic["candidate:" + method] += 1
                 rows.append(
                     dict(
                         row,
@@ -104,6 +127,8 @@ class ShadowCycles:
         self.journal = CandidateJournal(path)
         self.sampler = TickSampler()
         self.clock = clock
+        self.diagnostic = Counter()
+        self.diagnostic_at = clock()
         now = clock()
         records, _ = load(path, 0, now)
         self.sampler.register([r for r in records if r["expires_at"] > now], now)
@@ -120,8 +145,16 @@ class ShadowCycles:
             end,
         )
         now = self.clock()
-        rows = await asyncio.to_thread(prepare, frozen, now)
+        window_stats = Counter()
+        rows = await asyncio.to_thread(prepare, frozen, now, window_stats)
+        self.diagnostic.update(window_stats)
         await asyncio.to_thread(self.journal.record, rows)
+        self.diagnostic["written_to_journal"] += len(rows)
+        if self.clock() - self.diagnostic_at >= 300:
+            LOG.info("OTC S2-S4 candidate production diagnostics (last %.0fs): %s",
+                     self.clock() - self.diagnostic_at, dict(self.diagnostic))
+            self.diagnostic.clear()
+            self.diagnostic_at = self.clock()
         self.sampler.register(rows, self.clock())
 
     async def flush(self):
