@@ -14,6 +14,7 @@ from bot import otc_commands
 from config.settings import ROOT, settings
 from services.otc_feedback import FeedbackStore, LABELS, STATUSES
 from services.otc_subscribers import Subscribers
+from services.otc_winrate_reset import WinrateReset
 from services.otc_strategies_live import load_live_signals
 from services.otc_public_stats import (
     METHOD_LABELS, describe, main_signals, metrics,
@@ -56,6 +57,27 @@ def feedback():
 @lru_cache(maxsize=1)
 def subscribers():
     return Subscribers(ROOT / "data" / "subscribers.db")
+
+
+@lru_cache(maxsize=1)
+def winrate_reset():
+    return WinrateReset(ROOT / "data" / "winrate-reset.db")
+
+
+def stats_since(period, now=None):
+    return max(period_start(period, now), winrate_reset().cutoff())
+
+
+def stats_timestamp(row):
+    return float(row.get("sent_at") or row.get("created_at") or 0)
+
+
+def reset_note():
+    since = winrate_reset().cutoff()
+    if not since:
+        return ""
+    date = datetime.fromtimestamp(since, MZ).strftime("%d.%m.%Y %H:%M МСК")
+    return "\nНовый отсчёт с " + date + " · прежние результаты сохранены"
 
 
 def is_owner(user):
@@ -214,7 +236,7 @@ def guide_menu():
 def compact_overview(timeframe="all", period="all"):
     """Only delivered forecasts; WIN/LOSS exclude virtual or shadow trades."""
     seconds = SECONDS[timeframe]
-    since = period_start(period)
+    since = stats_since(period)
     lines = [
         f"📊 Винрейт · {PERIODS[period]}",
         "Все M2/M5/M15" if seconds is None else "M" + timeframe,
@@ -222,7 +244,7 @@ def compact_overview(timeframe="all", period="all"):
     for source, _ in STRATEGIES:
         rows = [
             row for row in snapshots(source)
-            if (period == "all" or (row.get("sent_at") or row.get("created_at") or 0) >= since)
+            if (since == 0 or stats_timestamp(row) >= since)
             and (seconds is None or row["seconds"] == seconds)
         ]
         m = metrics(rows)
@@ -232,7 +254,7 @@ def compact_overview(timeframe="all", period="all"):
             f"(n={m['known']}) ❔{m['unknown']}"
         )
     lines.extend(["", "Только подтверждённые WIN/LOSS · не сделки брокера."])
-    return "\n".join(lines)
+    return "\n".join(lines) + reset_note()
 
 
 def compact_periods(timeframe="all", period="today"):
@@ -291,11 +313,12 @@ def sources(period="today"):
         [(("✅ " if period == name else "") + label, "c:sources:" + name)
          for name, label in (("today", "Сегодня"), ("7d", "7 дней"),
                              ("30d", "30 дней"), ("all", "Всё"))],
+        [("🧹 Сбросить винрейт", "c:wr_reset:ask")],
     ])
 
 
 def overview_text(period="today"):
-    since = period_start(period)
+    since = stats_since(period)
     lines = [
         f"📊 ЧЕТЫРЕ СТРАТЕГИИ · {PERIODS[period]}",
         "WIN/LOSS — подтверждённые исходы опубликованных прогнозов",
@@ -303,7 +326,7 @@ def overview_text(period="today"):
         "",
     ]
     for i, (code, _) in enumerate(STRATEGIES, 1):
-        rows = [row for row in snapshots(code) if row["created_at"] >= since]
+        rows = [row for row in snapshots(code) if stats_timestamp(row) >= since]
         m = metrics(rows)
         rate = f"{m['wr']:.1f}%" if m["wr"] is not None else "—"
         title = "Боллинджер ×3" if code == "main" else METHOD_LABELS[code]
@@ -317,7 +340,7 @@ def overview_text(period="today"):
         "Это статистика OTCharts, не подтверждённые сделки брокера.",
         "Выбери стратегию:",
     ])
-    return "\n".join(lines)
+    return "\n".join(lines) + reset_note()
 
 def metrics_menu(source, timeframe="all", metric="B", limit=10, period="all"):
     def action(m=metric, n=limit, p=period):
@@ -368,13 +391,13 @@ def snapshots(source):
 
 def report_for(source, timeframe, metric, limit=10, period="all"):
     now = time.time()
-    since = period_start(period, now)
-    rows = [r for r in snapshots(source) if r["created_at"] >= since]
+    since = stats_since(period, now)
+    rows = [r for r in snapshots(source) if stats_timestamp(r) >= since]
     seconds = SECONDS[timeframe]
     label = source_title(source)
     versions = sorted({row["version"] for row in rows})
     text = label + "\nСтатус: " + source_health(source) + "\nОпубликованные прогнозы OTCharts (не сделки брокера)."
-    text += "\nПериод: " + PERIODS[period]
+    text += "\nПериод: " + PERIODS[period] + reset_note()
     if not rows:
         return text + "\n\nПока нет сохранённых исходов."
     if len(versions) > 1:
@@ -382,7 +405,7 @@ def report_for(source, timeframe, metric, limit=10, period="all"):
     for version in versions:
         group = [row for row in rows if row["version"] == version]
         text += "\n\nВерсия: " + version[:64] + "\n"
-        text += describe(group, metric, seconds, since=since, limit=limit, now=now)
+        text += describe(group, metric, seconds, since=0, limit=limit, now=now)
     return text
 
 def split_messages(text, limit=3500):
