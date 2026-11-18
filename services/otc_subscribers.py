@@ -27,6 +27,7 @@ MAX_SEND_AGE_SECONDS = 90
 POLL_SECONDS = 2  # fallback/reconciliation only; new signals are pushed immediately
 MAX_USERS_PER_TICK = 200
 TRIAL_DAYS = 7
+SIGNAL_SOURCES = ("main", "bb_reentry", "break_retest", "ema_pullback")
 DAY = 86400
 
 
@@ -41,6 +42,12 @@ class Subscribers:
                     enabled INTEGER NOT NULL DEFAULT 1,
                     subscribed_at REAL NOT NULL,
                     updated_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS source_preferences(
+                    chat_id INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY(chat_id, source)
                 );
                 CREATE TABLE IF NOT EXISTS deliveries(
                     chat_id INTEGER NOT NULL,
@@ -234,6 +241,32 @@ class Subscribers:
                 "AND expires_at>?", (now,),
             ).fetchone()[0]
 
+    def source_preferences(self, chat_id):
+        """Default: all four published sources enabled; preferences persist per user."""
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                "SELECT source,enabled FROM source_preferences WHERE chat_id=?",
+                (chat_id,),
+            ).fetchall()
+        saved = dict(rows)
+        return {source: bool(saved.get(source, 1)) for source in SIGNAL_SOURCES}
+
+    def set_source(self, chat_id, source, enabled):
+        if source not in SIGNAL_SOURCES:
+            raise ValueError("Unknown source")
+        with closing(self._connect()) as db:
+            db.execute(
+                "INSERT INTO source_preferences(chat_id,source,enabled) VALUES(?,?,?) "
+                "ON CONFLICT(chat_id,source) DO UPDATE SET enabled=excluded.enabled",
+                (chat_id, source, int(bool(enabled))),
+            )
+            db.commit()
+
+    def allows_source(self, chat_id, source):
+        if source not in SIGNAL_SOURCES:
+            return False
+        return self.source_preferences(chat_id)[source]
+
     def delivered(self, chat_id, signal_id):
         with closing(self._connect()) as db:
             return db.execute(
@@ -306,7 +339,7 @@ class SubscriberRelay:
             offset += len(subscribers)
 
             async def deliver(chat_id, joined_at):
-                if sent_at < joined_at or self.store.status(chat_id, self.clock())["state"] != "approved":
+                if (sent_at < joined_at or self.store.status(chat_id, self.clock())["state"] != "approved"\n                        or not self.store.allows_source(chat_id, row["strategy"])):
                     return
                 already = await asyncio.to_thread(
                     self.store.delivered, chat_id, row["id"]
@@ -349,6 +382,8 @@ class SubscriberRelay:
                 if self.store.status(chat_id, self.clock())["state"] != "approved":
                     continue
                 for row in rows:
+                    if not self.store.allows_source(chat_id, row["strategy"]):
+                        continue
                     current_time = self.clock()
                     safe_text = subscriber_card(row, self.live_cycle)
                     content_sha = hashlib.sha256(safe_text.encode("utf-8")).hexdigest()
