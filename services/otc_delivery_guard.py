@@ -76,7 +76,7 @@ def claim(path, selected, source, now=None, *, exclusive_timeframe=False):
             symbol TEXT, direction TEXT, entry_at INTEGER, expires_at INTEGER,
             source TEXT, claimed_at REAL,
             PRIMARY KEY(symbol,direction,entry_at,expires_at))""")
-        columns = {row[1] for row in db.execute("PRAGMA table_info(claims")}
+        columns = {row[1] for row in db.execute("PRAGMA table_info(claims)")}
         if "active_until" not in columns:
             db.execute("ALTER TABLE claims ADD COLUMN active_until REAL")
         db.execute(
