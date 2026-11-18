@@ -198,6 +198,71 @@ async def stop_workers():
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def option_controls():
+    """Buttons for the owner's step-by-step poll composer."""
+    return kb([
+        [("✅ Готово — посмотреть опрос", "a:done")],
+        [("↩️ Удалить последний ответ", "a:undo")],
+        [("✏️ Изменить вопрос", "a:question")],
+        [("❌ Отмена", "a:cancel")],
+    ])
+
+
+def preview_controls(kind):
+    rows = [[("📤 Отправить подписчикам", "a:send")],
+            [("✏️ Изменить текст вопроса" if kind == "poll"
+              else "✏️ Изменить сообщение", "a:question")]]
+    if kind == "poll":
+        rows.append([("↩️ Вернуться к вариантам", "a:back")])
+    rows.append([("❌ Отмена", "a:cancel")])
+    return kb(rows)
+
+
+def options_status(draft):
+    """Clear instruction with every collected answer visible."""
+    options = draft.get("options", [])
+    listing = "\n".join(f"{i}. {item}" for i, item in enumerate(options, 1))
+    return (
+        f"📊 Шаг 2 из 3. Ответов добавлено: {len(options)}/8\n\n"
+        + (listing + "\n\n" if listing else "")
+        + "Отправь следующий вариант отдельным сообщением.\n"
+        + "Или вставь несколько вариантов, каждый с новой строки — "
+        + "пустые строки не мешают.\n\n"
+        + "Когда добавишь хотя бы 2 ответа, нажми «✅ Готово». "
+        + "Отправка подписчикам будет только после предпросмотра."
+    )
+
+
+def append_options(draft, content):
+    """Accept one answer, multiline paste, and blank-separated answers."""
+    incoming = [line.strip() for line in content.splitlines() if line.strip()]
+    if not incoming:
+        raise ValueError("Напиши хотя бы один вариант ответа.")
+    options = draft.setdefault("options", [])
+    merged = options + incoming
+    if len(merged) > 8:
+        raise ValueError(
+            f"Можно добавить максимум 8 ответов. Уже есть {len(options)}, "
+            f"новых в сообщении — {len(incoming)}."
+        )
+    if any(len(item) > 75 for item in merged):
+        raise ValueError("Один из ответов длиннее 75 символов. Сократи его.")
+    if len({item.casefold() for item in merged}) != len(merged):
+        raise ValueError("Есть одинаковые ответы. Напиши разные варианты.")
+    options.extend(incoming)
+    return len(options)
+
+
+async def show_preview(message, draft):
+    draft["phase"] = "confirm"
+    await message.answer(
+        "👁 Шаг 3 из 3. Проверь текст и ответы.\n"
+        "Подписчики пока ничего не получили.\n\n" + display(draft),
+        reply_markup=preview_controls(draft["kind"]),
+        parse_mode=None,
+    )
+
+
 @router.message(Command("announce"))
 async def announce_command(message: types.Message):
     if owner(message.from_user, message):
@@ -215,39 +280,40 @@ async def cancel_command(message: types.Message):
                 and m.from_user.id in drafts and not m.text.startswith("/"))
 async def compose(message: types.Message):
     draft = drafts[message.from_user.id]
-    content = message.text.strip()
-    if draft["phase"] == "body":
+    content = (message.text or "").strip()
+    phase = draft["phase"]
+    if phase == "body":
         if not 1 <= len(content) <= 1000:
-            await message.answer("Введите от 1 до 1000 символов.")
+            await message.answer("Текст должен содержать от 1 до 1000 символов.")
             return
         draft["body"] = content
         if draft["kind"] == "poll":
             draft["phase"] = "options"
-            await message.answer(
-                "Напиши свои варианты ответов: каждый с новой строки. "
-                "От 2 до 8 вариантов, до 75 символов каждый. Например:\n"
-                "M2\nM5\nM15\n\nОтмена: /cancel",
-                parse_mode=None,
-            )
-            return
-        draft["options"] = []
-    else:
-        options = [line.strip() for line in content.splitlines()]
+            draft.setdefault("options", [])
+            await message.answer(options_status(draft),
+                                 reply_markup=option_controls(), parse_mode=None)
+        else:
+            draft["options"] = []
+            await show_preview(message, draft)
+        return
+    if phase == "options":
         try:
-            AnnouncementStore.validate("poll", draft["body"], options)
+            append_options(draft, content)
         except ValueError as exc:
-            await message.answer(str(exc) + "\nПовтори список или /cancel.")
+            await message.answer("⚠️ " + str(exc) + "\n\n" + options_status(draft),
+                                 reply_markup=option_controls(), parse_mode=None)
             return
-        draft["options"] = options
-    draft["phase"] = "confirm"
-    preview = display(draft)
-    await message.answer(
-        "👁 Предпросмотр (пока никому не отправлено):\n\n" + preview,
-        reply_markup=kb([
-            [("✅ Отправить подписчикам", "a:send")],
-            [("❌ Отмена", "a:cancel")],
-        ]), parse_mode=None,
-    )
+        await message.answer(
+            "✅ Ответ сохранён.\n\n" + options_status(draft),
+            reply_markup=option_controls(), parse_mode=None,
+        )
+        return
+    if phase == "confirm":
+        await message.answer(
+            "Предпросмотр уже готов. Нажми «📤 Отправить» "
+            "или «✏️ Изменить», если хочешь исправить текст.",
+            reply_markup=preview_controls(draft["kind"]), parse_mode=None,
+        )
 
 
 @router.callback_query(F.data.startswith("a:"))
@@ -293,11 +359,57 @@ async def callbacks(query: types.CallbackQuery):
         drafts[user_id] = {"kind": fields[2], "phase": "body"}
         await query.answer()
         await message.answer(
-            ("📊 Напиши вопрос для голосования одним сообщением."
+            ("📊 Шаг 1 из 3. Напиши вопрос для голосования одним сообщением.\n"
+             "Например: «Стоит ли продолжать развивать TradingAI?»"
              if fields[2] == "poll" else
-             "✉️ Напиши сообщение для всех подписчиков одним сообщением.")
-            + "\nОтмена: /cancel",
-            parse_mode=None,
+             "✉️ Шаг 1 из 2. Напиши объявление одним сообщением.")
+            + "\n\nОтмена: /cancel",
+            reply_markup=kb([[("❌ Отмена", "a:cancel")]]), parse_mode=None,
+        )
+    elif action == "done":
+        draft = drafts.get(user_id)
+        if not draft or draft.get("kind") != "poll" or draft.get("phase") != "options":
+            await query.answer("Сначала создай голосование", show_alert=True)
+            return
+        if len(draft.get("options", [])) < 2:
+            await query.answer("Добавь ещё ответы: нужно минимум 2", show_alert=True)
+            return
+        await query.answer()
+        await show_preview(message, draft)
+    elif action == "undo":
+        draft = drafts.get(user_id)
+        if not draft or draft.get("kind") != "poll" or draft.get("phase") != "options":
+            await query.answer("Сейчас нечего удалять", show_alert=True)
+            return
+        if not draft.get("options"):
+            await query.answer("Ответов пока нет", show_alert=True)
+            return
+        removed = draft["options"].pop()
+        await query.answer("Последний ответ удалён")
+        await message.answer(
+            "↩️ Удалено: " + removed + "\n\n" + options_status(draft),
+            reply_markup=option_controls(), parse_mode=None,
+        )
+    elif action == "back":
+        draft = drafts.get(user_id)
+        if not draft or draft.get("kind") != "poll" or draft.get("phase") != "confirm":
+            await query.answer("Черновик не найден", show_alert=True)
+            return
+        draft["phase"] = "options"
+        await query.answer()
+        await message.answer(options_status(draft),
+                             reply_markup=option_controls(), parse_mode=None)
+    elif action == "question":
+        draft = drafts.get(user_id)
+        if not draft:
+            await query.answer("Черновик не найден", show_alert=True)
+            return
+        draft["phase"] = "body"
+        await query.answer()
+        await message.answer(
+            "✏️ Отправь новый текст вопроса или объявления одним сообщением. "
+            "Уже добавленные варианты ответа сохранятся.\nОтмена: /cancel",
+            reply_markup=kb([[("❌ Отмена", "a:cancel")]]), parse_mode=None,
         )
     elif action == "cancel":
         drafts.pop(user_id, None)
