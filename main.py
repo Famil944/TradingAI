@@ -176,7 +176,11 @@ async def main(*, session_minutes=None, session_end=None):
     from services.otc_subscribers import SubscriberActivityMiddleware, SubscriberRelay
 
     # Only opt-in users with an active hourly session receive new forecasts.
-    subscriber_relay = SubscriberRelay(ROOT, require_sessions=True)
+    subscriber_relay = SubscriberRelay(
+        ROOT,
+        require_sessions=os.getenv("TRADINGAI_SUBSCRIBER_SESSIONS_ENABLED", "true").lower()
+        in ("1", "true", "yes", "on"),
+    )
     dp.update.outer_middleware(SubscriberActivityMiddleware(subscriber_relay.store))
     cycle_journal = CycleJournal(
         ROOT / "data" / "bollinger-cycles.db", label="Боллинджер ×3", per_horizon=True
