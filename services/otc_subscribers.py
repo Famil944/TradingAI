@@ -263,6 +263,8 @@ class Subscribers:
             db.commit()
 
     def allows_source(self, chat_id, source):
+        if source == "bollinger_live":
+            source = "main"
         if source not in SIGNAL_SOURCES:
             return False
         return self.source_preferences(chat_id)[source]
