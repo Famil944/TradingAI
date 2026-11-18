@@ -174,9 +174,9 @@ def sources():
     """One 2×2 grid, not a forest of strategy submenus."""
     return keyboard([
         [("① Боллинджер ×3", "c:source:main"),
-         (STRATEGIES[1][1], "c:source:bb_reentry")],
+         ("② Возврат внутрь", "c:source:bb_reentry")],
         [("③ Пробой/ретест", "c:source:break_retest"),
-         (STRATEGIES[3][1], "c:source:ema_pullback")],
+         ("④ EMA9/19", "c:source:ema_pullback")],
         [("💡 Предложение", "c:suggest"), ("◀ Меню", "c:home")],
     ])
 
