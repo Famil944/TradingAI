@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import F, Router, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 
 from bot import otc_commands
 from config.settings import ROOT, settings
@@ -341,10 +341,26 @@ def timestamp(value):
     return datetime.fromtimestamp(value, MZ).strftime("%d.%m %H:%M МСК")
 
 
+async def clear_legacy_keyboard(message: types.Message):
+    """Remove an old Telegram reply-keyboard without touching inline menus."""
+    await message.answer(
+        "✅ Старое меню команд скрыто.",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode=None,
+    )
+
+
+@router.message(Command("clear_keyboard"))
+async def clear_keyboard(message: types.Message):
+    if private(message):
+        await clear_legacy_keyboard(message)
+
+
 @router.message(Command("start"))
 async def start(message: types.Message):
     if not private(message):
         return
+    await clear_legacy_keyboard(message)
     if is_owner(message.from_user):
         await otc_commands.show_menu(message)
         return
