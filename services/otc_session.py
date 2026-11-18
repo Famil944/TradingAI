@@ -1012,7 +1012,9 @@ class OTCSession:
                                 "invalid_or_stale_tick",
                                 "duplicate_or_unordered_tick",
                             ):
-                                self._record_tick_diagnostic(\n                                    tick.symbol, now, rejection=builder.rejection\n                                )
+                                self._record_tick_diagnostic(
+                                    tick.symbol, now, rejection=builder.rejection
+                                )
                                 await self._event(builder.rejection, tick.symbol)
                                 continue
                             self.last_tick = tick.time
