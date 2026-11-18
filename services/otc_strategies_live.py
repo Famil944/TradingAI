@@ -11,6 +11,8 @@ import logging
 import math
 import sqlite3
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from contextlib import closing
 from pathlib import Path
 
@@ -423,13 +425,20 @@ class LiveStrategyPublisher:
                     conflict = None
                 if conflict:
                     remaining = max(0, conflict["expires_at"] - self.clock())
+                    clock_msk = ZoneInfo("Europe/Moscow")
+                    entry_msk = datetime.fromtimestamp(
+                        row["entry_at"], clock_msk
+                    ).strftime("%H:%M МСК")
+                    release_msk = datetime.fromtimestamp(
+                        conflict["expires_at"], clock_msk
+                    ).strftime("%H:%M МСК")
                     LOG.info(
                         "Overlapping OTC entry suppressed: %s %s M%d "
                         "candidate_entry=%s blocked_by=%s source=%s "
-                        "previous_entry=%s release_at=%s remaining=%.0fs",
-                        method, row["symbol"], seconds // 60, row["entry_at"],
+                        "release_at=%s remaining=%.0fs",
+                        method, row["symbol"], seconds // 60, entry_msk,
                         conflict["origin"], conflict["source"],
-                        conflict["entry_at"], conflict["expires_at"], remaining,
+                        release_msk, remaining,
                     )
                 else:
                     LOG.warning(
