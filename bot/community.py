@@ -486,6 +486,30 @@ async def stop_signals(message: types.Message):
     )
 
 
+def reset_confirmation_menu(token):
+    return keyboard([
+        [("✅ Да, начать винрейт заново", "c:wr_reset:confirm:" + token)],
+        [("❌ Отмена", "c:wr_reset:cancel:" + token)],
+    ])
+
+
+@router.message(Command("reset_winrate"))
+async def reset_winrate_command(message: types.Message):
+    if not private(message) or not is_owner(message.from_user):
+        return
+    if message.chat.id != settings.admin_chat_id:
+        return
+    token = await asyncio.to_thread(winrate_reset().prepare)
+    await message.answer(
+        "🧹 Начать новый отсчёт статистики S1–S4?\n"
+        "Периоды «Сегодня», «7 дней», «30 дней» и «Всё» будут считать "
+        "только прогнозы, отправленные после подтверждения.\n\n"
+        "Все старые WIN/LOSS сохранятся в журналах. "
+        "Торговые стратегии и подписки не меняются.",
+        reply_markup=reset_confirmation_menu(token), parse_mode=None,
+    )
+
+
 @router.message(Command("signal_stats"))
 async def signal_stats(message: types.Message):
     if private(message):
@@ -699,6 +723,45 @@ async def callbacks(query: types.CallbackQuery):
         elif target == "block" and len(action) == 3 and action[2].isdigit():
             await asyncio.to_thread(subscribers().block, int(action[2]))
             await query.message.answer("⛔ Пользователь заблокирован")
+        return
+    if target == "wr_reset":
+        if not admin_chat:
+            await query.answer("Нет доступа", show_alert=True)
+            return
+        if len(action) == 3 and action[2] == "ask":
+            token = await asyncio.to_thread(winrate_reset().prepare)
+            await query.answer()
+            await query.message.answer(
+                "🧹 Сбросить отображаемый винрейт всех S1–S4?\n"
+                "Новый отсчёт начнётся с момента подтверждения. "
+                "Старые исходы останутся в журналах, но не войдут "
+                "в текущие отчёты.",
+                reply_markup=reset_confirmation_menu(token), parse_mode=None,
+            )
+            return
+        if len(action) == 4 and action[2] in ("confirm", "cancel"):
+            token = action[3]
+            if action[2] == "cancel":
+                await asyncio.to_thread(winrate_reset().cancel, token)
+                await query.answer("Сброс отменён")
+                await query.message.answer("Сброс винрейта отменён.", parse_mode=None)
+                return
+            success = await asyncio.to_thread(winrate_reset().confirm, token)
+            if not success:
+                await query.answer(
+                    "Подтверждение устарело или уже использовано.",
+                    show_alert=True,
+                )
+                return
+            await query.answer("Новый отсчёт начат")
+            await query.message.answer(
+                "✅ Новый отсчёт винрейта S1–S4 начат.\n"
+                "До новых завершённых прогнозов WR будет равен «—». "
+                "Прежняя история WIN/LOSS сохранена.",
+                reply_markup=sources(), parse_mode=None,
+            )
+            return
+        await query.answer("Некорректная команда", show_alert=True)
         return
     if target == "session":
         if owner or len(action) != 3 or action[2] not in ("start", "stop"):
