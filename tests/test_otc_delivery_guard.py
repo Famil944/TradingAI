@@ -64,110 +64,134 @@ class DeliveryGuardTests(unittest.TestCase):
             self.assertFalse(completed(path, signal, "other", 900))
             self.assertFalse(completed(path, signal, "S1", 1800))
 
-    def test_global_three_attempt_timeframe_serializes_all_symbols_and_strategies(self):
+    def test_one_strategy_one_timeframe_blocks_own_three_attempts(self):
         for seconds in (120, 300, 900):
             with self.subTest(seconds=seconds), tempfile.TemporaryDirectory() as folder:
                 path = Path(folder) / "guard.db"
                 start = 1800
-                length = seconds * 3
-                first = dict(
-                    symbol="Tesla OTC", direction="DOWN", entry_at=start,
-                    expires_at=start + length,
-                )
+                duration = seconds * 3
+                s1 = dict(symbol="Tesla OTC", direction="DOWN", entry_at=start,
+                          expires_at=start + duration)
                 self.assertTrue(claim(
-                    path, first, "S4", start - 10, exclusive_timeframe=True,
+                    path, s1, "S1", start - 10, exclusive_timeframe=True,
                 ))
-                # Second publisher, different pair and direction, same M period:
-                # block even if it would start on the second or third attempt.
                 for shift in (0, seconds, 2 * seconds):
-                    other = dict(
+                    same_source = dict(
                         symbol="Microsoft OTC", direction="UP",
-                        entry_at=start + shift, expires_at=start + shift + length,
+                        entry_at=start + shift,
+                        expires_at=start + shift + duration,
                     )
                     self.assertFalse(claim(
-                        path, other, "S1", start + shift - 10,
+                        path, same_source, "S1", start + shift - 10,
                         exclusive_timeframe=True,
                     ))
-                # The entry at the exact end of attempt 3 is allowed.
-                next_signal = dict(
-                    symbol="Microsoft OTC", direction="UP",
-                    entry_at=start + length, expires_at=start + length * 2,
-                )
-                self.assertTrue(claim(
-                    path, next_signal, "S2", start + length - 10,
-                    exclusive_timeframe=True,
-                ))
-
-    def test_shorter_m2_and_longer_m5_m15_are_separate_locks(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "guard.db"
-            start = 1800
-            for minutes, symbol, source in ((2, "Tesla", "S1"),
-                                            (5, "Microsoft", "S2"),
-                                            (15, "Facebook", "S4")):
                 self.assertTrue(claim(
                     path,
-                    dict(symbol=symbol, direction="UP", entry_at=start,
-                         expires_at=start + 3 * minutes * 60),
-                    source, start - 10, exclusive_timeframe=True,
+                    dict(symbol="Microsoft OTC", direction="UP",
+                         entry_at=start + duration, expires_at=start + 2 * duration),
+                    "S1", start + duration - 10, exclusive_timeframe=True,
                 ))
-            self.assertFalse(claim(
-                path, dict(symbol="CADCHF", direction="DOWN", entry_at=start + 120,
-                           expires_at=start + 480), "S3", start + 115,
-                exclusive_timeframe=True,
-            ))
 
-    def test_early_terminal_result_does_not_unlock_other_pairs_before_three_attempts(self):
+    def test_s1_does_not_block_s2_s3_s4_even_on_same_symbol_and_minute(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "guard.db"
-            start = 1800
+            s = dict(symbol="Tesla OTC", direction="DOWN", entry_at=1800,
+                     expires_at=2160)
+            for source in ("S1", "S2", "S3", "S4"):
+                self.assertTrue(claim(
+                    path, s, source, 1790, exclusive_timeframe=True,
+                ))
+            for source in ("S1", "S2", "S3", "S4"):
+                self.assertFalse(claim(
+                    path, dict(s, symbol="New pair", entry_at=1920, expires_at=2280),
+                    source, 1910, exclusive_timeframe=True,
+                ))
+
+    def test_m2_m5_m15_within_same_strategy_are_independent(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "guard.db"
+            for seconds in (120, 300, 900):
+                self.assertTrue(claim(
+                    path,
+                    dict(symbol="Tesla OTC", direction="UP",
+                         entry_at=1800, expires_at=1800 + seconds * 3),
+                    "S1", 1790, exclusive_timeframe=True,
+                ))
+            # Other strategies' same-minute and same-expiry signals are independent.
+            self.assertTrue(claim(
+                path,
+                dict(symbol="Tesla OTC", direction="DOWN",
+                     entry_at=1800, expires_at=2160),
+                "S4", 1790, exclusive_timeframe=True,
+            ))
+
+    def test_early_terminal_result_does_not_unlock_own_timeframe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "guard.db"
             first = dict(symbol="Tesla", direction="DOWN",
-                         entry_at=start, expires_at=start + 360)
+                         entry_at=1800, expires_at=2160)
             self.assertTrue(claim(
-                path, first, "S4", start - 10, exclusive_timeframe=True,
+                path, first, "S4", 1790, exclusive_timeframe=True,
             ))
-            self.assertTrue(completed(path, first, "S4", start + 120))
-            # Local same-pair lock may release early, but global M2 lock persists.
+            # completed() can finish a legacy symbol lock but must not shorten
+            # the new scoped three-attempt reservation.
+            completed(path, first, "S4", 1920)
             self.assertFalse(claim(
                 path,
                 dict(symbol="Facebook", direction="UP",
-                     entry_at=start + 120, expires_at=start + 480),
-                "S1", start + 110, exclusive_timeframe=True,
+                     entry_at=1920, expires_at=2280),
+                "S4", 1910, exclusive_timeframe=True,
             ))
             self.assertTrue(claim(
                 path,
                 dict(symbol="Facebook", direction="UP",
-                     entry_at=start + 360, expires_at=start + 720),
-                "S1", start + 350, exclusive_timeframe=True,
+                     entry_at=1920, expires_at=2280),
+                "S1", 1910, exclusive_timeframe=True,
+            ))
+            self.assertTrue(claim(
+                path,
+                dict(symbol="Facebook", direction="UP",
+                     entry_at=2160, expires_at=2520),
+                "S4", 2150, exclusive_timeframe=True,
             ))
 
-    def test_global_claim_is_atomic_between_concurrent_strategies(self):
+    def test_scoped_claim_is_atomic_between_concurrent_same_strategy_calls(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "guard.db"
-            start = 1800
             with ThreadPoolExecutor(max_workers=4) as pool:
                 outcomes = list(pool.map(
                     lambda index: claim(
                         path,
                         dict(symbol=f"PAIR-{index}", direction="UP",
-                             entry_at=start, expires_at=start + 900),
-                        f"S{index+1}", start - 10, exclusive_timeframe=True,
+                             entry_at=1800, expires_at=2700),
+                        "S1", 1790, exclusive_timeframe=True,
                     ),
                     range(4),
                 ))
             self.assertEqual(sum(outcomes), 1)
 
-    def test_existing_claim_from_previous_version_blocks_global_overlap(self):
+    def test_previous_version_claims_only_block_matching_source_and_timeframe(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "guard.db"
-            # Old databases store exactly the same three-attempt duration.
             self.assertTrue(claim(
                 path, dict(symbol="Tesla", direction="UP", entry_at=1800,
-                           expires_at=2700), "old", 1790,
+                           expires_at=2700), "Боллинджер ×3", 1790,
             ))
+            # Old live S1 claim still blocks S1 M5 in a new process.
             self.assertFalse(claim(
                 path, dict(symbol="Other", direction="DOWN", entry_at=2100,
-                           expires_at=3000), "S4", 2090,
+                           expires_at=3000), "Боллинджер ×3", 2090,
+                exclusive_timeframe=True,
+            ))
+            # But never S2 M5, S1 M2, or S3 on the same old symbol.
+            self.assertTrue(claim(
+                path, dict(symbol="Other", direction="DOWN", entry_at=2100,
+                           expires_at=3000), "bb_reentry", 2090,
+                exclusive_timeframe=True,
+            ))
+            self.assertTrue(claim(
+                path, dict(symbol="Tesla", direction="DOWN", entry_at=2100,
+                           expires_at=2460), "Боллинджер ×3", 2090,
                 exclusive_timeframe=True,
             ))
 
