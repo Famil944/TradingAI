@@ -4,7 +4,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from services.otc_delivery_guard import claim, completed
+from services.otc_delivery_guard import blocking_claim, claim, completed
 
 
 class DeliveryGuardTests(unittest.TestCase):
@@ -194,6 +194,51 @@ class DeliveryGuardTests(unittest.TestCase):
                            expires_at=2460), "Боллинджер ×3", 2090,
                 exclusive_timeframe=True,
             ))
+
+    def test_overlap_diagnostics_show_which_S4_M15_reservation_blocks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "guard.db"
+            first = dict(symbol="AUDCAD_otc", direction="DOWN",
+                         entry_at=1800, expires_at=4500)
+            self.assertTrue(claim(
+                path, first, "ema_pullback", 1790, exclusive_timeframe=True,
+            ))
+            second = dict(symbol="AUDCHF_otc", direction="UP",
+                          entry_at=2400, expires_at=5100)
+            self.assertFalse(claim(
+                path, second, "ema_pullback", 2390, exclusive_timeframe=True,
+            ))
+            blocker = blocking_claim(path, second, "ema_pullback")
+            self.assertEqual(blocker, dict(
+                symbol="AUDCAD_otc", source="ema_pullback",
+                entry_at=1800, expires_at=4500, origin="scoped",
+            ))
+            # S2 M15 and S4 M2 are independent of the S4 M15 lock.
+            self.assertIsNone(blocking_claim(path, second, "bb_reentry"))
+            m2 = dict(second, expires_at=2760)
+            self.assertIsNone(blocking_claim(path, m2, "ema_pullback"))
+            after = dict(second, entry_at=4500, expires_at=7200)
+            self.assertIsNone(blocking_claim(path, after, "ema_pullback"))
+            self.assertTrue(claim(
+                path, after, "ema_pullback", 4490, exclusive_timeframe=True,
+            ))
+
+    def test_overlap_diagnostics_support_legacy_source_claim(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "guard.db"
+            first = dict(symbol="Tesla", direction="UP",
+                         entry_at=1800, expires_at=2160)
+            self.assertTrue(claim(path, first, "ema_pullback", 1790))
+            blocked = dict(symbol="Other", direction="DOWN",
+                           entry_at=1920, expires_at=2280)
+            self.assertFalse(claim(
+                path, blocked, "ema_pullback", 1910, exclusive_timeframe=True,
+            ))
+            self.assertEqual(
+                blocking_claim(path, blocked, "ema_pullback")["origin"],
+                "legacy",
+            )
+            self.assertIsNone(blocking_claim(path, blocked, "break_retest"))
 
     def test_additive_migration_of_existing_claims(self):
         with tempfile.TemporaryDirectory() as folder:
