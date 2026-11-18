@@ -87,10 +87,10 @@ def preferences_text(store, user_id):
 
 
 STRATEGIES = (
-    ("main", "① Боллинджер ×3"),
-    ("bb_reentry", "② Возврат внутрь"),
-    ("break_retest", "③ Пробой/ретест"),
-    ("ema_pullback", "④ EMA9/19"),
+    ("main", "① Стратегия 1"),
+    ("bb_reentry", "② Стратегия 2"),
+    ("break_retest", "③ Стратегия 3"),
+    ("ema_pullback", "④ Стратегия 4"),
 )
 
 IDS = {"main": "S1", "bb_reentry": "S2", "break_retest": "S3", "ema_pullback": "S4"}
@@ -106,10 +106,10 @@ TERMS = (
 )
 INFO = (
     "ℹ️ О сигналах\n"
-    "S1 — Боллинджер ×3\n"
-    "S2 — Возврат в диапазон\n"
-    "S3 — Пробой и ретест\n"
-    "S4 — Откат EMA9/19\n\n"
+    "S1 — Стратегия 1\n"
+    "S2 — Стратегия 2\n"
+    "S3 — Стратегия 3\n"
+    "S4 — Стратегия 4\n\n"
     "M2/M5/M15 — длительность одной попытки (2/5/15 минут).\n"
     "1/2/3 — попытки сигнала: ✅ выигрыш, ❌ проигрыш, "
     "⏳ ожидание, ❔ данных недостаточно, — не выполнялась.\n"
@@ -173,9 +173,9 @@ def subscription_buttons(store, user_id):
 def sources():
     """One 2×2 grid, not a forest of strategy submenus."""
     return keyboard([
-        [(STRATEGIES[0][1], "c:source:main"),
+        [("① Боллинджер ×3", "c:source:main"),
          (STRATEGIES[1][1], "c:source:bb_reentry")],
-        [(STRATEGIES[2][1], "c:source:break_retest"),
+        [("③ Пробой/ретест", "c:source:break_retest"),
          (STRATEGIES[3][1], "c:source:ema_pullback")],
         [("💡 Предложение", "c:suggest"), ("◀ Меню", "c:home")],
     ])
