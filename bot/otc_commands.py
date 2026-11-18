@@ -159,6 +159,8 @@ def menu(chat_id, expanded=False):
     rows.append(
         [InlineKeyboardButton(text="📊 4 стратегии", callback_data="c:sources")]
     )
+    rows.append([InlineKeyboardButton(text="🎛 Мои сигналы", callback_data="c:prefs"), InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users")])
+    rows.append([InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue")])
     if expanded:
         rows.append(
             [
