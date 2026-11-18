@@ -128,8 +128,10 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         self.now[0] = 1367
         await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 2)
+        # The candidate journal retains the rejected ETH proposal at 1380,
+        # so use a fresh symbol to test the scoped lock ending at 1560.
         self.candidates.record([candidate(
-            "break_retest", "ETH", observed=1540, entry=1560
+            "break_retest", "AUDCAD", observed=1540, entry=1560
         )])
         self.now[0] = 1547
         await self.publisher.publish(self.bot, 777)
