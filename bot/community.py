@@ -313,7 +313,6 @@ def sources(period="today"):
         [(("✅ " if period == name else "") + label, "c:sources:" + name)
          for name, label in (("today", "Сегодня"), ("7d", "7 дней"),
                              ("30d", "30 дней"), ("all", "Всё"))],
-        [("🧹 Сбросить винрейт", "c:wr_reset:ask")],
     ])
 
 
@@ -355,7 +354,8 @@ def metrics_menu(source, timeframe="all", metric="B", limit=10, period="all"):
         [("10", action(n=10)), ("50", action(n=50)), ("100", action(n=100))],
         [("Сегодня", action(p="today")), ("7 дней", action(p="7d")),
          ("30 дней", action(p="30d")), ("Всё", action(p="all"))],
-        [("◀ 4 стратегии", "c:sources")],
+        [("◀ 4 стратегии", "c:sources"),
+         ("🧹 Сброс WR", "c:wr_reset:ask")],
     ])
 
 
