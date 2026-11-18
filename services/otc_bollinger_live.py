@@ -298,6 +298,7 @@ class BollingerCycles(MLPreview):
                 plan,
                 self.label,
                 self.clock(),
+                exclusive_timeframe=True,
             )
             if (
                 not claimed
