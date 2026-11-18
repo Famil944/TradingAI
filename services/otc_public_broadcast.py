@@ -59,7 +59,6 @@ def public_text(row):
         if state in ("WIN", "DRAW", "UNKNOWN"):
             stopped = True
     lines.append("Результат: " + ICONS.get(row["outcome"], "⏳") + " " + row["outcome"])
-    lines.append("Источник: OTCharts · не подтверждено брокером")
     if row["origin"] == "shadow":
         lines.append("ИССЛЕДОВАНИЕ · не был отправлен как реальная торговая сделка")
     return "\n".join(lines)
@@ -84,7 +83,8 @@ def subscriber_card(row, live_cycle=None):
         if isinstance(states, list):
             row = dict(row, attempts=_attempts(states))
     strategy = STRATEGY_IDS.get(row["strategy"], "S?")
-    direction = "⬆️" if row["direction"] == "UP" else "⬇️"
+    up = row["direction"] == "UP"
+    direction = "🟢 ВВЕРХ ⬆️" if up else "🔴 ВНИЗ ⬇️"
     attempts = row.get("attempts") or []
     badges = []
     finished = False
@@ -101,11 +101,22 @@ def subscriber_card(row, live_cycle=None):
             icon = "—"
         badges.append(f"{i+1}{icon}")
     outcome = ICONS.get(row["outcome"], "❔")
+    minutes = row["seconds"] // 60
+    entry = row["entry_at"]
+    slots = "  ·  ".join(
+        f"{i+1}) {_ts(entry + i * row['seconds'])[-5:]}"
+        for i in range(3)
+    )
     return "\n".join([
-        f"{str(row['symbol']).replace(chr(10), ' ')[:90]} {direction} · M{row['seconds'] // 60} · {strategy}",
-        f"🕒 {_ts(row['entry_at'])} МСК",
+        f"📊 СИГНАЛ {strategy} · M{minutes}",
+        f"💱 {str(row['symbol']).replace(chr(10), ' ')[:90]}",
+        direction,
+        f"🕒 Первый вход: {_ts(entry)} МСК",
+        f"⏱ Срок одной попытки: {minutes} мин.",
+        f"Попытки: {slots} МСК",
         "  ".join(badges),
         f"Итог: {outcome} {row['outcome']}",
+        "Следующая попытка — только после ❌ предыдущей.",
     ])
 
 
@@ -121,7 +132,7 @@ def batch_report(rows, metric, seconds):
         lines.append(f"{i}. {row['symbol']} — {ICONS[row['outcome']]}")
     lines.extend([
         f"✅ WIN {wins} · ❌ LOSS {losses} · WR {100*wins/len(rows):.1f}%",
-        "Только исходы прогнозов OTCharts, не прибыль и не сделки брокера.",
+        "Статистика прогнозов, а не доходность счёта.",
     ])
     if rows[0]["origin"] == "shadow":
         lines.append("ФОНОВЫЙ ТЕСТ · гипотезы без отправленных входов")
