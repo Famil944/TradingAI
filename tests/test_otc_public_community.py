@@ -3,7 +3,10 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from services.otc_feedback import FeedbackStore
 from services.otc_public_stats import (
@@ -32,6 +35,55 @@ class TelegramPaginationTests(unittest.TestCase):
         self.assertTrue(len(parts) > 1)
         self.assertTrue(all(len(p) <= 150 for p in parts))
         self.assertEqual("\n".join(parts), text)
+
+
+class StatisticsPeriodTests(unittest.TestCase):
+    def test_moscow_day_and_rolling_period_boundaries(self):
+        from bot.community import period_start
+        msk = ZoneInfo("Europe/Moscow")
+        now = datetime(2026, 11, 18, 14, 26, tzinfo=msk).timestamp()
+        midnight = datetime(2026, 11, 18, tzinfo=msk).timestamp()
+        self.assertEqual(period_start("today", now), midnight)
+        self.assertEqual(period_start("7d", now), now - 7 * 86400)
+        self.assertEqual(period_start("30d", now), now - 30 * 86400)
+        self.assertEqual(period_start("all", now), 0)
+        with self.assertRaises(ValueError):
+            period_start("invalid", now)
+
+    def test_subscriber_statistics_respect_selected_period(self):
+        from bot import community
+        msk = ZoneInfo("Europe/Moscow")
+        now = datetime(2026, 11, 18, 14, tzinfo=msk).timestamp()
+        midnight = datetime(2026, 11, 18, tzinfo=msk).timestamp()
+        main = [
+            signal("today", midnight + 600, "WIN", strat="bollinger_live"),
+            signal("yesterday", midnight - 1800, "LOSS", strat="bollinger_live"),
+            signal("old", now - 15 * 86400, "LOSS", strat="bollinger_live"),
+        ]
+        with patch.object(community, "snapshots", side_effect=lambda source: main if source == "main" else []):
+            with patch.object(community.time, "time", return_value=now):
+                today = community.compact_overview("all", "today")
+                week = community.compact_overview("all", "7d")
+                month = community.compact_overview("all", "30d")
+                m2 = community.compact_overview("2", "today")
+        self.assertIn("S1  100.0% · ✅1 ❌0", today)
+        self.assertIn("S1  50.0% · ✅1 ❌1", week)
+        self.assertIn("S1  33.3% · ✅1 ❌2", month)
+        self.assertIn("M2", m2)
+        self.assertNotIn("Боллинджер", today)
+
+    def test_both_menus_have_today_week_month(self):
+        from bot.community import compact_periods, metrics_menu, sources
+        subscriber = compact_periods("5", "7d")
+        buttons = [b.callback_data for row in subscriber.inline_keyboard for b in row]
+        for period in ("today", "7d", "30d", "all"):
+            self.assertIn(f"c:wr:{period}:5", buttons)
+        owner = sources("30d")
+        owner_buttons = [b.callback_data for row in owner.inline_keyboard for b in row]
+        self.assertIn("c:sources:30d", owner_buttons)
+        details = metrics_menu("main")
+        detail_buttons = [b.callback_data for row in details.inline_keyboard for b in row]
+        self.assertIn("c:stats:main:all:B:10:30d", detail_buttons)
 
 
 class CombinedTests(unittest.TestCase):
