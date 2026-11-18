@@ -58,6 +58,42 @@ class AnnouncementStoreTests(unittest.TestCase):
         self.assertEqual(self.store.summary(aid)["delivery"], {"sent": 1, "pending": 1})
 
 
+class PollComposerTests(unittest.TestCase):
+    def test_blank_lines_and_emojis_are_not_extra_answers(self):
+        draft = {"kind": "poll", "phase": "options", "body": "Продолжать?", "options": []}
+        self.assertEqual(announcements.append_options(
+            draft,
+            "\n✅ Да, продолжай!\n\n🔥 Проект интересный!\n\n"
+            "🤔 Пока наблюдаю.\n\n❌ Пока нет.\n"
+        ), 4)
+        self.assertEqual(len(draft["options"]), 4)
+        self.assertIn("4/8", announcements.options_status(draft))
+        self.assertEqual(AnnouncementStore.validate(
+            "poll", draft["body"], draft["options"]
+        )[1], draft["options"])
+
+    def test_separate_messages_and_edit(self):
+        draft = {"kind": "poll", "phase": "options", "body": "Ваше мнение?", "options": []}
+        self.assertEqual(announcements.append_options(draft, "Да"), 1)
+        self.assertEqual(announcements.append_options(draft, "Нет"), 2)
+        self.assertIn("✅ Готово", announcements.option_controls().inline_keyboard[0][0].text)
+        self.assertEqual(draft["options"], ["Да", "Нет"])
+        self.assertEqual(draft["options"].pop(), "Нет")
+        self.assertEqual(announcements.append_options(draft, "Не знаю"), 2)
+
+    def test_duplicates_and_maximum_are_explained(self):
+        draft = {"kind": "poll", "phase": "options", "body": "Вопрос", "options": []}
+        announcements.append_options(draft, "Да")
+        with self.assertRaisesRegex(ValueError, "одинаковые"):
+            announcements.append_options(draft, "\nДА\n")
+        self.assertEqual(draft["options"], ["Да"])
+        with self.assertRaisesRegex(ValueError, "максимум 8"):
+            announcements.append_options(
+                draft, "\n".join(f"Вариант {n}" for n in range(10))
+            )
+        self.assertEqual(len(draft["options"]), 1)
+
+
 class AnnouncementFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -76,6 +112,58 @@ class AnnouncementFlowTests(unittest.IsolatedAsyncioTestCase):
         self.p2.start()
         self.addCleanup(self.p1.stop)
         self.addCleanup(self.p2.stop)
+
+    async def test_step_by_step_owner_compose_and_confirmation(self):
+        owner_id = announcements.settings.admin_chat_id
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=owner_id),
+            chat=SimpleNamespace(id=owner_id, type="private"),
+            text="Стоит продолжать?",
+            answer=AsyncMock(),
+        )
+        announcements.drafts[owner_id] = {"kind": "poll", "phase": "body"}
+        try:
+            await announcements.compose(message)
+            self.assertEqual(announcements.drafts[owner_id]["phase"], "options")
+            message.text = "\n✅ Да\n\n🔥 Конечно\n\n🤔 Пока смотрю\n"
+            await announcements.compose(message)
+            self.assertEqual(len(announcements.drafts[owner_id]["options"]), 3)
+            self.assertEqual(announcements.drafts[owner_id]["phase"], "options")
+            self.assertIn("3/8", message.answer.await_args.args[0])
+            query = SimpleNamespace(
+                message=message,
+                data="a:done",
+                from_user=message.from_user,
+                answer=AsyncMock(),
+            )
+            await announcements.callbacks(query)
+            self.assertEqual(announcements.drafts[owner_id]["phase"], "confirm")
+            self.assertIn("👁 Шаг 3", message.answer.await_args.args[0])
+            self.assertEqual(
+                message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data,
+                "a:send"
+            )
+            message.text = "случайный текст"
+            await announcements.compose(message)
+            self.assertIn("Предпросмотр уже готов", message.answer.await_args.args[0])
+        finally:
+            announcements.drafts.pop(owner_id, None)
+
+    async def test_done_requires_two_answers(self):
+        owner_id = announcements.settings.admin_chat_id
+        msg = SimpleNamespace(chat=SimpleNamespace(id=owner_id, type="private"),
+                              answer=AsyncMock())
+        query = SimpleNamespace(message=msg, from_user=SimpleNamespace(id=owner_id),
+                                data="a:done", answer=AsyncMock())
+        announcements.drafts[owner_id] = {
+            "kind": "poll", "phase": "options", "body": "Вопрос", "options": ["Да"]
+        }
+        try:
+            await announcements.callbacks(query)
+            self.assertEqual(announcements.drafts[owner_id]["phase"], "options")
+            self.assertTrue(query.answer.await_args.kwargs["show_alert"])
+        finally:
+            announcements.drafts.pop(owner_id, None)
 
     async def test_only_approved_users_receive_even_without_hourly_session(self):
         self.assertEqual(await announcements.active_ids(), [42])
