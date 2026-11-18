@@ -105,6 +105,48 @@ class OTCSession:
         self._rotation_next_at = 0
         self.active_symbols = ()
         self.rotations = 0
+        self._tick_diagnostics = {}
+        self._tick_diagnostics_since = self.clock()
+
+    def _record_tick_diagnostic(self, symbol, now, *, accepted=False, rejection=None):
+        """Observe feed freshness without modifying market data or entry gates."""
+        stats = self._tick_diagnostics.setdefault(
+            symbol, {"accepted": 0, "rejected": Counter(), "last_received": None,
+                     "last_accepted": None, "last_quote": None}
+        )
+        stats["last_received"] = now
+        if accepted:
+            stats["accepted"] += 1
+            stats["last_accepted"] = now
+            stats["last_quote"] = self._quotes.get(symbol)
+        elif rejection:
+            stats["rejected"][rejection] += 1
+        self._report_tick_diagnostics(now)
+
+    def _report_tick_diagnostics(self, now):
+        if now - self._tick_diagnostics_since < 300:
+            return
+        symbols = self.active_symbols or tuple(self._tick_diagnostics)
+        lines = []
+        for symbol in symbols:
+            item = self._tick_diagnostics.get(symbol, {})
+            def age(timestamp):
+                if timestamp is None:
+                    return "none"
+                return f"{now - timestamp:.1f}s"
+            lines.append(
+                f"{symbol}: accepted={item.get('accepted', 0)}, "
+                f"rejected={dict(item.get('rejected', {}))}, "
+                f"received_age={age(item.get('last_received'))}, "
+                f"accepted_age={age(item.get('last_accepted'))}, "
+                f"quote_age={age(self._quotes.get(symbol))}"
+            )
+        logger.info(
+            "OTC per-pair tick diagnostics (last %.0fs): %s",
+            now - self._tick_diagnostics_since, " | ".join(lines)
+        )
+        self._tick_diagnostics.clear()
+        self._tick_diagnostics_since = now
 
     @property
     def conditional_mode(self):
@@ -970,10 +1012,12 @@ class OTCSession:
                                 "invalid_or_stale_tick",
                                 "duplicate_or_unordered_tick",
                             ):
+                                self._record_tick_diagnostic(\n                                    tick.symbol, now, rejection=builder.rejection\n                                )
                                 await self._event(builder.rejection, tick.symbol)
                                 continue
                             self.last_tick = tick.time
                             self._quotes[tick.symbol] = tick.time
+                            self._record_tick_diagnostic(tick.symbol, now, accepted=True)
                             send_quotes = self._quotes
                             if hasattr(self, "data_readiness"):
                                 send_quotes = self.data_readiness.observe(
