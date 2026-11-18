@@ -147,7 +147,7 @@ class SessionRelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Тест &lt;User&gt;", output)
             self.assertIn("https://t.me/tester42", output)
             self.assertIn("Действий за 7 дней: 1", output)
-            self.assertIn("Время чтения", output)
+            self.assertIn("не время чтения", output)
 
 
 if __name__ == "__main__":
