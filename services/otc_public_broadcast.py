@@ -32,7 +32,7 @@ def _ts(at):
 
 def public_text(row):
     """Only explicit safe fields; never forward or modify private Telegram cards."""
-    heading = row["label"]
+    heading = STRATEGY_IDS.get(row["strategy"], "S?")
     arrow = "🟢⬆️" if row["direction"] == "UP" else "🔴⬇️"
     lines = [
         f"{heading} · M{row['seconds'] // 60} {arrow}",
@@ -108,7 +108,7 @@ def batch_report(rows, metric, seconds):
     losses = len(rows) - wins
     title = {"A": "ПОПЫТКИ", "B": "СИГНАЛЫ ×3", "C": "ЦИКЛЫ ×6"}[metric]
     lines = [
-        f"📊 {rows[0]['label']} · {title} · M{seconds // 60}",
+        f"📊 {STRATEGY_IDS.get(rows[0]['strategy'], 'S?')} · {title} · M{seconds // 60}",
         f"Последние 10 подтверждённых исходов · {_ts(rows[0]['resolved_at'])}–{_ts(rows[-1]['resolved_at'])} МСК",
     ]
     for i, row in enumerate(rows, 1):
