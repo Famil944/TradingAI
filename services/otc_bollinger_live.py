@@ -128,13 +128,17 @@ class CycleJournal(PreviewJournal):
             if self._blocked(db, now, 3 * seconds):
                 return None
             if db.execute(
-                "SELECT 1 FROM predictions WHERE symbol=? AND entry_at<? AND expires_at>? AND outcome NOT IN ('CANCELLED','NOT_DELIVERED','LATE') LIMIT 1",
-                (selected["symbol"], selected["expires_at"], selected["entry_at"]),
+                "SELECT 1 FROM predictions WHERE symbol=? "
+                "AND expires_at-entry_at=? AND entry_at<? AND expires_at>? "
+                "AND outcome NOT IN ('CANCELLED','NOT_DELIVERED','LATE') LIMIT 1",
+                (selected["symbol"], 3 * seconds,
+                 selected["expires_at"], selected["entry_at"]),
             ).fetchone():
                 return None
             if db.execute(
-                "SELECT 1 FROM predictions WHERE symbol=? AND outcome='PENDING' LIMIT 1",
-                (selected["symbol"],),
+                "SELECT 1 FROM predictions WHERE symbol=? "
+                "AND expires_at-entry_at=? AND outcome='PENDING' LIMIT 1",
+                (selected["symbol"], 3 * seconds),
             ).fetchone():
                 return None
             if db.execute(
@@ -280,7 +284,7 @@ class BollingerCycles(MLPreview):
             plans, key=lambda r: (-r["payout"], -r["cycle_seconds"], r["symbol"])
         ):
             if (
-                plan["symbol"] in used
+                (plan["symbol"], plan["cycle_seconds"]) in used
                 or not self.enabled
                 or not 15 <= plan["entry_at"] - self.clock() <= 20
             ):
@@ -307,7 +311,7 @@ class BollingerCycles(MLPreview):
             ):
                 await asyncio.to_thread(self.journal.finish, identifier, "CANCELLED")
                 continue
-            used.add(plan["symbol"])
+            used.add((plan["symbol"], plan["cycle_seconds"]))
             plan["virtual"] = await asyncio.to_thread(self.wallet.enroll, identifier)
             await asyncio.to_thread(
                 self.journal.attach_virtual, identifier, plan["virtual"]
