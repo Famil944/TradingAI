@@ -70,6 +70,8 @@ def prepare(snapshot, now, diagnostic=None):
             if diagnostic is not None:
                 diagnostic["unaligned_timeframe"] += 1
             continue
+        if diagnostic is not None:
+            diagnostic[f"aligned_M{seconds // 60}"] += 1
         for symbol, minutes in history.items():
             if diagnostic is not None:
                 diagnostic["pairs_checked"] += 1
@@ -96,9 +98,26 @@ def prepare(snapshot, now, diagnostic=None):
                 continue
             if diagnostic is not None:
                 diagnostic["data_passed"] += 1
+                diagnostic[f"data_passed_M{seconds // 60}"] += 1
+                # Diagnostic only; signal detection itself is unchanged.
+                period = 60 if seconds == 120 else seconds
+                complete = aggregate(
+                    [bar for bar in minutes if bar.time + 60 <= entry - 60],
+                    period,
+                )
+                if len(complete) < 60:
+                    diagnostic[f"history_short_M{seconds // 60}"] += 1
+                elif any(
+                    b.time - a.time != period
+                    for a, b in zip(complete[-60:], complete[-59:])
+                ):
+                    diagnostic[f"history_gap_M{seconds // 60}"] += 1
             decisions = signals(list(minutes), seconds, entry - 60)
             if diagnostic is not None:
                 diagnostic["no_pattern" if not decisions else "pattern_found"] += 1
+                diagnostic[
+                    f"{'pattern_found' if decisions else 'no_pattern'}_M{seconds // 60}"
+                ] += 1
             for method, decision in decisions.items():
                 if diagnostic is not None:
                     diagnostic["candidate:" + method] += 1
