@@ -88,8 +88,10 @@ class CatalogRefreshTests(unittest.IsolatedAsyncioTestCase):
                         feature_asof=NOW)
         snap = ({a.symbol: history()}, active, {a.symbol: NOW}, None)
         self.assertIsNone(check_data(selected, snap, NOW))
+        # A fresh quote cannot revive the expired catalogue observation.
+        late = ({a.symbol: history()}, active, {a.symbol: NOW + 21}, None)
         self.assertEqual(
-            check_data(selected, snap, NOW + 21), "stale_or_ineligible_asset"
+            check_data(selected, late, NOW + 21), "stale_or_ineligible_asset"
         )
 
     async def test_explicit_access_denial_still_clears_active_assets(self):
