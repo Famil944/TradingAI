@@ -117,14 +117,19 @@ def summary_text(info):
     return "\n".join(lines)
 
 
-def owner_results_keyboard(aid):
-    return kb([
-        [("👥 Кто как проголосовал", f"a:people:{aid}:voted:0")],
-        [("⏳ Кто ещё не ответил", f"a:people:{aid}:unvoted:0")],
-        [("🔄 Обновить итоги", f"a:result:{aid}")],
+def owner_results_keyboard(aid, kind="poll"):
+    rows = []
+    if kind == "poll":
+        rows.extend([
+            [("👥 Кто как проголосовал", f"a:people:{aid}:voted:0")],
+            [("⏳ Кто ещё не ответил", f"a:people:{aid}:unvoted:0")],
+            [("🔄 Обновить итоги", f"a:result:{aid}")],
+        ])
+    rows.extend([
         [("🔁 Повторить ошибки доставки", f"a:retry:{aid}")],
         [("◀ История", "a:list")],
     ])
+    return kb(rows)
 
 
 def participant_label(chat_id, profiles):
@@ -548,7 +553,7 @@ async def callbacks(query: types.CallbackQuery):
             return
         await message.answer(
             summary_text(info),
-            reply_markup=owner_results_keyboard(aid), parse_mode=None,
+            reply_markup=owner_results_keyboard(aid, info["kind"]), parse_mode=None,
         )
     elif action == "people" and len(fields) == 5 and fields[2].isdigit() and fields[4].isdigit():
         aid, kind, page = int(fields[2]), fields[3], int(fields[4])
