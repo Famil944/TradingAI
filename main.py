@@ -42,7 +42,6 @@ COMMANDS = [
     ("otc_stats", "Виртуальная статистика"),
     ("access", "Пользователи"),
     ("suggestions", "Предложения пользователей"),
-    ("lead_compare", "Сравнить 30–40 с и обычные сигналы"),
 ]
 
 # Menu commands are a convenience only; the owner-only middleware is the
