@@ -64,12 +64,23 @@ async def open_menu(message):
     )
 
 
-def vote_keyboard(aid, options, selected=None):
-    return kb([
-        [(("✅ " if index == selected else "☐ ") + f"{index + 1}. " + option[:51],
-          f"a:vote:{aid}:{index}")]
-        for index, option in enumerate(options)
-    ])
+def vote_keyboard(aid, options, selected=None, votes=None):
+    """Show a voter's own selection and aggregate percentages, never identities."""
+    total = sum(votes) if votes is not None else 0
+    rows = []
+    for index, option in enumerate(options):
+        label = (("✅ " if index == selected else "☐ ")
+                 + f"{index + 1}. " + option[:43])
+        if votes is not None:
+            count = votes[index] if index < len(votes) else 0
+            label += f" — {100 * count / total:.0f}%" if total else " — 0%"
+        rows.append([(label, f"a:vote:{aid}:{index}")])
+    rows.append([(
+        f"🔄 Обновить результаты · голосов {total}"
+        if votes is not None else "📊 Посмотреть результаты",
+        f"a:refresh:{aid}",
+    )])
+    return kb(rows)
 
 
 def display(entry):
@@ -78,7 +89,8 @@ def display(entry):
     choices = "\n".join(f"{i}. {option}" for i, option in enumerate(entry["options"], 1))
     return ("📊 ОПРОС TRADINGAI\n\n" + entry["body"]
             + "\n\n" + choices
-            + "\n\nВыбери один вариант ответа. Свой голос можно изменить.")
+            + "\n\nВыбери один вариант ответа. Свой голос можно изменить."
+            + "\nВладелец бота видит, кто как проголосовал.")
 
 
 def summary_text(info):
@@ -96,10 +108,62 @@ def summary_text(info):
     ]
     if info["kind"] == "poll":
         total = sum(info["votes"])
-        lines.append(f"Проголосовали: {total}")
+        recipients = info.get("recipient_count", sum(counts.values()))
+        turnout = f" ({100 * total / recipients:.0f}% адресатов)" if recipients else ""
+        lines.append(f"Проголосовали: {total} из {recipients}{turnout}")
         for option, count in zip(info["options"], info["votes"]):
             pct = 100 * count / total if total else 0
             lines.append(f"• {option}: {count} ({pct:.0f}%)")
+    return "\n".join(lines)
+
+
+def owner_results_keyboard(aid, kind="poll"):
+    rows = []
+    if kind == "poll":
+        rows.extend([
+            [("👥 Кто как проголосовал", f"a:people:{aid}:voted:0")],
+            [("⏳ Кто ещё не ответил", f"a:people:{aid}:unvoted:0")],
+            [("🔄 Обновить итоги", f"a:result:{aid}")],
+        ])
+    rows.extend([
+        [("🔁 Повторить ошибки доставки", f"a:retry:{aid}")],
+        [("◀ История", "a:list")],
+    ])
+    return kb(rows)
+
+
+def participant_label(chat_id, profiles):
+    """Only used in the owner's private message; never in poll reply markup."""
+    profile = profiles.get(chat_id) or {}
+    name = " ".join(
+        part.strip() for part in (
+            profile.get("first_name") or "", profile.get("last_name") or ""
+        ) if part and part.strip()
+    )[:70]
+    handle = (profile.get("username") or "").strip().lstrip("@")[:32]
+    details = (name or "Без имени") + (f" (@{handle})" if handle else "")
+    return f"{details} · ID {chat_id}"
+
+
+def participant_text(info, kind, total, rows, profiles, page):
+    title = ("👥 Кто как проголосовал" if kind == "voted"
+             else "⏳ Кто не ответил (только доставленные опросы)")
+    lines = [f"{title} · опрос №{info['id']}", info["body"][:180],
+             f"Всего: {total} · страница {page + 1}", ""]
+    current = None
+    for row in rows:
+        if kind == "voted":
+            index = row["option_index"]
+            if index != current:
+                current = index
+                option = info["options"][index] if 0 <= index < len(info["options"]) else "?"
+                lines.append(f"Вариант {index + 1}: {option[:75]}")
+        lines.append("• " + participant_label(row["chat_id"], profiles))
+    if not rows:
+        lines.append("Здесь пока никого нет.")
+    if kind == "unvoted":
+        lines.append("\nЭто пользователи с отметкой об успешной отправке, "
+                     "которые ещё не голосовали.")
     return "\n".join(lines)
 
 
@@ -165,7 +229,7 @@ async def deliver(bot, aid):
                 await bot.send_message(
                     settings.admin_chat_id,
                     summary_text(info),
-                    reply_markup=kb([[("📋 Результаты", f"a:result:{aid}")]]),
+                    reply_markup=kb([[("📋 Итоги и участники", f"a:result:{aid}")]]),
                     parse_mode=None,
                 )
         except Exception:
@@ -328,28 +392,48 @@ async def callbacks(query: types.CallbackQuery):
         return
     fields = (query.data or "").split(":")
     action = fields[1] if len(fields) > 1 else ""
-    if action == "vote":
-        if (len(fields) != 4 or not fields[2].isdigit() or not fields[3].isdigit()
+    if action in ("vote", "refresh"):
+        if (len(fields) != (4 if action == "vote" else 3)
+                or not fields[2].isdigit()
+                or (action == "vote" and not fields[3].isdigit())
                 or query.from_user.id != message.chat.id):
             await query.answer("Недоступно", show_alert=True)
             return
-        aid, index = int(fields[2]), int(fields[3])
+        aid = int(fields[2])
         status = await asyncio.to_thread(subscribers().status, query.from_user.id)
         if status["state"] != "approved":
             await query.answer("Доступ закончился", show_alert=True)
             return
-        ok = await asyncio.to_thread(store().vote, aid, query.from_user.id, index)
-        if not ok:
+        if action == "vote":
+            index = int(fields[3])
+            ok = await asyncio.to_thread(store().vote, aid, query.from_user.id, index)
+            if not ok:
+                await query.answer("Опрос недоступен", show_alert=True)
+                return
+        elif not await asyncio.to_thread(
+            store().is_recipient, aid, query.from_user.id
+        ):
             await query.answer("Опрос недоступен", show_alert=True)
             return
-        await query.answer("✅ Голос учтён")
-        entry = await asyncio.to_thread(store().get, aid)
+        info = await asyncio.to_thread(store().summary, aid)
+        if not info or info["kind"] != "poll":
+            await query.answer("Опрос недоступен", show_alert=True)
+            return
+        selected = await asyncio.to_thread(store().selected, aid, query.from_user.id)
+        await query.answer(
+            "✅ Голос сохранён. Владелец бота видит ваш выбор."
+            if action == "vote" else "📊 Результаты обновлены."
+        )
         try:
             await message.edit_reply_markup(
-                reply_markup=vote_keyboard(aid, entry["options"], selected=index)
+                reply_markup=vote_keyboard(
+                    aid, info["options"], selected=selected, votes=info["votes"]
+                )
             )
         except TelegramBadRequest:
-            pass
+            pass  # Nothing to edit when percentages have not changed.
+        except Exception as exc:
+            LOG.warning("Poll percentage refresh failed: %s", type(exc).__name__)
         return
 
     if not owner(query.from_user, message):
@@ -469,10 +553,43 @@ async def callbacks(query: types.CallbackQuery):
             return
         await message.answer(
             summary_text(info),
-            reply_markup=kb([
-                [("🔁 Повторить ошибки доставки", f"a:retry:{aid}")],
-                [("◀ История", "a:list")],
-            ]), parse_mode=None,
+            reply_markup=owner_results_keyboard(aid, info["kind"]), parse_mode=None,
+        )
+    elif action == "people" and len(fields) == 5 and fields[2].isdigit() and fields[4].isdigit():
+        aid, kind, page = int(fields[2]), fields[3], int(fields[4])
+        if kind not in ("voted", "unvoted"):
+            await query.answer("Неизвестный раздел", show_alert=True)
+            return
+        info = await asyncio.to_thread(store().get, aid)
+        if not info or info["kind"] != "poll":
+            await query.answer("Опрос не найден", show_alert=True)
+            return
+        page = min(page, 100000)
+        total, rows = await asyncio.to_thread(
+            store().participants, aid, kind, 15, page * 15
+        )
+        if page > 0 and page * 15 >= total:
+            page = max(0, (total - 1) // 15)
+            total, rows = await asyncio.to_thread(
+                store().participants, aid, kind, 15, page * 15
+            )
+        profiles = await asyncio.to_thread(
+            subscribers().profiles, [row["chat_id"] for row in rows]
+        )
+        controls = []
+        buttons = []
+        if page > 0:
+            buttons.append(("◀ Назад", f"a:people:{aid}:{kind}:{page - 1}"))
+        if (page + 1) * 15 < total:
+            buttons.append(("Дальше ▶", f"a:people:{aid}:{kind}:{page + 1}"))
+        if buttons:
+            controls.append(buttons)
+        controls.append([("🔄 Обновить список", f"a:people:{aid}:{kind}:{page}")])
+        controls.append([("📊 К итогам", f"a:result:{aid}")])
+        await query.answer()
+        await message.answer(
+            participant_text(info, kind, total, rows, profiles, page),
+            reply_markup=kb(controls), parse_mode=None,
         )
     elif action == "retry" and len(fields) == 3 and fields[2].isdigit():
         aid = int(fields[2])
