@@ -256,29 +256,29 @@ def _live_rows(root, since):
     main = root / "data" / "bollinger-cycles.db"
     if main.is_file():
         with closing(sqlite3.connect(main.resolve().as_uri() + "?mode=ro", uri=True)) as db:
-            for symbol, entry, seconds, direction, outcome in db.execute(
+            for symbol, entry, seconds, direction, outcome, sent_at in db.execute(
                 "SELECT symbol,entry_at,"
                 "CASE WHEN json_valid(evidence) THEN "
                 "json_extract(evidence,'$.cycle_seconds') END,"
-                "direction,outcome FROM predictions "
+                "direction,outcome,sent_at FROM predictions "
                 "WHERE sent_at>=? AND outcome NOT IN "
                 "('NOT_DELIVERED','LATE','CANCELLED')", (since,),
             ):
                 if seconds in PERIODS:
                     result.append(("S1", symbol, int(seconds), int(entry),
-                                   direction, outcome))
+                                   direction, outcome, float(sent_at)))
     others = root / "data" / "community-live.db"
     if others.is_file():
         with closing(sqlite3.connect(others.resolve().as_uri() + "?mode=ro", uri=True)) as db:
-            for method, symbol, seconds, entry, direction, outcome in db.execute(
-                "SELECT strategy,symbol,seconds,entry_at,direction,outcome "
+            for method, symbol, seconds, entry, direction, outcome, sent_at in db.execute(
+                "SELECT strategy,symbol,seconds,entry_at,direction,outcome,sent_at "
                 "FROM signals WHERE sent_at>=? AND outcome NOT IN "
                 "('NOT_DELIVERED','LATE','CANCELLED','RESERVED')", (since,),
             ):
                 strategy = METHODS.get(method)
                 if strategy and seconds in PERIODS:
                     result.append((strategy, symbol, seconds, int(entry),
-                                   direction, outcome))
+                                   direction, outcome, float(sent_at)))
     return result
 
 
@@ -302,10 +302,13 @@ def comparison(root, since=0, now=None):
             root / "data" / "market-history.db"
         )
         early[key] = (row["direction"], outcome, row["observed_at"])
+    # Don't inflate the baseline with live signals from before the experiment.
+    # The common observation window starts at the first recorded early forecast.
+    common_since = max(since, min((v[2] for v in early.values()), default=now))
     live = {
-        (strategy, symbol, seconds, entry): (direction, outcome)
-        for strategy, symbol, seconds, entry, direction, outcome
-        in _live_rows(root, since)
+        (strategy, symbol, seconds, entry): (direction, outcome, sent_at)
+        for strategy, symbol, seconds, entry, direction, outcome, sent_at
+        in _live_rows(root, common_since)
     }
     groups = []
     for strategy in STRATEGIES:
@@ -324,6 +327,14 @@ def comparison(root, since=0, now=None):
             groups.append(dict(
                 strategy=strategy, seconds=seconds,
                 early=len(e), live=len(l), matched=len(shared),
+                early_lead_seconds=(
+                    round(sum(k[3] - v[2] for k, v in e.items()) / len(e), 1)
+                    if e else None
+                ),
+                live_lead_seconds=(
+                    round(sum(k[3] - v[2] for k, v in l.items()) / len(l), 1)
+                    if l else None
+                ),
                 directions_agree=agree,
                 early_outcomes=dict(e_counts), live_outcomes=dict(l_counts),
                 paired_known=len(both_known),
@@ -337,6 +348,7 @@ def format_report(groups):
     lines = [
         "Сравнение входа: ранний 30–40 с против основного 15–20 с / S2–S4 позже",
         "Ранние: только фоновые прогнозы; основные: только доставленные сигналы.",
+        "Период сравнения начинается не раньше первого раннего прогноза.",
         "Это виртуальные результаты OTCharts, не сделки Pocket Option.",
         "WINRATE = WIN/(WIN+LOSS), PENDING/DRAW/UNKNOWN исключены.",
         "",
@@ -353,8 +365,10 @@ def format_report(groups):
         )
         lines.append(
             f"{g['strategy']} M{g['seconds']//60}: "
-            f"ранних {g['early']} (WR {rate(e)}), "
-            f"основных {g['live']} (WR {rate(l)}); "
+            f"ранних {g['early']} (WR {rate(e)}, "
+            f"средний запас {g['early_lead_seconds'] if g['early_lead_seconds'] is not None else '—'}с), "
+            f"основных {g['live']} (WR {rate(l)}, "
+            f"запас {g['live_lead_seconds'] if g['live_lead_seconds'] is not None else '—'}с); "
             f"совпадений по паре/времени {g['matched']}, "
             f"одно направление {g['directions_agree']}; "
             f"WIN по сравнимым исходам {matched}"
