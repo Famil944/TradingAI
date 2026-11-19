@@ -85,6 +85,7 @@ def hourly_candidate(snapshot, now, archive_path):
         base = dict(
             symbol=symbol, name=asset.name or symbol,
             entry_at=entry, expires_at=entry + H1_SECONDS,
+            cycle_seconds=H1_SECONDS,
             feature_asof=feature_asof, observed_at=now,
             payout=asset.payout, gates={"cycle": True},
         )
