@@ -84,6 +84,64 @@ class EarlyPlanningTests(unittest.TestCase):
                 [],
             )
 
+    def test_report_uses_same_entry_time_and_actual_delivery_lead(self):
+        from services.otc_bollinger_live import CycleJournal
+        from services.otc_strategies_live import LiveStrategyJournal
+
+        p1, p2 = patched_patterns()
+        with p1, p2, tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            early = EarlyJournal(root / "data" / "early-lead-30-40.db")
+            rows = candidate_rows(snapshot(), NOW, (120,))
+            early.record(rows)
+            early.candidates.samples([
+                ("A_otc", ENTRY, ENTRY, ENTRY, 100.0),
+                ("A_otc", ENTRY + 120, ENTRY + 120, ENTRY + 120, 102.0),
+            ])
+            main = CycleJournal(root / "data" / "bollinger-cycles.db",
+                                per_horizon=True)
+            with sqlite3.connect(main.path) as db:
+                db.execute(
+                    "INSERT INTO predictions "
+                    "(id,symbol,created_at,entry_at,expires_at,direction,payout,"
+                    "model_sha,evidence,sent_at,outcome) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    ("main", "A_otc", NOW, ENTRY, ENTRY + 360, "UP",
+                     93, "test", json.dumps({"cycle_seconds": 120}),
+                     ENTRY - 17, "WIN"),
+                )
+            other = LiveStrategyJournal(root / "data" / "community-live.db")
+            with sqlite3.connect(other.path) as db:
+                db.execute(
+                    "INSERT INTO signals "
+                    "(id,strategy,symbol,seconds,created_at,entry_at,expires_at,"
+                    "direction,version,sent_at,outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    ("published", "bb_reentry", "A_otc", 120, NOW,
+                     ENTRY, ENTRY + 360, "DOWN", "test", ENTRY - 10, "LOSS"),
+                )
+                db.execute(
+                    "INSERT INTO signals "
+                    "(id,strategy,symbol,seconds,created_at,entry_at,expires_at,"
+                    "direction,version,sent_at,outcome) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    ("old", "bb_reentry", "B_otc", 120, NOW - 999,
+                     ENTRY - 600, ENTRY - 240, "DOWN", "test",
+                     NOW - 500, "WIN"),
+                )
+            groups = comparison(root, since=0, now=ENTRY + 121)
+            main_group = next(g for g in groups
+                              if g["strategy"] == "S1" and g["seconds"] == 120)
+            s2 = next(g for g in groups
+                      if g["strategy"] == "S2" and g["seconds"] == 120)
+            self.assertEqual(main_group["early_lead_seconds"], 35)
+            self.assertEqual(main_group["live_lead_seconds"], 17)
+            self.assertEqual(main_group["matched"], 1)
+            self.assertEqual(main_group["directions_agree"], 1)
+            self.assertEqual(main_group["paired_known"], 1)
+            self.assertEqual((s2["early"], s2["live"], s2["matched"]), (1, 1, 1))
+            self.assertEqual(s2["directions_agree"], 0)
+            self.assertEqual(s2["early_paired_win"], 1)
+            self.assertEqual(s2["live_paired_win"], 0)
+
     def test_isolated_sqlite_claims_prevent_overlapping_three_attempts(self):
         p1, p2 = patched_patterns()
         with p1, p2, tempfile.TemporaryDirectory() as folder:
