@@ -115,21 +115,33 @@ def home(owner=False):
 
 def preferences_menu(store, user_id):
     selected = store.source_preferences(user_id)
+    timeframes = store.timeframe_preferences(user_id)
     rows = [
         [(("✅ " if selected[code] else "❌ ") + label, "c:pref:" + code)]
         for code, label in STRATEGIES
     ]
+    rows.append([
+        (("✅ " if timeframes[seconds] else "❌ ") + f"M{seconds // 60}",
+         f"c:tfpref:{seconds // 60}")
+        for seconds in (120, 300, 900)
+    ])
     rows.append([("◀ Меню", "c:home")])
     return keyboard(rows)
 
 
 def preferences_text(store, user_id):
     selected = store.source_preferences(user_id)
+    timeframes = store.timeframe_preferences(user_id)
     count = sum(selected.values())
+    enabled_times = [f"M{seconds // 60}" for seconds, enabled
+                     in timeframes.items() if enabled]
     return (
-        f"🎛 Источники сигналов · включено {count}/4\n"
-        "Нажми на стратегию, чтобы включить или отключить её.\n"
-        "Настройки индивидуальны. Отключённые сигналы не приходят."
+        f"🎛 Мои сигналы · стратегий {count}/4\n"
+        "Нажми на стратегию или экспирацию, чтобы включить или отключить.\n"
+        "M2 / M5 / M15 — независимые настройки только твоих уведомлений.\n"
+        "Включённые экспирации: "
+        + (", ".join(enabled_times) if enabled_times else "ни одной") + "\n"
+        "Основные сигналы других пользователей не изменяются."
     )
 
 
@@ -817,6 +829,29 @@ async def callbacks(query: types.CallbackQuery):
         await query.message.edit_text(
             preferences_text(store, user_id),
             reply_markup=preferences_menu(store, user_id),
+            parse_mode=None,
+        )
+        return
+    if target == "tfpref":
+        if (owner or len(action) != 3 or action[2] not in ("2", "5", "15")
+                or query.from_user.id != query.message.chat.id):
+            await query.answer("Недоступно", show_alert=True)
+            return
+        store = subscribers()
+        if store.status(query.message.chat.id)["state"] != "approved":
+            await query.answer("Нет активного доступа", show_alert=True)
+            return
+        seconds = int(action[2]) * 60
+        old_value = store.timeframe_preferences(query.message.chat.id)[seconds]
+        await asyncio.to_thread(
+            store.set_timeframe, query.message.chat.id, seconds, not old_value
+        )
+        await query.answer(
+            f"M{seconds // 60} " + ("включён" if not old_value else "отключён")
+        )
+        await query.message.edit_text(
+            preferences_text(store, query.message.chat.id),
+            reply_markup=preferences_menu(store, query.message.chat.id),
             parse_mode=None,
         )
         return

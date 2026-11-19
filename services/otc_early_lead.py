@@ -349,6 +349,99 @@ def comparison(root, since=0, now=None):
     return groups
 
 
+def early_winrate(root, since=0, now=None):
+    """Independent early-only cycle winrate; never reads delivered signal journals.
+
+    Results are evaluated prospectively from the separate shadow journal.
+    Only confirmed WIN and LOSS count toward WR. Unknown, draw and pending
+    outcomes are visible, not silently counted as wins or losses.
+    """
+    root = Path(root)
+    now = time.time() if now is None else now
+    rows, prices = load(root / "data" / "early-lead-30-40.db", since, now)
+    by_strategy = {strategy: Counter() for strategy in STRATEGIES}
+    by_timeframe = {
+        (strategy, seconds): Counter()
+        for strategy in STRATEGIES for seconds in PERIODS
+    }
+    overall = Counter()
+    first_at = last_at = None
+    for row in rows:
+        experiment = row.get("experiment") or {}
+        strategy = experiment.get("strategy")
+        seconds = experiment.get("cycle_seconds")
+        if (experiment.get("version") != VERSION
+                or strategy not in STRATEGIES
+                or seconds not in PERIODS
+                or row.get("direction") not in ("UP", "DOWN")):
+            continue
+        # Report what was actually recorded at the earlier time, never
+        # infer a forecast retrospectively from later market data.
+        recorded = float(row["observed_at"])
+        lead = float(row["entry_at"]) - recorded
+        if not WINDOW[0] <= lead <= WINDOW[1]:
+            continue
+        first_at = min(first_at, recorded) if first_at is not None else recorded
+        last_at = max(last_at, recorded) if last_at is not None else recorded
+        _, _, outcome = evaluate_cycle(
+            dict(row, seconds=seconds), prices, now,
+            root / "data" / "market-history.db",
+        )
+        if outcome not in ("WIN", "LOSS", "DRAW", "PENDING", "UNKNOWN"):
+            outcome = "UNKNOWN"
+        overall[outcome] += 1
+        by_strategy[strategy][outcome] += 1
+        by_timeframe[(strategy, seconds)][outcome] += 1
+    return dict(
+        overall=overall, by_strategy=by_strategy, by_timeframe=by_timeframe,
+        first_at=first_at, last_at=last_at, window=WINDOW,
+    )
+
+
+def format_early_winrate(stats, period="7 дней"):
+    """Compact Telegram-safe owner report separated from main signal stats."""
+    def record_text(counts):
+        wins, losses = counts["WIN"], counts["LOSS"]
+        known = wins + losses
+        winrate = f"{100 * wins / known:.1f}%" if known else "—"
+        counts_text = f"✅ {wins} / ❌ {losses} · WR {winrate}"
+        others = (f" · ⏳ {counts['PENDING']} · ? {counts['UNKNOWN']}"
+                  f" · = {counts['DRAW']}")
+        return counts_text + others
+
+    overall = stats["overall"]
+    lines = [
+        "🧪 ВИНРЕЙТ ФОНОВОГО РЕЖИМА · 30–40 с",
+        f"Период: {period}",
+        "Только сохранённые фоновые циклы, НЕ отправленные подписчикам.",
+        "",
+        f"Всего прогнозов: {sum(overall.values())}",
+        record_text(overall),
+    ]
+    if not sum(overall.values()):
+        lines += [
+            "",
+            "Пока нет фоновых прогнозов за выбранный период.",
+            "На устройстве включи OTC_EARLY_SHADOW_ENABLED=true,",
+            "перезапусти бот и запусти обычный OTC-сеанс.",
+        ]
+    else:
+        for strategy in STRATEGIES:
+            subtotal = stats["by_strategy"][strategy]
+            lines.extend(["", f"**{strategy}** · прогнозов {sum(subtotal.values())}",
+                          record_text(subtotal)])
+            for seconds in PERIODS:
+                counts = stats["by_timeframe"][(strategy, seconds)]
+                lines.append(f"  M{seconds // 60}: {record_text(counts)}")
+    lines.extend([
+        "",
+        "WR = WIN / (WIN + LOSS). DRAW, UNKNOWN, PENDING не учитываются.",
+        "Это виртуальные исходы по OTCharts, а не подтверждённые сделки брокера.",
+        "Основной винрейт S1–S4 не затронут.",
+    ])
+    return "\n".join(lines).replace("**", "")
+
+
 def format_report(groups):
     lines = [
         "Сравнение входа: ранний 30–40 с против основного 15–20 с / S2–S4 позже",

@@ -32,6 +32,7 @@ POLL_SECONDS = 2  # fallback/reconciliation only; new signals are pushed immedia
 MAX_USERS_PER_TICK = 200
 TRIAL_DAYS = 7
 SIGNAL_SOURCES = ("main", "bb_reentry", "break_retest", "ema_pullback")
+SIGNAL_TIMEFRAMES = (120, 300, 900)  # M2, M5, M15; subscriber delivery only.
 DAY = 86400
 SESSION_SECONDS = 3600
 SESSION_REMINDER_SECONDS = 600
@@ -74,6 +75,12 @@ class Subscribers:
                     source TEXT NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY(chat_id, source)
+                );
+                CREATE TABLE IF NOT EXISTS timeframe_preferences(
+                    chat_id INTEGER NOT NULL,
+                    seconds INTEGER NOT NULL CHECK(seconds IN (120,300,900)),
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY(chat_id,seconds)
                 );
                 CREATE TABLE IF NOT EXISTS deliveries(
                     chat_id INTEGER NOT NULL,
@@ -479,6 +486,35 @@ class Subscribers:
             return False
         return self.source_preferences(chat_id)[source]
 
+    def timeframe_preferences(self, chat_id):
+        """Personal M2/M5/M15 delivery choices; all enabled by default.
+
+        This does not control strategy generation, evaluation or public stats.
+        """
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                "SELECT seconds,enabled FROM timeframe_preferences WHERE chat_id=?",
+                (int(chat_id),),
+            ).fetchall()
+        saved = dict(rows)
+        return {seconds: bool(saved.get(seconds, 1))
+                for seconds in SIGNAL_TIMEFRAMES}
+
+    def set_timeframe(self, chat_id, seconds, enabled):
+        if isinstance(seconds, bool) or seconds not in SIGNAL_TIMEFRAMES:
+            raise ValueError("Unknown subscriber timeframe")
+        with closing(self._connect()) as db:
+            db.execute(
+                "INSERT INTO timeframe_preferences(chat_id,seconds,enabled) "
+                "VALUES(?,?,?) ON CONFLICT(chat_id,seconds) "
+                "DO UPDATE SET enabled=excluded.enabled",
+                (int(chat_id), int(seconds), int(bool(enabled))),
+            )
+            db.commit()
+
+    def allows_timeframe(self, chat_id, seconds):
+        return self.timeframe_preferences(chat_id).get(seconds, False)
+
     def delivered(self, chat_id, signal_id):
         with closing(self._connect()) as db:
             return db.execute(
@@ -580,6 +616,7 @@ class SubscriberRelay:
             async def deliver(chat_id, joined_at):
                 if (sent_at < joined_at or self.store.status(chat_id, self.clock())["state"] != "approved"
                         or not self.store.allows_source(chat_id, row["strategy"])
+                        or not self.store.allows_timeframe(chat_id, row["seconds"])
                         or (self.require_sessions and not self.store.session_allows_signal(
                             chat_id, sent_at, self.clock()
                         ))):
@@ -661,6 +698,11 @@ class SubscriberRelay:
                                 LOG.warning("Subscriber edit rejected for %d", chat_id)
                         except Exception as exc:
                             LOG.warning("Subscriber edit failed: %s", type(exc).__name__)
+                        continue
+                    if (
+                        not self.store.allows_timeframe(chat_id, row["seconds"])
+                        or row["seconds"] not in SIGNAL_TIMEFRAMES
+                    ):
                         continue
                     if (
                         (self.require_sessions and not self.store.session_allows_signal(

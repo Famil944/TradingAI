@@ -111,7 +111,10 @@ def menu(chat_id, expanded=False):
                         text="📊 Стратегии", callback_data="c:sources"
                     ),
                 ],
-                [InlineKeyboardButton(text="🧪 Тест 30–40 с vs обычный", callback_data="otc:earlyreport")],
+                [
+                    InlineKeyboardButton(text="🧪 Фоновый WR", callback_data="otc:earlywr:7"),
+                    InlineKeyboardButton(text="⚖️ Сравнить", callback_data="otc:earlyreport"),
+                ],
                 [InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")],
             ]
         )
@@ -163,6 +166,10 @@ def menu(chat_id, expanded=False):
         InlineKeyboardButton(text="📊 Стратегии", callback_data="c:sources"),
         InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users"),
         InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="🧪 Фоновый WR", callback_data="otc:earlywr:7"),
+        InlineKeyboardButton(text="⚖️ Сравнить", callback_data="otc:earlyreport"),
     ])
     rows.append([InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")])
     if expanded:
@@ -514,6 +521,53 @@ async def early_report(message: types.Message):
         )
 
 
+def early_winrate_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="7 дней", callback_data="otc:earlywr:7"),
+            InlineKeyboardButton(text="Всё время", callback_data="otc:earlywr:all"),
+        ],
+        [
+            InlineKeyboardButton(text="⚖️ Сравнить с основным", callback_data="otc:earlyreport"),
+            InlineKeyboardButton(text="◀ В меню", callback_data="otc:panel:show"),
+        ],
+    ])
+
+
+async def early_winrate_report(message: types.Message, days=7):
+    from services.otc_early_lead import early_winrate, format_early_winrate
+
+    path = ROOT / "data" / "early-lead-30-40.db"
+    if not path.is_file():
+        await message.answer(
+            "🧪 Фоновый винрейт пока пуст. "
+            "Включи OTC_EARLY_SHADOW_ENABLED=true на своём устройстве, "
+            "перезапусти бота и запусти обычный OTC-сеанс. "
+            "Основной винрейт не изменится.",
+            reply_markup=early_winrate_keyboard(), parse_mode=None,
+        )
+        return
+    try:
+        since = time.time() - days * 86400 if days is not None else 0
+        stats = await asyncio.to_thread(early_winrate, ROOT, since)
+        await message.answer(
+            format_early_winrate(
+                stats, period=(f"{days} дней" if days is not None else "всё время")
+            ),
+            reply_markup=early_winrate_keyboard(), parse_mode=None,
+        )
+    except Exception as exc:
+        await message.answer(
+            "🧪 Не удалось прочитать отдельный фоновый винрейт: "
+            + type(exc).__name__, parse_mode=None,
+        )
+
+
+@router.message(Command("shadow_winrate"))
+async def shadow_winrate_command(message: types.Message):
+    await early_winrate_report(message)
+
+
 @router.message(Command("lead_compare"))
 async def lead_compare_command(message: types.Message):
     await early_report(message)
@@ -547,6 +601,12 @@ async def callback(query: types.CallbackQuery):
     if action == "earlyreport":
         await query.answer()
         await early_report(query.message)
+        return
+    if action == "earlywr" and len(parts) == 3 and parts[2] in ("7", "all"):
+        await query.answer()
+        await early_winrate_report(
+            query.message, days=(7 if parts[2] == "7" else None)
+        )
         return
     if action == "wallet" and len(parts) == 3:
         await query.answer()
