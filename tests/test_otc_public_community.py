@@ -66,11 +66,43 @@ class StatisticsPeriodTests(unittest.TestCase):
                 week = community.compact_overview("all", "7d")
                 month = community.compact_overview("all", "30d")
                 m2 = community.compact_overview("2", "today")
-        self.assertIn("S1  100.0% · ✅1 ❌0", today)
-        self.assertIn("S1  50.0% · ✅1 ❌1", week)
-        self.assertIn("S1  33.3% · ✅1 ❌2", month)
+        self.assertIn("S1  M2 100.0% · M5 — · M15 —", today)
+        self.assertIn("S1  M2 50.0% · M5 — · M15 —", week)
+        self.assertIn("S1  M2 33.3% · M5 — · M15 —", month)
         self.assertIn("M2", m2)
         self.assertNotIn("Боллинджер", today)
+        self.assertNotIn("n=", today)
+        self.assertNotIn("✅", today)
+
+    def test_owner_and_subscribers_show_independent_m2_m5_m15_rates(self):
+        from bot import community
+        main = [
+            signal("m2-win", 1000, "WIN", secs=120),
+            signal("m2-loss", 1001, "LOSS", secs=120),
+            signal("m5-win", 1002, "WIN", secs=300),
+            signal("m15-unknown", 1003, "UNKNOWN", secs=900),
+        ]
+        other = [
+            signal("s2m2-loss", 1004, "LOSS", secs=120),
+            signal("s2m15-win", 1005, "WIN", secs=900),
+        ]
+        mapping = {"main": main, "bb_reentry": other}
+        with (patch.object(community, "snapshots",
+                           side_effect=lambda s: mapping.get(s, [])),
+              patch.object(community, "stats_since", return_value=0),
+              patch.object(community, "reset_note", return_value="")):
+            owner = community.overview_text("all")
+            subscribers = community.compact_overview("all", "all")
+            m5 = community.compact_overview("5", "all")
+        self.assertIn("S1 Боллинджер ×3\nM2 50.0% · M5 100.0% · M15 —", owner)
+        self.assertIn("S2 Боллинджер · возврат\nM2 0.0% · M5 — · M15 100.0%", owner)
+        self.assertIn("S3 Пробой и ретест\nM2 — · M5 — · M15 —", owner)
+        self.assertIn("S1  M2 50.0% · M5 100.0% · M15 —", subscribers)
+        self.assertIn("S2  M2 0.0% · M5 — · M15 100.0%", subscribers)
+        self.assertIn("S1  100.0%", m5)
+        self.assertIn("S2  —", m5)
+        self.assertNotIn("❔", owner)
+        self.assertNotIn("✅", owner)
 
     def test_both_menus_have_today_week_month(self):
         from bot.community import compact_periods, metrics_menu, sources

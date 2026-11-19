@@ -245,27 +245,39 @@ def guide_menu():
     ])
 
 
+def _confirmed_winrate(rows):
+    """Use the existing published WIN/LOSS metric without changing its basis."""
+    result = metrics(rows)["wr"]
+    return f"{result:.1f}%" if result is not None else "—"
+
+
+def _per_timeframe_winrates(rows):
+    """Short, separate M2/M5/M15 results; no invented rate for empty samples."""
+    return " · ".join(
+        f"M{seconds // 60} {_confirmed_winrate([row for row in rows if row['seconds'] == seconds])}"
+        for seconds in (120, 300, 900)
+    )
+
+
 def compact_overview(timeframe="all", period="all"):
-    """Only delivered forecasts; WIN/LOSS exclude virtual or shadow trades."""
+    """Compact published-only subscriber winrate; never includes shadow trades."""
     seconds = SECONDS[timeframe]
     since = stats_since(period)
-    lines = [
-        f"📊 Винрейт · {PERIODS[period]}",
-        "Все M2/M5/M15" if seconds is None else "M" + timeframe,
-    ]
+    title = f"📊 WR · {PERIODS[period]}"
+    if seconds is not None:
+        title += f" · M{seconds // 60}"
+    lines = [title, ""]
     for source, _ in STRATEGIES:
         rows = [
             row for row in snapshots(source)
             if (since == 0 or stats_timestamp(row) >= since)
-            and (seconds is None or row["seconds"] == seconds)
         ]
-        m = metrics(rows)
-        rate = f"{m['wr']:.1f}%" if m["wr"] is not None else "—"
-        lines.append(
-            f"{IDS[source]}  {rate} · ✅{m['win']} ❌{m['loss']} "
-            f"(n={m['known']}) ❔{m['unknown']}"
+        rates = (
+            _per_timeframe_winrates(rows) if seconds is None
+            else _confirmed_winrate([r for r in rows if r["seconds"] == seconds])
         )
-    lines.extend(["", "Только подтверждённые WIN/LOSS · не сделки брокера."])
+        lines.append(f"{IDS[source]}  {rates}")
+    lines.extend(["", "OTCharts · не сделки брокера"])
     return "\n".join(lines) + reset_note()
 
 
@@ -329,29 +341,20 @@ def sources(period="today"):
 
 
 def overview_text(period="today"):
+    """Short owner WR by each strategy and M2/M5/M15 separately."""
     since = stats_since(period)
-    lines = [
-        f"📊 ЧЕТЫРЕ СТРАТЕГИИ · {PERIODS[period]}",
-        "WIN/LOSS — подтверждённые исходы опубликованных прогнозов",
-        "M2/M5/M15",
-        "",
-    ]
-    for i, (code, _) in enumerate(STRATEGIES, 1):
-        rows = [row for row in snapshots(code) if stats_timestamp(row) >= since]
-        m = metrics(rows)
-        rate = f"{m['wr']:.1f}%" if m["wr"] is not None else "—"
-        title = "Боллинджер ×3" if code == "main" else METHOD_LABELS[code]
-        lines.append(
-            f"{i}. {title}: ✅{m['win']} ❌{m['loss']} · WR {rate}"
-            + (f" · ❔{m['unknown']}" if m["unknown"] else "")
-        )
-    lines.extend([
-        "",
-        "У каждой стратегии своя история и винрейт ×3/×6.",
-        "Это статистика OTCharts, не подтверждённые сделки брокера.",
-        "Выбери стратегию:",
-    ])
+    lines = [f"📊 Винрейт · {PERIODS[period]}", ""]
+    for source, _ in STRATEGIES:
+        rows = [
+            row for row in snapshots(source)
+            if since == 0 or stats_timestamp(row) >= since
+        ]
+        lines.append(f"{IDS[source]} {source_title(source)}")
+        lines.append(_per_timeframe_winrates(rows))
+        lines.append("")
+    lines.append("OTCharts · не сделки брокера")
     return "\n".join(lines) + reset_note()
+
 
 def metrics_menu(source, timeframe="all", metric="B", limit=10, period="all"):
     def action(m=metric, n=limit, p=period):

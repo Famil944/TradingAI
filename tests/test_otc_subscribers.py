@@ -407,7 +407,9 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(community, "snapshots", return_value=data):
             text = community.compact_overview("2")
         self.assertEqual(text.count("50.0%"), 4)
-        self.assertIn("✅1 ❌1 (n=2)", text)
+        self.assertIn("S1  50.0%", text)
+        self.assertNotIn("n=", text)
+        self.assertNotIn("✅", text)
         self.assertNotIn("UNKNOWN", text)
         self.assertNotIn("Боллинджер", text)
 
