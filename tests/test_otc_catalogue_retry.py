@@ -109,7 +109,11 @@ class CatalogueRetryTests(unittest.IsolatedAsyncioTestCase):
         )
         session = SimpleNamespace(provider=provider)
         delays = []
-        with patch("services.otc_session.asyncio.sleep", side_effect=lambda x: delays.append(x)):
+
+        async def record_sleep(seconds):
+            delays.append(seconds)
+
+        with patch("services.otc_session.asyncio.sleep", side_effect=record_sleep):
             result = await OTCSession._catalogue_with_retry(session)
         self.assertEqual(result, [])
         self.assertEqual(provider.symbols.await_count, 2)
