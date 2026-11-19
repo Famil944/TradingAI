@@ -173,6 +173,10 @@ class OTCSession:
 
     def _clear_quotes(self):
         self._quotes.clear()
+        if hasattr(self, "early_observer"):
+            # A fresh stream/session must not inherit the prior shadow
+            # decision snapshot. The tick sampler still tracks real outcomes.
+            self.early_observer.snapshot = None
         if hasattr(self, "data_readiness"):
             self.data_readiness.reset(self.clock(), "stream_or_session_reset")
         for name in (
@@ -1085,6 +1089,13 @@ class OTCSession:
                                     history, active, send_quotes, self.ends_at
                                 )
                                 self.cycle_preview.observe_tick(tick, now)
+                            if hasattr(self, "early_observer"):
+                                # The research arm shares the same validated live
+                                # ticks and closed history; never a second feed.
+                                self.early_observer.observe(
+                                    history, active, send_quotes, self.ends_at
+                                )
+                                self.early_observer.observe_tick(tick, now)
                             if hasattr(self, "groq_preview"):
                                 self.groq_preview.observe(
                                     history, active, send_quotes, self.ends_at

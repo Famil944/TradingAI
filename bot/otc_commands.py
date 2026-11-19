@@ -111,6 +111,7 @@ def menu(chat_id, expanded=False):
                         text="📊 Стратегии", callback_data="c:sources"
                     ),
                 ],
+                [InlineKeyboardButton(text="🧪 Тест 30–40 с vs обычный", callback_data="otc:earlyreport")],
                 [InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")],
             ]
         )
@@ -489,6 +490,35 @@ def stats_menu(period="all", cycles=False):
     )
 
 
+async def early_report(message: types.Message):
+    from services.otc_early_lead import comparison, format_report
+
+    path = ROOT / "data" / "early-lead-30-40.db"
+    if not path.is_file():
+        await message.answer(
+            "🧪 Ранний тест пока не активирован. Добавь в локальный .env "
+            "OTC_EARLY_SHADOW_ENABLED=true и перезапусти бот. "
+            "Основные сигналы останутся прежними.",
+            parse_mode=None,
+        )
+        return
+    try:
+        groups = await asyncio.to_thread(
+            comparison, ROOT, time.time() - 7 * 86400
+        )
+        await message.answer(format_report(groups), parse_mode=None)
+    except Exception as exc:
+        await message.answer(
+            "🧪 Не удалось прочитать фоновую статистику: "
+            + type(exc).__name__, parse_mode=None,
+        )
+
+
+@router.message(Command("lead_compare"))
+async def lead_compare_command(message: types.Message):
+    await early_report(message)
+
+
 @router.message(Command("otc_diagnostics"))
 async def diagnostics(message: types.Message):
     # No API call: inspecting diagnostics must not consume the account quota.
@@ -514,6 +544,10 @@ async def callback(query: types.CallbackQuery):
         return
     action = parts[1]
     chat = query.message.chat.id
+    if action == "earlyreport":
+        await query.answer()
+        await early_report(query.message)
+        return
     if action == "wallet" and len(parts) == 3:
         await query.answer()
         kind = parts[2]
