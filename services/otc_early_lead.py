@@ -205,16 +205,23 @@ class EarlyLeadObserver:
                 and self.snapshot is not None and session.transport == "live"):
             return
         entry = int(now) // 60 * 60 + 60
-        if (not WINDOW[0] <= entry - now <= WINDOW[1]
-                or self.last_plan_at == entry):
+        if not WINDOW[0] <= entry - now <= WINDOW[1]:
             return
-        # One prospective decision per entry minute; no future candle lookahead.
-        self.last_plan_at = entry
+        # Give transiently stale quotes a few seconds to recover inside the
+        # same early window. Up to four scans, never a backfilled forecast.
+        if (self.last_plan_at is not None
+                and self.last_plan_at[0] == entry
+                and now - self.last_plan_at[1] < 3):
+            return
+        self.last_plan_at = (entry, now)
         history, assets, quotes, end = self.snapshot
         frozen = ({s: list(b) for s, b in history.items()},
                   dict(assets), dict(quotes), end)
         allowed = tuple(getattr(cycles, "allowed_timeframes", PERIODS))
         rows = await asyncio.to_thread(candidate_rows, frozen, now, allowed)
+        if not WINDOW[0] <= entry - self.clock() <= WINDOW[1]:
+            self.counters["late_computation"] += 1
+            return
         recorded = await asyncio.to_thread(self.journal.record, rows)
         self.sampler.register(recorded, self.clock())
         self.counters["planning_windows"] += 1
