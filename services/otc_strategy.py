@@ -46,7 +46,7 @@ def normalize_candles(raw: Iterable[dict], now: int) -> list[Candle]:
 
 def aggregate(candles: list[Candle], period: int) -> list[Candle]:
     """Only complete, uninterrupted groups of minute bars are emitted."""
-    if period not in (60, 300, 900):
+    if period not in (60, 300, 900, 3600):
         raise ValueError("Unsupported timeframe")
     if period == 60:
         return list(candles)

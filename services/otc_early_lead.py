@@ -16,6 +16,10 @@ from pathlib import Path
 from services.otc_candidate_research import CandidateJournal, TickSampler, finite_payload
 from services.otc_community_cycles import signals as community_signals
 from services.otc_delivery_guard import check_data
+from services.otc_hourly_shadow import (
+    H1_SECONDS, H1_VERSION, H1_WINDOW, hourly_candidate,
+    hourly_entry, hourly_outcome,
+)
 from services.otc_groq import fresh
 from services.otc_ml.preview import aligned_entry
 from services.otc_shadow_variants import pattern_directions
@@ -170,6 +174,8 @@ class EarlyLeadObserver:
         self.snapshot = None
         self.session_end = None
         self.last_plan_at = None
+        self.last_hourly_plan_at = None
+        self.hourly_recorded_at = None
         self.next_flush = 0
         self.counters = Counter()
         self.next_report = clock() + 300
@@ -191,6 +197,49 @@ class EarlyLeadObserver:
                 self.sampler.restore(data)
                 raise
 
+    async def tick_hourly(self, now):
+        """Prospective H1 scan at 5 minutes before the next UTC hour.
+
+        Shadow-only and entirely independent from the M2/M5/M15 planner.
+        """
+        entry = hourly_entry(now)
+        if not H1_WINDOW[0] <= entry - now <= H1_WINDOW[1]:
+            return
+        if self.hourly_recorded_at == entry:
+            return
+        if (self.last_hourly_plan_at is not None
+                and self.last_hourly_plan_at[0] == entry
+                and now - self.last_hourly_plan_at[1] < 3):
+            return
+        self.last_hourly_plan_at = (entry, now)
+        history, assets, quotes, end = self.snapshot
+        frozen = ({s: list(b) for s, b in history.items()},
+                  dict(assets), dict(quotes), end)
+        row = await asyncio.to_thread(
+            hourly_candidate, frozen, now,
+            self.root / "data" / "market-history.db",
+        )
+        actual = self.clock()
+        if not H1_WINDOW[0] <= entry - actual <= H1_WINDOW[1]:
+            self.counters["hourly_too_late"] += 1
+            return
+        if row is None:
+            self.counters["hourly_no_confirmed_pattern_or_history"] += 1
+            return
+        if check_data(row, frozen, actual) is not None:
+            self.counters["hourly_stale_before_record"] += 1
+            return
+        recorded = await asyncio.to_thread(self.journal.record, [row])
+        self.sampler.register(recorded, self.clock())
+        self.counters["hourly_recorded"] += len(recorded)
+        if recorded:
+            self.hourly_recorded_at = entry
+            LOG.info(
+                "OTC H1 shadow forecast: entry=%d, %.1fs lead, source=%s; "
+                "single 60-minute attempt; no Telegram delivery",
+                entry, entry - now, row["experiment"]["source_strategy"],
+            )
+
     async def tick(self, session, cycles):
         now = self.clock()
         if now >= self.next_flush:
@@ -204,6 +253,7 @@ class EarlyLeadObserver:
         if not (session.running() and getattr(cycles, "enabled", False)
                 and self.snapshot is not None and session.transport == "live"):
             return
+        await self.tick_hourly(now)
         entry = int(now) // 60 * 60 + 60
         if not WINDOW[0] <= entry - now <= WINDOW[1]:
             return
@@ -365,11 +415,25 @@ def early_winrate(root, since=0, now=None):
         for strategy in STRATEGIES for seconds in PERIODS
     }
     overall = Counter()
+    hourly = Counter()
+    hourly_sources = Counter()
     first_at = last_at = None
     for row in rows:
         experiment = row.get("experiment") or {}
         strategy = experiment.get("strategy")
         seconds = experiment.get("cycle_seconds")
+        if (experiment.get("version") == H1_VERSION
+                and strategy == "H1"
+                and seconds == H1_SECONDS
+                and experiment.get("attempts") == 1
+                and row.get("direction") in ("UP", "DOWN")
+                and H1_WINDOW[0] <= row["entry_at"] - row["observed_at"] <= H1_WINDOW[1]):
+            status = hourly_outcome(
+                row, prices, now, root / "data" / "market-history.db"
+            )
+            hourly[status] += 1
+            hourly_sources[experiment.get("source_strategy", "?")] += 1
+            continue
         if (experiment.get("version") != VERSION
                 or strategy not in STRATEGIES
                 or seconds not in PERIODS
@@ -394,6 +458,7 @@ def early_winrate(root, since=0, now=None):
         by_timeframe[(strategy, seconds)][outcome] += 1
     return dict(
         overall=overall, by_strategy=by_strategy, by_timeframe=by_timeframe,
+        hourly=hourly, hourly_sources=hourly_sources,
         first_at=first_at, last_at=last_at, window=WINDOW,
     )
 
@@ -411,7 +476,7 @@ def format_early_winrate(stats, period="7 дней"):
 
     overall = stats["overall"]
     lines = [
-        "🧪 ВИНРЕЙТ ФОНОВОГО РЕЖИМА · 30–40 с",
+        "🧪 ФОНОВЫЙ WR · M2/M5/M15 за 30–40 с + H1 за 5 мин",
         f"Период: {period}",
         "Только сохранённые фоновые циклы, НЕ отправленные подписчикам.",
         "",
@@ -421,7 +486,7 @@ def format_early_winrate(stats, period="7 дней"):
     if not sum(overall.values()):
         lines += [
             "",
-            "Пока нет фоновых прогнозов за выбранный период.",
+            "Пока нет прогнозов M2/M5/M15 за выбранный период.",
             "На устройстве включи OTC_EARLY_SHADOW_ENABLED=true,",
             "перезапусти бот и запусти обычный OTC-сеанс.",
         ]
@@ -434,6 +499,10 @@ def format_early_winrate(stats, period="7 дней"):
                 counts = stats["by_timeframe"][(strategy, seconds)]
                 lines.append(f"  M{seconds // 60}: {record_text(counts)}")
     lines.extend([
+        "",
+        "🕐 H1 · прогноз за 5 минут до новой свечи",
+        f"Прогнозов: {sum(stats['hourly'].values())} · {record_text(stats['hourly'])}",
+        "Одна часовая свеча, без повторных попыток; только фоновый тест.",
         "",
         "WR = WIN / (WIN + LOSS). DRAW, UNKNOWN, PENDING не учитываются.",
         "Это виртуальные исходы по OTCharts, а не подтверждённые сделки брокера.",
