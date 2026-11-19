@@ -173,6 +173,10 @@ class OTCSession:
 
     def _clear_quotes(self):
         self._quotes.clear()
+        if hasattr(self, "early_observer"):
+            # A fresh stream/session must not inherit the prior shadow
+            # decision snapshot. The tick sampler still tracks real outcomes.
+            self.early_observer.snapshot = None
         if hasattr(self, "data_readiness"):
             self.data_readiness.reset(self.clock(), "stream_or_session_reset")
         for name in (
