@@ -140,7 +140,7 @@ class CatalogRefreshTests(unittest.IsolatedAsyncioTestCase):
         )
         config = SimpleNamespace(
             pair_rotation_quota_reserve=100,
-            payout_max_age=60, require_paid_metadata=True, test_mode=False,
+            payout_max_age=60, require_paid_metadata=True, test_mode=True,
         )
         session = OTCSession(provider=provider, config=config, clock=lambda: NOW)
         active = await session._restore_stream_history({"AAA_otc": asset()}, cache)
