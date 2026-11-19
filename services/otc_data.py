@@ -28,11 +28,14 @@ class AccessUnavailable(RuntimeError):
 
 
 class RetryableFeedError(RuntimeError):
-    def __init__(self, retry_after=0):
+    def __init__(self, retry_after=0, *, reason="temporary"):
+        # Only controlled reason codes are logged. Never expose request URLs,
+        # HTTP bodies or authentication headers in health reports.
         super().__init__(
             "OTCharts временно недоступен: сетевая ошибка или ответ сервера."
         )
         self.retry_after = retry_after
+        self.reason = reason
 
 
 class StreamSlotBusy(RetryableFeedError):
@@ -127,9 +130,12 @@ class OTChartsProvider:
                 delay = max(1, min(300, int(response.headers.get("Retry-After", "30"))))
             except ValueError:
                 delay = 30
-            raise RetryableFeedError(delay)
+            raise RetryableFeedError(delay, reason="http_503")
         if response.status != 200:
-            raise RetryableFeedError()
+            raise RetryableFeedError(
+                reason="http_5xx" if 500 <= response.status <= 599
+                else "unexpected_http_status"
+            )
 
     async def _get(self, path, params=None):
         session = await self._http()
@@ -139,9 +145,13 @@ class OTChartsProvider:
             ) as response:
                 self._check(response)
                 return await response.json()
-        except (asyncio.TimeoutError, aiohttp.ClientError):
+        except asyncio.TimeoutError:
             # Never expose request headers, URLs or exception bodies containing keys.
-            raise RetryableFeedError() from None
+            raise RetryableFeedError(reason="timeout") from None
+        except aiohttp.ClientError:
+            raise RetryableFeedError(reason="network") from None
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise RetryableFeedError(reason="invalid_json") from None
 
     async def usage(self):
         d = await self._get("/v1/usage")
@@ -161,6 +171,19 @@ class OTChartsProvider:
 
     async def symbols(self):
         d = await self._get("/v1/symbols", {"venue": "otc"})
+        # A malformed API payload is a failed refresh, not an empty catalogue
+        # and never a reason to drop otherwise valid metadata prematurely.
+        if (
+            not isinstance(d, dict)
+            or not isinstance(d.get("symbols"), list)
+            or any(
+                not isinstance(row, dict)
+                or not isinstance(row.get("symbol"), str)
+                or not row["symbol"]
+                for row in d["symbols"]
+            )
+        ):
+            raise RetryableFeedError(reason="invalid_catalogue")
         # No invented observation timestamp: response receipt is not payout age.
         observed_at = time.time()
         result = []
