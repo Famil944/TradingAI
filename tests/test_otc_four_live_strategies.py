@@ -373,8 +373,10 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(any("ФОН" in x for x in labels))
             self.assertLessEqual(len(community.sources().inline_keyboard), 3)
             overview = community.overview_text()
-            self.assertIn("ЧЕТЫРЕ СТРАТЕГИИ", overview)
-            self.assertEqual(overview.count("WR "), 4)
+            self.assertIn("Винрейт", overview)
+            self.assertEqual(overview.count("M2 "), 4)
+            self.assertEqual(overview.count("M5 "), 4)
+            self.assertEqual(overview.count("M15 "), 4)
 
 
 if __name__ == "__main__":
