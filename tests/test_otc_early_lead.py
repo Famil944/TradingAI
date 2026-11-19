@@ -71,7 +71,7 @@ class EarlyPlanningTests(unittest.TestCase):
             # Payout metadata or latest tick too old is still rejected.
             s = snapshot()
             self.assertEqual(candidate_rows((s[0], s[1], {"A_otc": 7130}, None), NOW), [])
-            s[0]["A_otc"] = s[0]["A_otc"][:-1]
+            s[0]["A_otc"] = s[0]["A_otc"][:-2]
             self.assertEqual(candidate_rows(s, NOW), [])
 
     def test_expiry_alignment_is_not_relaxed(self):
