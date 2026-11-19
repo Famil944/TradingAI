@@ -617,11 +617,16 @@ class OTCSession:
         for attempt in range(3):
             try:
                 return await self.provider.symbols()
-            except (RetryableFeedError, TimeoutError):
+            except (RetryableFeedError, TimeoutError) as exc:
                 if attempt == 2:
                     raise
-                logger.warning("OTCharts catalogue startup retry %d/3", attempt + 2)
-                await asyncio.sleep(1)
+                delay = reconnect_delay(attempt, getattr(exc, "retry_after", 0))
+                logger.warning(
+                    "OTCharts catalogue startup retry %d/3 after %.1fs (%s)",
+                    attempt + 2, delay,
+                    getattr(exc, "reason", "timeout"),
+                )
+                await asyncio.sleep(delay)
 
     async def _run(self, bot):
         plan = await self._usage_with_retry()
@@ -951,11 +956,17 @@ class OTCSession:
         return replacement
 
     async def _refresh_stream_assets(self, active, chosen):
+        # The SSE stream runs independently; catalogue retries must never block
+        # consumption of live ticks, nor relax the original 60s metadata TTL.
+        interval = float(getattr(self.config, "catalogue_refresh_seconds", 45))
+        next_delay = interval
+        failures = 0
         while True:
-            await asyncio.sleep(getattr(self.config, "catalogue_refresh_seconds", 45))
+            await asyncio.sleep(next_delay)
+            next_delay = interval
             try:
-                # The symbols response enforces API access/quota itself. A failure
-                # of the separate usage endpoint must not prevent refreshing payouts.
+                # Only the symbols endpoint refreshes payout/open evidence.
+                # A separate usage check is not required on every refresh.
                 catalogue = self._eligible(
                     await self.provider.symbols(),
                     self.clock(),
@@ -965,20 +976,50 @@ class OTCSession:
                 active.clear()
                 active.update(updated)
                 self.available = len(catalogue)
+                if failures:
+                    logger.info(
+                        "OTC catalogue recovered after %d transient failures",
+                        failures,
+                    )
+                failures = 0
                 await self._prepare_rotation(catalogue, chosen)
             except AccessUnavailable:
+                # Auth, access or quota refusal must stop; never use an old
+                # catalogue as a workaround for explicit access denial.
                 active.clear()
                 raise
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # Do not erase still-valid catalogue observations on a transient
-                # HTTP failure. Original _eligible/check_data age<=60s and
-                # payout/open checks still prevent use of expired metadata.
+                # Preserve only still-valid observations. Existing per-signal
+                # checks expire quotes after 8s and metadata after 60s.
+                transient = isinstance(
+                    exc, (RetryableFeedError, TimeoutError, ConnectionError)
+                )
+                if transient:
+                    failures += 1
+                    # At most two accelerated attempts per outage. Do not spin
+                    # against an unhealthy provider or consume the API quota.
+                    if failures <= 2:
+                        backoff = 5 if failures == 1 else 10
+                        requested = getattr(exc, "retry_after", 0)
+                        next_delay = max(backoff, requested or 0)
+                    # When the quota is known to be near reserve, never
+                    # accelerate queries even on a temporary network error.
+                    plan = self.plan
+                    reserve = max(
+                        100, getattr(self.config, "pair_rotation_quota_reserve", 100)
+                    )
+                    if plan is not None and plan.remaining <= reserve + 10:
+                        next_delay = max(interval, next_delay)
+                else:
+                    failures = 0
                 logger.warning(
-                    "OTC catalogue refresh failed: %s; existing metadata "
-                    "remains usable only within the original 60s TTL",
+                    "OTC catalogue refresh failed: %s (%s); retry in %.1fs; "
+                    "cached metadata valid only within original 60s TTL",
                     type(exc).__name__,
+                    getattr(exc, "reason", "temporary" if transient else "unexpected"),
+                    next_delay,
                 )
                 await self._event("catalogue_refresh_failed")
 
