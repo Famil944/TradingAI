@@ -13,7 +13,7 @@ from pathlib import Path
 TIMESTAMP = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
 REMAINING = re.compile(r"(?:осталось запросов:|запросы:)\s*(\d+)\s*(?:из|/)\s*(\d+)")
 TRACKED = (
-    ("Реальные обрывы/переподключения", "OTC reconnect:"),
+    ("Реальные обрывы потока", "OTC reconnect: stream_"),
     ("Подтверждения свежего потока", "OTC fresh stream confirmed"),
     ("Плановые замены пар", "OTC pair rotated:"),
     ("Подготовленные замены пар", "OTC pair rotation prepared:"),
