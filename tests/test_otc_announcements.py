@@ -58,6 +58,83 @@ class AnnouncementStoreTests(unittest.TestCase):
         self.assertEqual(self.store.summary(aid)["delivery"], {"sent": 1, "pending": 1})
 
 
+class PollResultsStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.polls = AnnouncementStore(self.root / "announcements.db")
+        self.users = Subscribers(self.root / "subscribers.db")
+
+    def test_choice_is_persistent_and_exactly_one_per_user(self):
+        aid = self.polls.create(
+            "poll", "Продолжать проект?", ["Да", "Нет", "Без разницы"], [7, 8, 9],
+        )
+        self.assertTrue(self.polls.vote(aid, 7, 0))
+        self.assertTrue(self.polls.vote(aid, 8, 1))
+        self.assertEqual(self.polls.summary(aid)["votes"], [1, 1, 0])
+        self.assertTrue(self.polls.vote(aid, 7, 1))
+        fresh = AnnouncementStore(self.polls.path)
+        self.assertEqual(fresh.summary(aid)["votes"], [0, 2, 0])
+        self.assertEqual(fresh.selected(aid, 7), 1)
+        self.assertTrue(fresh.is_recipient(aid, 8))
+        self.assertFalse(fresh.is_recipient(aid, 900))
+        count, rows = fresh.participants(aid)
+        self.assertEqual(count, 2)
+        self.assertEqual([row["chat_id"] for row in rows], [7, 8])
+        self.assertTrue(all(row["option_index"] == 1 for row in rows))
+
+    def test_nonrespondents_must_have_received_message(self):
+        aid = self.polls.create("poll", "Вопрос?", ["А", "Б"], [7, 8, 9])
+        self.polls.delivery_state(aid, 7, "sent")
+        self.polls.delivery_state(aid, 8, "sent")
+        self.polls.delivery_state(aid, 9, "skipped")
+        self.polls.vote(aid, 7, 0)
+        total, rows = self.polls.participants(aid, "unvoted")
+        self.assertEqual((total, [row["chat_id"] for row in rows]), (1, [8]))
+        self.assertEqual(self.polls.summary(aid)["recipient_count"], 3)
+        self.assertEqual(self.polls.participants(aid, "voted", 1, 1), (1, []))
+
+    def test_existing_profile_lookup_does_not_duplicate_personal_data(self):
+        self.users.request(7)
+        self.users.record_interaction(7, "Алексей", "М", "example_7")
+        self.users.request(8)
+        self.users.record_interaction(8, "Мария", "", None)
+        found = self.users.profiles([7, 8, 999])
+        self.assertEqual(found[7]["username"], "example_7")
+        self.assertEqual(found[8]["first_name"], "Мария")
+        self.assertEqual(
+            announcements.participant_label(7, found),
+            "Алексей М (@example_7) · ID 7"
+        )
+        self.assertIn("Без имени", announcements.participant_label(999, found))
+        self.assertEqual(self.users.profiles([]), {})
+
+    def test_owner_text_groups_votes_but_subscriber_keyboard_has_only_percentages(self):
+        aid = self.polls.create("poll", "Вопрос?", ["Да", "Нет"], [7, 8])
+        self.polls.vote(aid, 7, 0)
+        self.polls.vote(aid, 8, 1)
+        info = self.polls.summary(aid)
+        summary = announcements.summary_text(info)
+        self.assertIn("Проголосовали: 2 из 2 (100% адресатов)", summary)
+        self.assertIn("Да: 1 (50%)", summary)
+        markup = announcements.vote_keyboard(aid, info["options"], 0, info["votes"])
+        labels = [button[0].text for button in markup.inline_keyboard]
+        self.assertIn("50%", labels[0])
+        self.assertIn("50%", labels[1])
+        self.assertIn("голосов 2", labels[-1])
+        self.assertNotIn("ID 7", str(markup))
+        _, rows = self.polls.participants(aid)
+        owner_view = announcements.participant_text(
+            info, "voted", 2, rows, {}, 0
+        )
+        self.assertIn("Вариант 1: Да", owner_view)
+        self.assertIn("Вариант 2: Нет", owner_view)
+        self.assertIn("ID 7", owner_view)
+        self.assertIn("ID 8", owner_view)
+        self.assertIn("a:people:", str(announcements.owner_results_keyboard(aid)))
+
+
 class PollComposerTests(unittest.TestCase):
     def test_blank_lines_and_emojis_are_not_extra_answers(self):
         draft = {"kind": "poll", "phase": "options", "body": "Продолжать?", "options": []}
@@ -184,6 +261,82 @@ class AnnouncementFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(markup.inline_keyboard[2][0].callback_data, f"a:vote:{aid}:2")
         self.assertIn("✅", markup.inline_keyboard[2][0].text)
         self.assertEqual(self.store.summary(aid)["votes"], [0, 0, 1])
+
+    async def test_percentages_after_vote_and_user_refresh(self):
+        now = time.time()
+        self.subscribers.grant(43, now=now)
+        aid = self.store.create(
+            "poll", "Продолжать?", ["Да", "Нет"], [42, 43],
+        )
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=42, type="private"),
+            edit_reply_markup=AsyncMock(),
+            answer=AsyncMock(),
+        )
+        query = SimpleNamespace(
+            data=f"a:vote:{aid}:0",
+            from_user=SimpleNamespace(id=42),
+            message=message,
+            answer=AsyncMock(),
+        )
+        await announcements.callbacks(query)
+        self.assertEqual(self.store.selected(aid, 42), 0)
+        keyboard = message.edit_reply_markup.await_args.kwargs["reply_markup"]
+        self.assertIn("100%", keyboard.inline_keyboard[0][0].text)
+        self.assertIn("0%", keyboard.inline_keyboard[1][0].text)
+        self.assertEqual(self.store.summary(aid)["votes"], [1, 0])
+        self.assertIn("Владелец", query.answer.await_args.args[0])
+
+        self.store.vote(aid, 43, 1)
+        query.data = f"a:refresh:{aid}"
+        await announcements.callbacks(query)
+        self.assertEqual(self.store.summary(aid)["votes"], [1, 1])
+        keyboard = message.edit_reply_markup.await_args.kwargs["reply_markup"]
+        self.assertIn("50%", keyboard.inline_keyboard[0][0].text)
+        self.assertIn("50%", keyboard.inline_keyboard[1][0].text)
+        self.assertEqual(self.store.selected(aid, 42), 0)
+
+    async def test_owner_sees_voter_names_and_subscriber_cannot_list_them(self):
+        aid = self.store.create("poll", "Выбор", ["За", "Против"], [42])
+        self.store.vote(aid, 42, 0)
+        self.subscribers.record_interaction(42, "Тест", "Участник", "vote42")
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=announcements.settings.admin_chat_id,
+                                 type="private"),
+            answer=AsyncMock(),
+        )
+        query = SimpleNamespace(
+            data=f"a:people:{aid}:voted:0",
+            from_user=SimpleNamespace(id=announcements.settings.admin_chat_id),
+            message=message,
+            answer=AsyncMock(),
+        )
+        await announcements.callbacks(query)
+        text = message.answer.await_args.args[0]
+        self.assertIn("Тест Участник (@vote42) · ID 42", text)
+        self.assertIn("Вариант 1: За", text)
+        message.answer.reset_mock()
+        query.from_user.id = 42
+        await announcements.callbacks(query)
+        message.answer.assert_not_awaited()
+        self.assertTrue(query.answer.await_args.kwargs["show_alert"])
+
+    async def test_only_recipient_may_refresh_results(self):
+        aid = self.store.create("poll", "Выбор", ["За", "Против"], [42])
+        self.subscribers.grant(43, now=time.time())
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=43, type="private"),
+            edit_reply_markup=AsyncMock(),
+        )
+        query = SimpleNamespace(
+            data=f"a:refresh:{aid}",
+            from_user=SimpleNamespace(id=43),
+            message=message,
+            answer=AsyncMock(),
+        )
+        await announcements.callbacks(query)
+        message.edit_reply_markup.assert_not_awaited()
+        self.assertTrue(query.answer.await_args.kwargs["show_alert"])
 
     async def test_owner_only_compose(self):
         owner_id = announcements.settings.admin_chat_id
