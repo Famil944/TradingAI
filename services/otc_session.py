@@ -1085,6 +1085,13 @@ class OTCSession:
                                     history, active, send_quotes, self.ends_at
                                 )
                                 self.cycle_preview.observe_tick(tick, now)
+                            if hasattr(self, "early_observer"):
+                                # The research arm shares the same validated live
+                                # ticks and closed history; never a second feed.
+                                self.early_observer.observe(
+                                    history, active, send_quotes, self.ends_at
+                                )
+                                self.early_observer.observe_tick(tick, now)
                             if hasattr(self, "groq_preview"):
                                 self.groq_preview.observe(
                                     history, active, send_quotes, self.ends_at
