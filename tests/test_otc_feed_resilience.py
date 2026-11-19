@@ -126,5 +126,29 @@ class CatalogRefreshTests(unittest.IsolatedAsyncioTestCase):
         session._event.assert_awaited_with("history_repaired", "AAA_otc")
 
 
+    async def test_reconnect_cannot_erase_history_if_provider_returns_a_partial_page(self):
+        old = history()
+        missing = old[400]
+        cache = {"AAA_otc": old[:400] + old[401:]}
+        provider = SimpleNamespace(
+            usage=AsyncMock(return_value=Plan(
+                "Lite", 600, 7000, "day", NOW + 30000, 0, 1, 5, ("otc",)
+            )),
+            symbols=AsyncMock(return_value=[asset()]),
+            candles=AsyncMock(return_value=[missing]),
+            catalogue={},
+        )
+        config = SimpleNamespace(
+            pair_rotation_quota_reserve=100,
+            payout_max_age=60, require_paid_metadata=True, test_mode=False,
+        )
+        session = OTCSession(provider=provider, config=config, clock=lambda: NOW)
+        active = await session._restore_stream_history({"AAA_otc": asset()}, cache)
+        self.assertIn("AAA_otc", active)
+        self.assertEqual(len(cache["AAA_otc"]), len(old))
+        self.assertEqual(contiguous_tail_minutes(cache["AAA_otc"]), len(old))
+        provider.candles.assert_awaited_once()
+
+
 if __name__ == "__main__":
     unittest.main()
