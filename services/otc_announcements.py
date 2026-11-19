@@ -171,6 +171,50 @@ class AnnouncementStore:
             ).fetchone()
         return int(row[0]) if row else None
 
+    def participants(self, aid, kind="voted", limit=15, offset=0):
+        """Owner-only caller: enumerate choices or *delivered* nonrespondents.
+
+        The votes table already persists old votes, so earlier polls are
+        available without migration. Nonrecipients are never named as abstainers.
+        """
+        aid = int(aid)
+        if kind not in ("voted", "unvoted"):
+            raise ValueError("Invalid participant view")
+        limit = max(1, min(int(limit), 20))
+        offset = max(0, int(offset))
+        with closing(self._connect()) as db:
+            if kind == "voted":
+                where = "v.announcement_id=?"
+                from_part = "announcement_votes v"
+                cols = "v.chat_id,v.option_index,v.updated_at"
+                order = "v.option_index,v.updated_at,v.chat_id"
+            else:
+                where = "d.announcement_id=? AND d.state='sent' AND v.chat_id IS NULL"
+                from_part = (
+                    "announcement_deliveries d LEFT JOIN announcement_votes v "
+                    "ON v.announcement_id=d.announcement_id AND v.chat_id=d.chat_id"
+                )
+                cols = "d.chat_id,NULL AS option_index,d.updated_at"
+                order = "d.chat_id"
+            total = db.execute(
+                f"SELECT COUNT(*) FROM {from_part} WHERE {where}", (aid,),
+            ).fetchone()[0]
+            rows = db.execute(
+                f"SELECT {cols} FROM {from_part} WHERE {where} "
+                f"ORDER BY {order} LIMIT ? OFFSET ?",
+                (aid, limit, offset),
+            ).fetchall()
+        return int(total), [dict(row) for row in rows]
+
+    def is_recipient(self, aid, chat_id):
+        with closing(self._connect()) as db:
+            exists = db.execute(
+                "SELECT 1 FROM announcement_deliveries "
+                "WHERE announcement_id=? AND chat_id=?",
+                (int(aid), int(chat_id)),
+            ).fetchone()
+        return exists is not None
+
     def summary(self, aid):
         entry = self.get(aid)
         if entry is None:
@@ -185,6 +229,7 @@ class AnnouncementStore:
                 " WHERE announcement_id=? GROUP BY option_index", (int(aid),),
             ).fetchall()
         entry["delivery"] = {s["state"]: int(s["n"]) for s in states}
+        entry["recipient_count"] = sum(entry["delivery"].values())
         entry["votes"] = [0] * len(entry["options"])
         for v in votes:
             if 0 <= v["option_index"] < len(entry["votes"]):
