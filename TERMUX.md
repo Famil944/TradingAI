@@ -110,3 +110,38 @@ tail -n 30 logs/termux-bot.log
 
 Код обновляйте отдельно, с остановленным ботом: `git pull --ff-only origin main`.
 Ветка отчётов не должна сливаться в код при каждом обновлении.
+
+
+## Устойчивость потока OTC и проверка связи (ветка codex/otc-feed-resilience-20261119)
+
+Изменения касаются только устойчивости получения данных и диагностики. Алгоритмы
+S1–S4, сигнальные фильтры, пороги, экспирации и WIN/LOSS не изменяются.
+
+Обновляйте ветку только после остановки работающего бота:
+
+```sh
+git switch codex/otc-feed-resilience-20261119
+git pull --ff-only origin codex/otc-feed-resilience-20261119
+python -m unittest tests.test_otc_feed_resilience tests.test_otc_feed_check -v
+```
+
+В обычном Termux, ДО входа в Ubuntu/Debian, выполните `termux-wake-lock`.
+В Ubuntu/Debian запускайте только один экземпляр бота в `tmux`, как описано выше.
+В настройках Android снимите ограничения работы Termux в фоне и экономии батареи.
+Wake-lock не гарантирует, что Android или мобильная сеть не будут прерывать поток.
+
+Быстрая локальная проверка последних 30 минут (не тратит API запросы):
+
+```sh
+python -m scripts.otc_feed_check --log logs/termux-bot.log --minutes 30
+```
+
+Если бот не сохраняет журнал, сначала запустите его с перенаправлением вывода
+в файл; фоновые примеры выше уже пишут в `logs/termux-bot.log`.
+Сводка отдельно считает настоящие обрывы и плановую смену пар,
+показывает последние диагностические отметки и оставшуюся квоту.
+Она не утверждает, что качество котировок равно точности сигналов.
+
+Для подробностей ищите `OTC readiness gate diagnostics`,
+`OTC S2-S4 candidate production diagnostics` и
+`OTC per-pair tick diagnostics`. Не присылайте `.env` или ключи API.
