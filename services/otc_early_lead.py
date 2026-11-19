@@ -260,7 +260,7 @@ def _live_rows(root, since):
                 if seconds in PERIODS:
                     result.append(("S1", symbol, int(seconds), int(entry),
                                    direction, outcome))
-    others = root / "data" / "independent-strategies.db"
+    others = root / "data" / "community-live.db"
     if others.is_file():
         with closing(sqlite3.connect(others.resolve().as_uri() + "?mode=ro", uri=True)) as db:
             for method, symbol, seconds, entry, direction, outcome in db.execute(
