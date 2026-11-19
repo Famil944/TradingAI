@@ -348,6 +348,26 @@ class Subscribers:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def profiles(self, chat_ids):
+        """Fetch existing opt-in Telegram profile labels for an owner-only view.
+
+        Does not store extra personal data or call the Telegram API.
+        """
+        ids = sorted({int(value) for value in chat_ids})
+        if not ids:
+            return {}
+        if len(ids) > 100:
+            raise ValueError("Too many profiles in one request")
+        marks = ",".join("?" for _ in ids)
+        with closing(self._connect()) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                f"SELECT chat_id,first_name,last_name,username "
+                f"FROM subscriber_profiles WHERE chat_id IN ({marks})",
+                ids,
+            ).fetchall()
+        return {int(row["chat_id"]): dict(row) for row in rows}
+
     def member_activity(self, chat_id, now=None):
         """Activity means button/command usage, not minutes viewing forecasts."""
         now = time.time() if now is None else float(now)
