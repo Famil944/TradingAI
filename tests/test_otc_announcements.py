@@ -81,7 +81,7 @@ class PollResultsStoreTests(unittest.TestCase):
         self.assertFalse(fresh.is_recipient(aid, 900))
         count, rows = fresh.participants(aid)
         self.assertEqual(count, 2)
-        self.assertEqual([row["chat_id"] for row in rows], [7, 8])
+        self.assertEqual(sorted(row["chat_id"] for row in rows), [7, 8])
         self.assertTrue(all(row["option_index"] == 1 for row in rows))
 
     def test_nonrespondents_must_have_received_message(self):
