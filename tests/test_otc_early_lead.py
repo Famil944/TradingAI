@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from services.otc_early_lead import (
     EarlyJournal, EarlyLeadObserver, candidate_rows,
-    comparison, format_report,
+    comparison, format_report, early_winrate, format_early_winrate,
 )
 from services.otc_market import Asset, Tick
 from services.otc_strategy import Candle
@@ -161,6 +161,52 @@ class EarlyPlanningTests(unittest.TestCase):
             with sqlite3.connect(store.path) as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM candidates").fetchone()[0], 8)
                 self.assertEqual(db.execute("SELECT count(*) FROM early_slots").fetchone()[0], 8)
+
+
+class EarlyWinrateTests(unittest.TestCase):
+    def test_separate_early_winrate_strategies_and_timeframes(self):
+        p1, p2 = patched_patterns()
+        with p1, p2, tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            journal = EarlyJournal(root / "data" / "early-lead-30-40.db")
+            rows = candidate_rows(snapshot(), NOW, (120, 300, 900))
+            self.assertEqual(len(journal.record(rows)), 12)
+            journal.candidates.samples([
+                ("A_otc", ENTRY, ENTRY, ENTRY, 100.0),
+                ("A_otc", ENTRY + 120, ENTRY + 120, ENTRY + 120, 102.0),
+                ("A_otc", ENTRY + 240, ENTRY + 240, ENTRY + 240, 104.0),
+                ("A_otc", ENTRY + 360, ENTRY + 360, ENTRY + 360, 106.0),
+            ])
+            stats = early_winrate(root, since=NOW - 10, now=ENTRY + 361)
+            self.assertEqual(stats["overall"]["WIN"], 3)
+            self.assertEqual(stats["overall"]["LOSS"], 1)
+            self.assertEqual(stats["overall"]["PENDING"], 8)
+            self.assertEqual(stats["by_strategy"]["S1"]["WIN"], 1)
+            self.assertEqual(stats["by_strategy"]["S3"]["LOSS"], 1)
+            self.assertEqual(stats["by_timeframe"][("S3", 120)]["LOSS"], 1)
+            self.assertEqual(stats["by_timeframe"][("S1", 300)]["PENDING"], 1)
+            text = format_early_winrate(stats, "7 дней")
+            self.assertIn("30–40 с", text)
+            self.assertIn("✅ 3 / ❌ 1 · WR 75.0%", text)
+            self.assertIn("M15:", text)
+            self.assertIn("PENDING", text)
+            self.assertFalse((root / "data" / "bollinger-cycles.db").exists())
+            self.assertFalse((root / "data" / "community-live.db").exists())
+            empty = early_winrate(root, since=NOW + 1, now=ENTRY + 361)
+            self.assertEqual(sum(empty["overall"].values()), 0)
+            self.assertIn("Пока нет", format_early_winrate(empty, "7 дней"))
+
+    def test_unconfirmed_outcomes_do_not_inflate_winrate(self):
+        p1, p2 = patched_patterns()
+        with p1, p2, tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            journal = EarlyJournal(root / "data" / "early-lead-30-40.db")
+            journal.record(candidate_rows(snapshot(), NOW, (120,)))
+            stats = early_winrate(root, 0, ENTRY + 360 + 300)
+            self.assertEqual(stats["overall"]["WIN"], 0)
+            self.assertEqual(stats["overall"]["LOSS"], 0)
+            self.assertEqual(stats["overall"]["UNKNOWN"], 4)
+            self.assertIn("WR —", format_early_winrate(stats, "всё время"))
 
 
 class EarlyRuntimeTests(unittest.IsolatedAsyncioTestCase):
