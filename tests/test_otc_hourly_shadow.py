@@ -95,6 +95,46 @@ class HourlyCausalityTests(unittest.TestCase):
             self.assertEqual(len(seen), 59)
             self.assertNotIn(ENTRY - 70 * 3600, seen)
 
+    def test_local_archive_can_supply_60_closed_hours_without_api_calls(self):
+        with tempfile.TemporaryDirectory() as root:
+            archive = Path(root) / "data" / "market-history.db"
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(archive) as db:
+                db.execute(
+                    "CREATE TABLE bars(symbol TEXT,time INTEGER,open REAL,"
+                    "high REAL,low REAL,close REAL,first_observed REAL,"
+                    "last_observed REAL,revisions INTEGER,source TEXT)"
+                )
+                db.executemany(
+                    "INSERT INTO bars VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    ((SYM, at, 100, 101, 99, 100.5, NOW - 1, NOW - 1,
+                      0, "otcharts_history")
+                     for at in range(ENTRY - 65 * 3600, ENTRY - 3600, 60))
+                )
+            inspected = []
+
+            def verify_s2(minutes, seconds, asof):
+                h1 = aggregate(minutes, 3600)
+                inspected.append(len(h1))
+                self.assertGreaterEqual(len(h1), 60)
+                self.assertEqual(seconds, 3600)
+                self.assertEqual(asof, ASOF)
+                self.assertEqual(h1[-1].time + 3600, ENTRY - 3600)
+                self.assertTrue(all(b.time - a.time == 3600
+                                    for a, b in zip(h1[-60:], h1[-59:])))
+                return {"bb_reentry": {"direction": "DOWN"}}
+
+            with (
+                patch("services.otc_hourly_shadow.pattern_directions",
+                      return_value={}),
+                patch("services.otc_hourly_shadow.community_signals",
+                      side_effect=verify_s2),
+            ):
+                row = hourly_candidate(snapshot(), NOW, archive)
+            self.assertEqual(row["direction"], "DOWN")
+            self.assertEqual(row["experiment"]["source_strategy"], "S2")
+            self.assertEqual(len(inspected), 1)
+
     def test_real_forecaster_uses_existing_causal_guard_for_h1(self):
         p1, p2 = shadow_pattern()
         with tempfile.TemporaryDirectory() as root:
