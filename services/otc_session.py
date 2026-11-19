@@ -35,6 +35,7 @@ from services.otc_pair_rotation import (
 )
 from services.otc_strategy import candidate, normalize_candles
 from services.otc_stream import reconnect_delay
+from services.otc_history_repair import reconcile_closed_history, contiguous_tail_minutes
 
 logger = logging.getLogger(__name__)
 MOSCOW = ZoneInfo("Europe/Moscow")
@@ -352,7 +353,7 @@ class OTCSession:
             + f"\n{'С закрытия свечи' if self.transport == 'snapshot' else 'Возраст котировки'}: {age}"
             "\nЭКСПЕРИМЕНТАЛЬНЫЙ РЕЖИМ. Совпадение с платформой не подтверждено."
             + (
-                f"\nТариф: {self.plan.plan_name}; запросы: {self.plan.remaining}/{self.plan.quota} за {self.plan.per}; потоки: {self.plan.streams_open}/{self.plan.streams_limit}; активов/поток: {self.plan.instruments_per_stream if self.plan.instruments_per_stream is not None else 'без лимита'}. Лимиты получены при последней проверке."
+                f"\nТариф: {self.plan.plan_name}; осталось запросов: {self.plan.remaining} из {self.plan.quota} за {self.plan.per}; потоки: {self.plan.streams_open}/{self.plan.streams_limit}; активов/поток: {self.plan.instruments_per_stream if self.plan.instruments_per_stream is not None else 'без лимита'}. Лимиты получены при последней проверке."
                 if self.plan
                 else ""
             )
@@ -808,15 +809,18 @@ class OTCSession:
             if not fresh:
                 await self._event("history_repair_empty", symbol)
                 return
-            # Provider closed bars are canonical; preserve newer live bars.
-            latest = fresh[-1].time
-            tail = [b for b in history.get(symbol, []) if b.time > latest]
-            merged = {b.time: b for b in fresh + tail}
-            history[symbol] = [merged[t] for t in sorted(merged)][-1200:]
+            # A partial provider response must never discard already observed
+            # closed candles. Prefer canonical OHLC for overlapping timestamps.
+            # Missing minutes are NEVER synthesized; downstream guards remain strict.
+            combined = reconcile_closed_history(
+                history.get(symbol, []), fresh, self.clock()
+            )
+            history[symbol] = combined
+            consecutive = contiguous_tail_minutes(combined)
             logger.info(
-                "OTC history continuity restored: %s, %d bars",
-                symbol,
-                len(history[symbol]),
+                "OTC history reconciliation: %s, %d closed bars, "
+                "continuous tail %d min (M15 requires at least 900)",
+                symbol, len(combined), consecutive,
             )
             await self._event("history_repaired", symbol)
         except asyncio.CancelledError:
@@ -894,7 +898,7 @@ class OTCSession:
             # Usage inspection is documented as free. Never spend the last
             # portion of the daily request allowance on exploring other pairs.
             quota = await self.provider.usage()
-            if quota.remaining < max(
+            if quota.remaining <= max(
                 100, getattr(self.config, "pair_rotation_quota_reserve", 100)
             ):
                 logger.info("OTC pair rotation deferred: request reserve is low")
@@ -968,8 +972,14 @@ class OTCSession:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                active.clear()
-                logger.warning("OTC catalogue refresh failed: %s", type(exc).__name__)
+                # Do not erase still-valid catalogue observations on a transient
+                # HTTP failure. Original _eligible/check_data age<=60s and
+                # payout/open checks still prevent use of expired metadata.
+                logger.warning(
+                    "OTC catalogue refresh failed: %s; existing metadata "
+                    "remains usable only within the original 60s TTL",
+                    type(exc).__name__,
+                )
                 await self._event("catalogue_refresh_failed")
 
     async def _scan(self, bot, history, chosen):
@@ -1018,7 +1028,10 @@ class OTCSession:
                                 )
                                 await self._event(builder.rejection, tick.symbol)
                                 continue
-                            self.last_tick = tick.time
+                            # Different assets may arrive interleaved. A valid
+                            # older tick for B must not move global freshness
+                            # backward after a newer valid tick for A.
+                            self.last_tick = max(self.last_tick or tick.time, tick.time)
                             self._quotes[tick.symbol] = tick.time
                             self._record_tick_diagnostic(tick.symbol, now, accepted=True)
                             send_quotes = self._quotes
@@ -1161,6 +1174,17 @@ class OTCSession:
                     refresh_error = refresh_task.exception()
                     if isinstance(refresh_error, AccessUnavailable):
                         raise refresh_error
+                # Explain outages before clearing the actual last per-pair quotes.
+                # Does not change the watchdog or signal-quality requirements.
+                if isinstance(exc, TimeoutError):
+                    newest = max(self._quotes.values(), default=None)
+                    age = (self.clock() - newest) if newest is not None else None
+                    logger.warning(
+                        "OTC fresh-tick watchdog expired: newest_quote_age=%s, "
+                        "tracked_symbols=%d; reconnecting with gates closed",
+                        f"{age:.1f}s" if age is not None else "none",
+                        len(self._quotes),
+                    )
                 self.phase = "Переподключение"
                 self.monitored = 0
                 self.last_tick = None
@@ -1273,7 +1297,18 @@ class OTCSession:
                         if lock is not None:
                             raise lock from None
                         raise
-                    history.update({symbol: task.result() for symbol, task in tasks.items()})
+                    # Never erase valid previously seen bars when the provider
+                    # returns only a partial page after reconnecting.
+                    for symbol, task in tasks.items():
+                        history[symbol] = reconcile_closed_history(
+                            history.get(symbol, []), task.result(), self.clock()
+                        )
+                        logger.info(
+                            "OTC reconnect history: %s, %d closed bars, "
+                            "continuous tail %d min",
+                            symbol, len(history[symbol]),
+                            contiguous_tail_minutes(history[symbol]),
+                        )
                     logger.info(
                         "OTC reconnect history refreshed: %d/%d instruments",
                         len(missing), len(chosen),
