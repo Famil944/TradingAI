@@ -219,13 +219,18 @@ class EarlyLeadObserver:
                   dict(assets), dict(quotes), end)
         allowed = tuple(getattr(cycles, "allowed_timeframes", PERIODS))
         rows = await asyncio.to_thread(candidate_rows, frozen, now, allowed)
-        if not WINDOW[0] <= entry - self.clock() <= WINDOW[1]:
+        actual = self.clock()
+        if not WINDOW[0] <= entry - actual <= WINDOW[1]:
             self.counters["late_computation"] += 1
             return
-        recorded = await asyncio.to_thread(self.journal.record, rows)
+        # Like the live sender, reject a candidate if its previously observed
+        # quote/payout expired while computing; never relax timing or freshness.
+        confirmed = [row for row in rows if check_data(row, frozen, actual) is None]
+        recorded = await asyncio.to_thread(self.journal.record, confirmed)
         self.sampler.register(recorded, self.clock())
         self.counters["planning_windows"] += 1
         self.counters["candidates"] += len(rows)
+        self.counters["rejected_before_record"] += len(rows) - len(confirmed)
         self.counters["recorded"] += len(recorded)
         if rows:
             LOG.info("OTC early 30-40s shadow: entry=%d lead=%.1fs "
