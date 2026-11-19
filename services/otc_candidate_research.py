@@ -115,7 +115,7 @@ class TickSampler:
                 continue
             targets = [row["entry_at"] + d for d in DELAYS] + [row["expires_at"]]
             seconds = row.get("experiment", {}).get("cycle_seconds")
-            if seconds:
+            if seconds and row.get("experiment", {}).get("attempts", 3) != 1:
                 targets += [row["entry_at"] + seconds, row["entry_at"] + 2 * seconds]
             for target in targets:
                 if target > now:
