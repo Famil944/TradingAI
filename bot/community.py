@@ -246,9 +246,15 @@ def guide_menu():
 
 
 def _confirmed_winrate(rows):
-    """Use the existing published WIN/LOSS metric without changing its basis."""
-    result = metrics(rows)["wr"]
-    return f"{result:.1f}%" if result is not None else "—"
+    """Published-only WR and count of actually issued predictions.
+
+    The numerator and denominator of WR remain confirmed WIN/LOSS only;
+    count includes unresolved/draw/unknown issued predictions, so a 100%
+    based on one known result is never presented without sample context.
+    """
+    summary = metrics(rows)
+    wr = f"{summary['wr']:.1f}%" if summary["wr"] is not None else "—"
+    return f"{wr} (n={summary['total']})"
 
 
 def _per_timeframe_winrates(rows):
@@ -277,7 +283,8 @@ def compact_overview(timeframe="all", period="all"):
             else _confirmed_winrate([r for r in rows if r["seconds"] == seconds])
         )
         lines.append(f"{IDS[source]}  {rates}")
-    lines.extend(["", "OTCharts · не сделки брокера"])
+    lines.extend(["", "n = выданные прогнозы · WR только WIN/LOSS",
+                  "OTCharts · не сделки брокера"])
     return "\n".join(lines) + reset_note()
 
 
@@ -352,7 +359,8 @@ def overview_text(period="today"):
         lines.append(f"{IDS[source]} {source_title(source)}")
         lines.append(_per_timeframe_winrates(rows))
         lines.append("")
-    lines.append("OTCharts · не сделки брокера")
+    lines.extend(["n = выданные прогнозы · WR только WIN/LOSS",
+                  "OTCharts · не сделки брокера"])
     return "\n".join(lines) + reset_note()
 
 
