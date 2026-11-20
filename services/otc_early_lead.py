@@ -500,9 +500,14 @@ def format_early_winrate(stats, period="7 дней"):
                 lines.append(f"  M{seconds // 60}: {record_text(counts)}")
     lines.extend([
         "",
-        "🕐 H1 · прогноз за 5 минут до новой свечи",
-        f"Прогнозов: {sum(stats['hourly'].values())} · {record_text(stats['hourly'])}",
-        "Одна часовая свеча, без повторных попыток; только фоновый тест.",
+        "🕐 H1 · отдельный фоновый винрейт",
+        f"Выдано H1: {sum(stats['hourly'].values())} · {record_text(stats['hourly'])}",
+        "Прогноз за 5 мин до новой часовой свечи · 1 попытка.",
+        *(
+            ["H1 пока 0: нужна непрерывная история 20–60 часов, "
+             "свежие данные и активная сессия перед началом часа."]
+            if not sum(stats["hourly"].values()) else []
+        ),
         "",
         "WR = WIN / (WIN + LOSS). DRAW, UNKNOWN, PENDING не учитываются.",
         "Это виртуальные исходы по OTCharts, а не подтверждённые сделки брокера.",
