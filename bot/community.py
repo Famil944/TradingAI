@@ -344,7 +344,6 @@ def sources(period="today"):
         [(("✅ " if period == name else "") + label, "c:sources:" + name)
          for name, label in (("today", "Сегодня"), ("7d", "7 дней"),
                              ("30d", "30 дней"), ("all", "Всё"))],
-        [("🧪 Фоновый WR · H1", "otc:earlywr:7")],
     ])
 
 
