@@ -229,6 +229,10 @@ class BollingerCycles(MLPreview):
         from services.otc_virtual_wallet import VirtualWallet
 
         self.wallet = VirtualWallet(journal.path.with_name("virtual-wallet.db"))
+        # Required candidate and tick pipeline for the LIVE S2–S4 publisher.
+        # This is independent of the retired early/H1 experiments.
+        from services.otc_community_cycles import ShadowCycles
+        self.live_candidates = ShadowCycles(journal.path.with_name("community-cycles.db"), clock)
         for row in journal.pending():
             self.sampler.register([json.loads(row["evidence"])], self.clock())
         with closing(sqlite3.connect(journal.path)) as db:
@@ -240,8 +244,10 @@ class BollingerCycles(MLPreview):
 
     def observe_tick(self, tick, now):
         self.sampler.observe(tick, now)
+        self.live_candidates.observe(tick, now)
 
     async def flush(self):
+        await self.live_candidates.flush()
         samples = self.sampler.drain(self.clock())
         if samples:
             try:
@@ -255,6 +261,10 @@ class BollingerCycles(MLPreview):
         await self.flush()
 
     async def plan(self, bot, chat_id, snapshot):
+        try:
+            await self.live_candidates.plan(snapshot)
+        except Exception:
+            logger.exception("Live S2-S4 candidate generation unavailable")
         history, assets, quotes, end = snapshot
         now = self.clock()
         entry = int(now) // 60 * 60 + 60

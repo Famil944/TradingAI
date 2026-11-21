@@ -87,6 +87,14 @@ class LiveCycleTests(unittest.TestCase):
 
 
 class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_live_s2_s4_candidates_generated_even_without_s1(self):
+        with tempfile.TemporaryDirectory() as folder:
+            engine = BollingerCycles(CycleJournal(Path(folder)/"cycles.db"), clock=lambda:7180)
+            snapshot = ({}, {}, {}, None)
+            with patch.object(engine.live_candidates, "plan", new_callable=AsyncMock) as generate:
+                await engine.plan(SimpleNamespace(send_message=AsyncMock()), 1, snapshot)
+                generate.assert_awaited_once_with(snapshot)
+
     async def test_plan_sends_one_card_and_registers_three_endpoints(self):
         with tempfile.TemporaryDirectory() as folder:
             journal = CycleJournal(Path(folder) / "cycles.db", per_horizon=True)
