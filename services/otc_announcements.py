@@ -38,6 +38,9 @@ class AnnouncementStore:
                     PRIMARY KEY(announcement_id,chat_id)
                 );
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(announcements)")}
+            if "photo_file_id" not in columns:
+                db.execute("ALTER TABLE announcements ADD COLUMN photo_file_id TEXT")
             db.commit()
 
     def _connect(self):
@@ -59,8 +62,10 @@ class AnnouncementStore:
             raise ValueError("Нужно 2–8 разных вариантов, каждый до 75 символов.")
         return body, opts
 
-    def create(self, kind, body, options, recipients, now=None):
+    def create(self, kind, body, options, recipients, now=None, photo_file_id=None):
         body, options = self.validate(kind, body, options)
+        if photo_file_id and (kind != "notice" or len(body.encode("utf-16-le")) // 2 > 1024):
+            raise ValueError("Подпись к фото — до 1024 символов Telegram; фото доступно для объявлений.")
         when = time.time() if now is None else float(now)
         targets = sorted({int(x) for x in recipients if int(x) > 0})
         if not targets:
@@ -68,8 +73,8 @@ class AnnouncementStore:
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
             cur = db.execute(
-                "INSERT INTO announcements(kind,body,options_json,created_at)"
-                " VALUES(?,?,?,?)", (kind, body, json.dumps(options, ensure_ascii=False), when),
+                "INSERT INTO announcements(kind,body,options_json,created_at,photo_file_id)"
+                " VALUES(?,?,?,?,?)", (kind, body, json.dumps(options, ensure_ascii=False), when, photo_file_id),
             )
             aid = int(cur.lastrowid)
             db.executemany(

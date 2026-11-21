@@ -75,7 +75,7 @@ class HelpCallbackTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(
             chat=SimpleNamespace(id=50, type="private"),
             from_user=SimpleNamespace(id=50),
-            answer=AsyncMock(),
+            answer=AsyncMock(), edit_text=AsyncMock(),
         )
         with patch.object(community, "is_owner", return_value=False):
             await community.help_menu(message)
@@ -88,16 +88,16 @@ class HelpCallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_guide_callback_works_without_subscription(self):
         msg = SimpleNamespace(
             chat=SimpleNamespace(id=50, type="private"),
-            answer=AsyncMock(),
+            answer=AsyncMock(), edit_text=AsyncMock(),
         )
         query = SimpleNamespace(
             data="c:guide:trade", from_user=SimpleNamespace(id=50),
-            message=msg, answer=AsyncMock(),
+            message=msg, answer=AsyncMock(), edit_text=AsyncMock(),
         )
         with patch.object(community, "is_owner", return_value=False):
             await community.callbacks(query)
         query.answer.assert_awaited_once()
-        self.assertIn("КАК ЧИТАТЬ", msg.answer.await_args.args[0])
+        self.assertIn("КАК ЧИТАТЬ", msg.edit_text.await_args.args[0])
 
 
 if __name__ == "__main__":

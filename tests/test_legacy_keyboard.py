@@ -39,6 +39,8 @@ class LegacyKeyboardTests(unittest.IsolatedAsyncioTestCase):
         fake_store = SimpleNamespace(
             status=lambda chat_id: {"state": "approved", "expires_at": 9999999999},
             session_status=lambda chat_id: {"active": False, "expires_at": None},
+            source_preferences=lambda chat_id: {"main": True},
+            timeframe_preferences=lambda chat_id: {120: True},
         )
         with patch.object(community, "is_owner", return_value=False):
             with patch.object(community, "subscribers", return_value=fake_store):

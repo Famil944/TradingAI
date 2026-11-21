@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import sqlite3
 import tempfile
@@ -13,7 +14,7 @@ from services.otc_unknown_recovery import UnknownRecovery
 
 def archive(path, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "CREATE TABLE IF NOT EXISTS bars("
             "symbol TEXT,time INTEGER,open REAL,high REAL,low REAL,close REAL,"
@@ -120,7 +121,7 @@ class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
             recovered, pending = await recovery.sweep()
             self.assertEqual(recovered, 1)
             self.assertEqual(pending, 0)
-            with sqlite3.connect(journal.path) as db:
+            with closing(sqlite3.connect(journal.path)) as db, db:
                 outcome, attempts, sources = db.execute(
                     "SELECT outcome,attempts_json,attempt_sources_json "
                     "FROM signals WHERE id=?",
@@ -173,7 +174,7 @@ class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
             recovered, pending = await recovery.sweep()
             self.assertEqual(recovered, 2)
             self.assertEqual(pending, 0)
-            with sqlite3.connect(journal.path) as db:
+            with closing(sqlite3.connect(journal.path)) as db, db:
                 outcome, evidence = db.execute(
                     "SELECT outcome,evidence FROM predictions WHERE id=?",
                     (ident,),
@@ -224,7 +225,7 @@ class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
             recovered, pending = await recovery.sweep()
             self.assertEqual(recovered, 2)
             self.assertEqual(pending, 0)
-            with sqlite3.connect(journal.path) as db:
+            with closing(sqlite3.connect(journal.path)) as db, db:
                 outcome, attempts = db.execute(
                     "SELECT outcome,attempts_json FROM signals WHERE id=?",
                     (ident,),
@@ -265,7 +266,7 @@ class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
             recovered, pending = await recovery.sweep()
             self.assertEqual(recovered, 0)
             self.assertEqual(pending, 1)
-            with sqlite3.connect(journal.path) as db:
+            with closing(sqlite3.connect(journal.path)) as db, db:
                 outcome = db.execute(
                     "SELECT outcome FROM signals WHERE id=?", (ident,)
                 ).fetchone()[0]
@@ -324,7 +325,7 @@ class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(recovered, 1)
             self.assertEqual(pending, 0)
             self.assertEqual(provider.calls, 2)
-            with sqlite3.connect(journal.path) as db:
+            with closing(sqlite3.connect(journal.path)) as db, db:
                 outcome = db.execute(
                     "SELECT outcome FROM signals WHERE id=?", (ident,)
                 ).fetchone()[0]

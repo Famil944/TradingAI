@@ -516,9 +516,26 @@ def format_early_winrate(stats, period="7 дней"):
     return "\n".join(lines).replace("**", "")
 
 
+def format_compact_report(groups):
+    labels = {"bollinger_live": "S1", "main": "S1", "bb_reentry": "S2",
+              "break_retest": "S3", "ema_pullback": "S4"}
+    lines = ["⚖️ Сравнение · 7 дней", "Стратегия · фон WR (N) / основной WR (N)", ""]
+    def rate(counts):
+        wins, losses = counts.get("WIN", 0), counts.get("LOSS", 0)
+        total = wins + losses
+        return f"{100 * wins / total:.1f}% ({total})" if total else "— (0)"
+    for group in groups:
+        label = labels.get(group["strategy"], group["strategy"])
+        lines.append(f"{label} M{group['seconds']//60} · {rate(group['early_outcomes'])} / {rate(group['live_outcomes'])}")
+    if not groups:
+        lines.append("Пока нет данных.")
+    lines.extend(["", "N — завершённые WIN/LOSS циклы. Выборки могут различаться."])
+    return "\n".join(lines)
+
+
 def format_report(groups):
     lines = [
-        "Сравнение входа: ранний 30–40 с против основного 15–20 с / S2–S4 позже",
+        "Сравнение входа: ранний 30–40 с против S1–S4 за 15–20 с (история — по фактической доставке)",
         "Ранние: только фоновые прогнозы; основные: только доставленные сигналы.",
         "Период сравнения начинается не раньше первого раннего прогноза.",
         "Это виртуальные результаты OTCharts, не сделки Pocket Option.",

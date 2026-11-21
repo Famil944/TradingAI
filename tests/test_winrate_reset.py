@@ -64,16 +64,16 @@ class ResetStoreTests(unittest.TestCase):
                           side_effect=lambda source: rows if source == "main" else []), \
              patch.object(community.time, "time", return_value=moment(14)):
             before = community.compact_overview("all", "all")
-            self.assertIn("S1  M2 50.0% (n=2) · M5 — (n=0) · M15 — (n=0)", before)
+            self.assertIn("S1 · 50.0% · ✅ 1 / ❌ 1", before)
             token = self.store.prepare(now=moment(12))
             self.assertTrue(self.store.confirm(token, now=moment(12)))
             for period in ("today", "7d", "30d", "all"):
                 text = community.compact_overview("all", period)
-                self.assertIn("S1  M2 100.0% (n=1) · M5 — (n=0) · M15 — (n=0)", text)
+                self.assertIn("S1 · 100.0% · ✅ 1 / ❌ 0", text)
                 self.assertIn("Новый отсчёт с", text)
-                self.assertNotIn("M2 50.0%", text)
+                self.assertNotIn("50.0%", text)
             owner = community.overview_text("all")
-            self.assertIn("S1 Боллинджер ×3\nM2 100.0% (n=1) · M5 — (n=0) · M15 — (n=0)", owner)
+            self.assertIn("S1 · 100.0% · ✅ 1 / ❌ 0", owner)
             details = community.report_for("main", "all", "B", period="all")
             self.assertIn("WIN 1 · LOSS 0", details)
         self.assertEqual(len(rows), 2)
@@ -87,7 +87,7 @@ class ResetStoreTests(unittest.TestCase):
             token = self.store.prepare(now=moment(14))
             self.assertTrue(self.store.confirm(token, now=moment(14)))
             text = community.compact_overview("all", "all")
-            self.assertIn("S1  M2 — (n=0) · M5 — (n=0) · M15 — (n=0)", text)
+            self.assertIn("S1 · — · ✅ 0 / ❌ 0", text)
             self.assertNotIn("100.0%", text)
 
 
@@ -101,7 +101,7 @@ class OwnerOnlyResetTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(
             chat=SimpleNamespace(id=chat_id, type="private"),
             from_user=SimpleNamespace(id=chat_id),
-            answer=AsyncMock(),
+            answer=AsyncMock(), edit_text=AsyncMock(),
         )
 
     async def test_command_requires_owner_private_chat(self):

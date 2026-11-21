@@ -174,13 +174,13 @@ class M1ShadowTests(unittest.TestCase):
 
 
 class ShadowIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_existing_shadow_engine_records_m1_without_publishing(self):
+    async def test_live_candidate_engine_does_not_restart_retired_m1_shadow(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "community-cycles.db"
             engine = ShadowCycles(path, clock=lambda: NOW)
             await engine.plan(snapshot(flat_history("breakout")))
             counts = report(path, 0, NOW)
-            self.assertEqual(counts["flat"]["PENDING"], 1)
+            self.assertFalse(counts["flat"])
             self.assertFalse(counts["correction"])
             # No broker client, Telegram bot, or extra streaming session exists
             # in this engine: only the existing sampler sees the shared ticks.
@@ -191,4 +191,4 @@ class ShadowIntegrationTests(unittest.IsolatedAsyncioTestCase):
             # The engine's clock needs to move before sampler.flush().
             with patch.object(engine, "clock", return_value=ENTRY + 63):
                 await engine.flush()
-            self.assertEqual(report(path, 0, ENTRY + 63)["flat"]["WIN"], 1)
+            self.assertFalse(report(path, 0, ENTRY + 63)["flat"])

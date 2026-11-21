@@ -1,3 +1,4 @@
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -243,7 +244,7 @@ class DeliveryGuardTests(unittest.TestCase):
     def test_additive_migration_of_existing_claims(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "guard.db"
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute("""CREATE TABLE claims(
                     symbol TEXT, direction TEXT, entry_at INTEGER, expires_at INTEGER,
                     source TEXT, claimed_at REAL,

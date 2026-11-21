@@ -1,3 +1,4 @@
+from contextlib import closing
 """Network timeouts must never masquerade as session expiry."""
 
 import asyncio
@@ -113,7 +114,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "readiness.db"
             readiness = DataReadiness(path, now=1000)
-            with sqlite3.connect(path, timeout=1) as db:
+            with closing(sqlite3.connect(path, timeout=1)) as db, db:
                 db.execute("BEGIN EXCLUSIVE")
                 readiness.reset(1010, "stream_reset")
                 self.assertTrue(readiness.gap_open)
@@ -156,7 +157,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             archive = MarketArchive(path)
             archive.bars("A", [Candle(60, 1, 1, 1, 1),
                                Candle(60, 2, 2, 2, 2)], 180, "otcharts_ticks")
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 self.assertEqual(
                     db.execute("SELECT open,revisions FROM bars").fetchone(),
                     (2, 1),

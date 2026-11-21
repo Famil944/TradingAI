@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import F, Router, types
 from aiogram.filters import Command
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 
 from bot import otc_commands
@@ -98,17 +99,32 @@ def keyboard(rows):
     )
 
 
+async def render_menu(message, text, *, reply_markup=None, parse_mode=None):
+    """Navigate within one menu message instead of filling the chat with copies."""
+    if reply_markup is None:
+        reply_markup = keyboard([[("◀ Меню", "c:home")]])
+    try:
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except TelegramBadRequest as exc:
+        reason = str(exc).lower()
+        if "message is not modified" in reason:
+            return
+        if "message to edit not found" not in reason and "message can't be edited" not in reason:
+            raise
+        await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+
 def home(owner=False):
     if not owner:
         return keyboard([
             [("▶️ Сигналы на 1 час", "c:session:start"),
              ("⏸ Пауза", "c:session:stop")],
-            [("🎛 Мои сигналы", "c:prefs"), ("📊 Винрейт", "c:wr")],
+            [("🎛 Мои сигналы", "c:prefs"), ("📊 Винрейт циклов", "c:cycles:all:today:all:global")],
             [("💎 Подписка", "c:subscription"), ("💡 Предложение", "c:suggest")],
             [("ℹ️ Справка", "c:info")],
         ])
     return keyboard([
-        [("📊 Стратегии", "c:sources"), ("👥 Пользователи", "c:users")],
+        [("📊 Стратегии", "c:cycles:all:today:all:global"), ("👥 Пользователи", "c:users")],
         [("💡 Предложения", "c:queue"), ("🔧 OTC", "c:owner")],
     ])
 
@@ -185,6 +201,7 @@ GUIDE_TRADE = (
     "3. Смотри направление: 🟢 ВВЕРХ или 🔴 ВНИЗ. "
     "M2 означает длительность 2 минуты, M5 — 5 минут, M15 — 15 минут.\n\n"
     "4. «Первый вход» — запланированное время по Москве. "
+    "Отправка сигнала — за 15–20 секунд до него; задержка сети может сократить запас. "
     "Если оно уже прошло, не открывай запоздалую сделку. "
     "Проверь настройки времени и экспирации на платформе.\n\n"
     "5. Вторая попытка предусмотрена только после ❌ первой; "
@@ -245,59 +262,80 @@ def guide_menu():
     ])
 
 
-def _confirmed_winrate(rows):
-    """Published-only WR and count of actually issued predictions.
-
-    The numerator and denominator of WR remain confirmed WIN/LOSS only;
-    count includes unresolved/draw/unknown issued predictions, so a 100%
-    based on one known result is never presented without sample context.
-    """
-    summary = metrics(rows)
-    wr = f"{summary['wr']:.1f}%" if summary["wr"] is not None else "—"
-    return f"{wr} (n={summary['total']})"
-
-
-def _per_timeframe_winrates(rows):
-    """Short, separate M2/M5/M15 results; no invented rate for empty samples."""
-    return " · ".join(
-        f"M{seconds // 60} {_confirmed_winrate([row for row in rows if row['seconds'] == seconds])}"
-        for seconds in (120, 300, 900)
-    )
-
-
 def compact_overview(timeframe="all", period="all"):
-    """Compact published-only subscriber winrate; never includes shadow trades."""
-    seconds = SECONDS[timeframe]
-    since = stats_since(period)
-    title = f"📊 WR · {PERIODS[period]}"
-    if seconds is not None:
-        title += f" · M{seconds // 60}"
-    lines = [title, ""]
-    for source, _ in STRATEGIES:
-        rows = [
-            row for row in snapshots(source)
-            if (since == 0 or stats_timestamp(row) >= since)
-        ]
-        rates = (
-            _per_timeframe_winrates(rows) if seconds is None
-            else _confirmed_winrate([r for r in rows if r["seconds"] == seconds])
-        )
-        lines.append(f"{IDS[source]}  {rates}")
-    lines.extend(["", "n = выданные прогнозы · WR только WIN/LOSS",
-                  "OTCharts · не сделки брокера"])
-    return "\n".join(lines) + reset_note()
+    """Compatibility entrypoint for old menus; one canonical cycle dashboard."""
+    return cycle_dashboard(period=period, timeframe=timeframe)
 
 
 def compact_periods(timeframe="all", period="today"):
-    return keyboard([
-        [(("✅ " if period == name else "") + label, f"c:wr:{name}:{timeframe}")
-         for name, label in (("today", "Сегодня"), ("7d", "7 дней"),
-                             ("30d", "30 дней"), ("all", "Всё"))],
-        [(("✅ " if timeframe == name else "") + label, f"c:wr:{period}:{name}")
-         for name, label in (("all", "Все"), ("2", "M2"),
-                             ("5", "M5"), ("15", "M15"))],
-        [("◀ Меню", "c:home")],
-    ])
+    return cycle_menu(period=period, timeframe=timeframe)
+
+
+def cycle_menu(source="all", period="today", timeframe="all", scope="global", owner=False):
+    def target(s=source, p=period, tf=timeframe, sc=scope):
+        return f"c:cycles:{s}:{p}:{tf}:{sc}"
+    rows = [
+        [(("✓ " if source == code else "") + IDS[code], target(s=code))
+         for code, _ in STRATEGIES],
+        [(("✓ " if period == key else "") + label, target(p=key))
+         for key, label in (("today", "Сегодня"), ("7d", "7 дней"),
+                            ("30d", "30 дней"), ("all", "Всё время"))],
+        [(("✓ " if timeframe == key else "") + label, target(tf=key))
+         for key, label in (("all", "Все сроки"), ("2", "M2"), ("5", "M5"), ("15", "M15"))],
+    ]
+    if not owner:
+        rows.append([(("✓ " if scope == "global" else "") + "Общая", target(sc="global")),
+                     (("✓ " if scope == "personal" else "") + "Мои сигналы", target(sc="personal"))])
+    if source != "all":
+        rows.append([("Все стратегии", target(s="all"))])
+        if owner:
+            rows.append([("📋 Журнал циклов", f"c:stats:{source}:{timeframe}:B:10:{period}")])
+    rows.append([("🔄 Обновить", target()), ("◀ Меню", "c:home")])
+    return keyboard(rows)
+
+
+def cycle_dashboard(source="all", period="today", timeframe="all", scope="global", user_id=None, owner=False):
+    from services.otc_cycle_dashboard import cycle_block, cycle_compact, expiry_lines
+    since = stats_since(period)
+    delivered = subscribers().delivered_ids(user_id) if scope == "personal" else None
+    title = "📊 Мой винрейт" if scope == "personal" else "📊 Винрейт"
+    expiry = "Все экспирации" if timeframe == "all" else "M" + timeframe
+    lines = [title, f"{PERIODS[period]} · {expiry}", "WR по полному циклу · до 3 попыток", ""]
+    for code, _ in STRATEGIES:
+        if source not in ("all", code):
+            continue
+        rows = [r for r in snapshots(code)
+                if stats_timestamp(r) >= since
+                and (timeframe == "all" or r["seconds"] == SECONDS[timeframe])
+                and (delivered is None or r["id"] in delivered)]
+        label = IDS[code] + (" · " + source_title(code) if owner else " · Стратегия " + IDS[code][1:])
+        lines.append(cycle_compact(IDS[code], rows) if source == "all"
+                     else cycle_block(label, rows, detailed=True))
+        if source != "all" and timeframe == "all":
+            lines.extend(["", expiry_lines(rows)])
+        lines.append("")
+    if source == "all":
+        lines.extend(["WR = ✅ / (✅ + ❌). ⏳ в работе · ➖ ничья · ❔ нет данных.",
+                      "Нажми S1–S4 для подробностей.",
+                      "Результаты прогнозов, не сделок на счёте."])
+    else:
+        lines.extend(["① / ② / ③ — на какой попытке выигран цикл.",
+                  "WR = победы / (победы + поражения) циклов.",
+                  "Ничьи, ожидание и нет данных в WR не входят.",
+                  "Результаты прогнозов, не подтверждённые сделки на счёте."])
+    if scope == "personal":
+        lines.append("Только карточки с подтверждённой доставкой в твой чат.")
+    return "\n".join(lines) + reset_note()
+
+
+async def show_cycles(message, *, source="all", period="today", timeframe="all", scope="global", owner=False, edit=False):
+    text = await asyncio.to_thread(cycle_dashboard, source, period, timeframe, scope, message.chat.id, owner)
+    markup = cycle_menu(source, period, timeframe, scope, owner)
+    if edit:
+        await render_menu(message, text, reply_markup=markup)
+    else:
+        await message.answer(text, reply_markup=markup, parse_mode=None)
+
 
 def access_text(store, user_id):
     status = store.status(user_id)
@@ -321,6 +359,29 @@ def access_text(store, user_id):
     return "💎 Доступ ещё не оформлен. Примите условия, чтобы подать заявку."
 
 
+def subscriber_home_text(user_id):
+    store = subscribers()
+    body = "TradingAI · Личный кабинет\n\n" + access_text(store, user_id)
+    if store.status(user_id)["state"] != "approved":
+        return body
+    selected = store.source_preferences(user_id)
+    frames = store.timeframe_preferences(user_id)
+    sources_text = ", ".join(IDS[k] for k, enabled in selected.items() if enabled)
+    frames_text = ", ".join(f"M{k // 60}" for k, enabled in frames.items() if enabled)
+    body += f"\n\nСтратегии: {sources_text or 'не выбраны'}\nЭкспирации: {frames_text or 'не выбраны'}"
+    if not sources_text or not frames_text:
+        return body + "\nВыбери хотя бы одну стратегию и экспирацию в «Мои сигналы»."
+    current = otc_commands.service
+    if current is None or not current.running():
+        body += "\n\nПоток сигналов сейчас остановлен владельцем или недоступен."
+    elif (getattr(current, "last_tick", None) is None
+          or not 0 <= time.time() - current.last_tick <= 8):
+        body += "\n\nОжидаем свежие котировки. Новые сигналы временно недоступны."
+    else:
+        body += "\n\nКотировки поступают. Новый сигнал появится при подходящих условиях."
+    return body
+
+
 def subscription_buttons(store, user_id):
     state = store.status(user_id)["state"]
     if state == "new":
@@ -335,33 +396,11 @@ def subscription_buttons(store, user_id):
 
 
 def sources(period="today"):
-    """Owner-only strategy names and a period filter."""
-    return keyboard([
-        [("① Боллинджер ×3", "c:source:main"),
-         ("② Возврат внутрь", "c:source:bb_reentry")],
-        [("③ Пробой/ретест", "c:source:break_retest"),
-         ("④ EMA9/19", "c:source:ema_pullback")],
-        [(("✅ " if period == name else "") + label, "c:sources:" + name)
-         for name, label in (("today", "Сегодня"), ("7d", "7 дней"),
-                             ("30d", "30 дней"), ("all", "Всё"))],
-    ])
+    return cycle_menu(period=period, owner=True)
 
 
 def overview_text(period="today"):
-    """Short owner WR by each strategy and M2/M5/M15 separately."""
-    since = stats_since(period)
-    lines = [f"📊 Винрейт · {PERIODS[period]}", ""]
-    for source, _ in STRATEGIES:
-        rows = [
-            row for row in snapshots(source)
-            if since == 0 or stats_timestamp(row) >= since
-        ]
-        lines.append(f"{IDS[source]} {source_title(source)}")
-        lines.append(_per_timeframe_winrates(rows))
-        lines.append("")
-    lines.extend(["n = выданные прогнозы · WR только WIN/LOSS",
-                  "OTCharts · не сделки брокера"])
-    return "\n".join(lines) + reset_note()
+    return cycle_dashboard(period=period, owner=True)
 
 
 def metrics_menu(source, timeframe="all", metric="B", limit=10, period="all"):
@@ -369,15 +408,15 @@ def metrics_menu(source, timeframe="all", metric="B", limit=10, period="all"):
         return f"c:stats:{source}:{timeframe}:{m}:{n}:{p}"
 
     return keyboard([
-        [("M2", f"c:source_tf:{source}:2"),
-         ("M5", f"c:source_tf:{source}:5"),
-         ("M15", f"c:source_tf:{source}:15"),
-         ("Все", f"c:source_tf:{source}:all")],
-        [("Входы", action("A")), ("×3", action("B")), ("×6", action("C"))],
+        [("M2", f"c:stats:{source}:2:{metric}:{limit}:{period}"),
+         ("M5", f"c:stats:{source}:5:{metric}:{limit}:{period}"),
+         ("M15", f"c:stats:{source}:15:{metric}:{limit}:{period}"),
+         ("Все", f"c:stats:{source}:all:{metric}:{limit}:{period}")],
+        [("✓ Циклы ×3" if metric == "B" else "Вернуться к циклам ×3", action("B"))],
         [("10", action(n=10)), ("50", action(n=50)), ("100", action(n=100))],
         [("Сегодня", action(p="today")), ("7 дней", action(p="7d")),
          ("30 дней", action(p="30d")), ("Всё", action(p="all"))],
-        [("◀ 4 стратегии", "c:sources"),
+        [("◀ Статистика циклов", f"c:cycles:{source}:{period}:{timeframe}:global"),
          ("🧹 Сброс WR", "c:wr_reset:ask")],
     ])
 
@@ -473,7 +512,7 @@ async def start(message: types.Message):
         return
     store = subscribers()
     status = await asyncio.to_thread(store.status, message.chat.id)
-    body = TERMS if status["state"] == "new" else access_text(store, message.chat.id)
+    body = TERMS if status["state"] == "new" else await asyncio.to_thread(subscriber_home_text, message.chat.id)
     await message.answer(body, reply_markup=subscription_buttons(store, message.chat.id),
                          parse_mode=None)
 
@@ -535,15 +574,13 @@ async def reset_winrate_command(message: types.Message):
 
 @router.message(Command("signal_stats"))
 async def signal_stats(message: types.Message):
-    if private(message):
-        if is_owner(message.from_user):
-            text = await asyncio.to_thread(overview_text)
-            await message.answer(text, reply_markup=sources(), parse_mode=None)
-        elif subscribers().status(message.chat.id)["state"] == "approved":
-            await message.answer(await asyncio.to_thread(compact_overview, "all", "today"),
-                                 reply_markup=compact_periods(), parse_mode=None)
-        else:
-            await message.answer("Сначала оформите доступ: /start", reply_markup=home())
+    if not private(message):
+        return
+    owner = is_owner(message.from_user)
+    if owner or subscribers().status(message.chat.id)["state"] == "approved":
+        await show_cycles(message, owner=owner)
+    else:
+        await message.answer("Сначала оформите доступ: /start", reply_markup=home())
 
 
 @router.message(Command("access", "requests"))
@@ -562,39 +599,44 @@ def profile_url(row):
     return ("https://t.me/" + username) if username else "tg://user?id=" + str(int(row["chat_id"]))
 
 
-async def show_access(message):
-    users = await asyncio.to_thread(subscribers().member_profiles, 30)
+async def show_access(message, page=0, edit=False):
+    size = 8
+    users = await asyncio.to_thread(subscribers().member_profiles, size + 1, page * size)
+    counts = await asyncio.to_thread(subscribers().dashboard_counts)
+    lines = [f"👥 Пользователи · {page + 1}",
+             f"✅ {counts['active']} · 📨 {counts['pending']} · ▶️ {counts['sessions']}"]
+    states = {"approved": "✅", "pending": "📨", "expired": "⌛",
+              "paused": "⏸", "blocked": "⛔", "new": "▫️"}
+    buttons = []
+    for person in users[:size]:
+        chat_id = int(person["chat_id"])
+        state = await asyncio.to_thread(subscribers().status, chat_id)
+        label = f"{states.get(state['state'], '▫️')} {profile_name(person)[:20]}"
+        if not buttons or len(buttons[-1]) == 2:
+            buttons.append([])
+        buttons[-1].append((label, f"c:user:{chat_id}:{page}"))
     if not users:
-        await message.answer("👥 Пользователей пока нет.")
-        return
-    # Batch the list instead of slicing HTML midway through a Telegram link.
-    for offset in range(0, len(users), 10):
-        portion = users[offset:offset+10]
-        lines = ["👥 Пользователи · профили и доступ"]
-        buttons = []
-        for person in portion:
-            chat_id = int(person["chat_id"])
-            name = escape(profile_name(person))
-            state = subscribers().status(chat_id)["state"]
-            latest = person.get("last_interaction")
-            last = (" · последнее действие " + timestamp(latest)) if latest else ""
-            session_on = bool(person.get("session_expires_at") and person["session_expires_at"] > time.time())
-            lines.append(
-                f'<a href="{profile_url(person)}">{name}</a> · {escape(state)} '
-                + ("· 🟢 сеанс" if session_on else "· ⏸ сеанс")
-                + last
-            )
-            buttons.append([(profile_name(person)[:25], f"c:user:{chat_id}")])
-        buttons.append([("🔄 Обновить", "c:access")])
-        await message.answer(
-            "\n".join(lines), reply_markup=keyboard(buttons), parse_mode="HTML"
-        )
+        lines.append("На этой странице пользователей нет.")
+    nav = []
+    if page:
+        nav.append(("← Назад", f"c:access:{page - 1}"))
+    if len(users) > size:
+        nav.append(("Далее →", f"c:access:{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([("🔄 Обновить", f"c:access:{page}"), ("◀ Меню", "c:home")])
+    markup = keyboard(buttons)
+    body = "\n".join(lines)
+    if edit:
+        await render_menu(message, body, reply_markup=markup)
+    else:
+        await message.answer(body, reply_markup=markup, parse_mode=None)
 
 
-async def show_user(message, user_id):
+async def show_user(message, user_id, page=0):
     info = await asyncio.to_thread(subscribers().member_activity, user_id)
     if info is None:
-        await message.answer("Пользователь не найден.")
+        await render_menu(message, "Пользователь не найден.", reply_markup=keyboard([[("◀ Пользователи", f"c:access:{page}")]]))
         return
     title = escape(profile_name(info))
     state = subscribers().status(user_id)["state"]
@@ -607,23 +649,22 @@ async def show_user(message, user_id):
     expiry = timestamp(info["expires_at"]) if info.get("expires_at") else "Не назначен"
     text = (
         f'👤 <a href="{profile_url(info)}">{title}</a>\n'
-        f"Доступ: {escape(state)} · до {expiry}\n"
-        f"Сеанс сигналов: {session}\n"
-        f"Последнее действие: {last}\n"
-        f"Действий за 7 дней: {info['actions_7d']}\n"
-        f"Активных дней: {info['days_7d']} из 7; {info['days_30d']} из 30\n"
-        f"Доставлено уникальных сигналов: {info['delivered']}\n\n"
-        "Это действия в боте, а не время чтения сообщений.\n"
-        f"ID для управления: <code>{user_id}</code>"
+        f"Доступ: { {'approved': '✅', 'pending': '📨 Заявка', 'expired': '⌛ Истёк', 'paused': '⏸', 'blocked': '⛔'}.get(state, '—')} · {expiry}\n"
+        f"Сеанс: {session}\n"
+        f"Действия / 7д: {info['actions_7d']} · сигналы: {info['delivered']}\n"
+        f"Был в боте: {last}\n"
+        f"ID <code>{user_id}</code>"
     )
     action = ("Разблокировать", f"c:unblock:{user_id}") if state == "blocked" else (
         "⛔ Блокировать", f"c:block:{user_id}"
     )
-    await message.answer(
+    grant_label = "➕ Продлить на 7 дней" if state in ("approved", "paused") else "✅ Одобрить 7 дней"
+    grant_action = "grant" if state in ("approved", "paused") else "approve"
+    await render_menu(message,
         text, parse_mode="HTML",
         reply_markup=keyboard([
-            [("✅ Доступ на 7 дней", f"c:grant:{user_id}:7"), action],
-            [("◀ Пользователи", "c:access")],
+            [(grant_label, f"c:{grant_action}:{user_id}:7"), action],
+            [("◀ Пользователи", f"c:access:{page}")],
         ]),
     )
 
@@ -639,13 +680,19 @@ async def grant_command(message: types.Message):
     await grant_access(message, int(parts[1]), int(parts[2]))
 
 
-async def grant_access(message, chat_id, days):
+async def grant_access(message, chat_id, days, *, request_key=None, approval_only=False, edit=False):
     try:
-        expiry = await asyncio.to_thread(subscribers().grant, chat_id, days)
+        expiry = await asyncio.to_thread(subscribers().grant, chat_id, days, request_key=request_key, approval_only=approval_only)
     except ValueError as exc:
-        await message.answer(str(exc))
+        if edit:
+            await render_menu(message, str(exc), reply_markup=keyboard([[("◀ Пользователь", f"c:user:{chat_id}")]]))
+        else:
+            await message.answer(str(exc))
         return
-    await message.answer(f"✅ {chat_id}: доступ до {timestamp(expiry)}")
+    if edit:
+        await show_user(message, chat_id)
+    else:
+        await message.answer(f"✅ {chat_id}: доступ до {timestamp(expiry)}")
     try:
         await message.bot.send_message(
             chat_id, f"✅ Доступ одобрен до {timestamp(expiry)}. "
@@ -703,21 +750,21 @@ async def suggestions(message: types.Message):
     await show_queue(message)
 
 
-async def show_queue(message):
-    rows = await asyncio.to_thread(feedback().list, 15)
+async def show_queue(message, edit=False):
+    send = (lambda text, **kw: render_menu(message, text, **kw)) if edit else message.answer
+    rows = await asyncio.to_thread(feedback().list, 8)
     if not rows:
-        await message.answer("Предложений пока нет.")
+        await send("Предложений пока нет.", reply_markup=home(owner=True))
         return
     lines = ["📥 Последние предложения"]
     for r in rows:
         lines.append(
-            f"№{r['id']} · {LABELS[r['status']]} · {timestamp(r['created_at'])}\n"
-            + r["text"][:120]
+            f"№{r['id']} · {LABELS[r['status']]} · " + r["text"].replace("\n", " ")[:60]
         )
-    buttons = [[(f"№{r['id']}", f"c:item:{r['id']}")]
-               for r in rows[:10]]
-    buttons.append([("Обновить", "c:queue")])
-    await message.answer("\n\n".join(lines)[:3800], reply_markup=keyboard(buttons), parse_mode=None)
+    buttons = [[(f"№{r['id']}", f"c:item:{r['id']}") for r in rows[i:i+4]]
+               for i in range(0, len(rows), 4)]
+    buttons.append([("Обновить", "c:queue"), ("◀ Меню", "c:home")])
+    await send("\n".join(lines), reply_markup=keyboard(buttons), parse_mode=None)
 
 
 @router.callback_query(F.data.startswith("c:"))
@@ -729,23 +776,38 @@ async def callbacks(query: types.CallbackQuery):
     owner = is_owner(query.from_user)
     admin_chat = owner and query.message.chat.id == settings.admin_chat_id
     target = action[1] if len(action) > 1 else ""
-    if target in ("grant", "block", "unblock", "access", "user"):
+    if target == "cycles":
+        if len(action) != 6 or action[2] not in ("all", *IDS) or action[3] not in PERIODS or action[4] not in SECONDS or action[5] not in ("global", "personal"):
+            await query.answer("Некорректный фильтр", show_alert=True)
+            return
+        if not owner and subscribers().status(query.from_user.id)["state"] != "approved":
+            await query.answer("Нет активного доступа", show_alert=True)
+            return
+        await query.answer()
+        await show_cycles(query.message, source=action[2], period=action[3],
+                          timeframe=action[4], scope=action[5], owner=owner, edit=True)
+        return
+    if target in ("grant", "approve", "block", "unblock", "access", "user"):
         if not admin_chat:
             await query.answer("Нет доступа", show_alert=True)
             return
         await query.answer()
         if target == "access":
-            await show_access(query.message)
-        elif target == "user" and len(action) == 3 and action[2].isdigit():
-            await show_user(query.message, int(action[2]))
+            page = int(action[2]) if len(action) == 3 and action[2].isdigit() else 0
+            await show_access(query.message, page=min(page, 100000), edit=True)
+        elif target == "user" and len(action) in (3, 4) and action[2].isdigit():
+            page = int(action[3]) if len(action) == 4 and action[3].isdigit() else 0
+            await show_user(query.message, int(action[2]), page=page)
         elif target == "unblock" and len(action) == 3 and action[2].isdigit():
             await asyncio.to_thread(subscribers().unblock, int(action[2]))
-            await query.message.answer("✅ Пользователь разблокирован")
-        elif target == "grant" and len(action) == 4 and action[2].isdigit() and action[3].isdigit():
-            await grant_access(query.message, int(action[2]), int(action[3]))
+            await show_user(query.message, int(action[2]))
+        elif target in ("grant", "approve") and len(action) == 4 and action[2].isdigit() and action[3].isdigit():
+            await grant_access(query.message, int(action[2]), int(action[3]),
+                               request_key=f"{query.message.chat.id}:{query.message.message_id}:{action[2]}:{action[3]}",
+                               approval_only=target == "approve", edit=True)
         elif target == "block" and len(action) == 3 and action[2].isdigit():
             await asyncio.to_thread(subscribers().block, int(action[2]))
-            await query.message.answer("⛔ Пользователь заблокирован")
+            await show_user(query.message, int(action[2]))
         return
     if target == "wr_reset":
         if not admin_chat:
@@ -754,7 +816,7 @@ async def callbacks(query: types.CallbackQuery):
         if len(action) == 3 and action[2] == "ask":
             token = await asyncio.to_thread(winrate_reset().prepare)
             await query.answer()
-            await query.message.answer(
+            await render_menu(query.message,
                 "🧹 Сбросить отображаемый винрейт всех S1–S4?\n"
                 "Новый отсчёт начнётся с момента подтверждения. "
                 "Старые исходы останутся в журналах, но не войдут "
@@ -767,7 +829,7 @@ async def callbacks(query: types.CallbackQuery):
             if action[2] == "cancel":
                 await asyncio.to_thread(winrate_reset().cancel, token)
                 await query.answer("Сброс отменён")
-                await query.message.answer("Сброс винрейта отменён.", parse_mode=None)
+                await render_menu(query.message,"Сброс винрейта отменён.", parse_mode=None)
                 return
             success = await asyncio.to_thread(winrate_reset().confirm, token)
             if not success:
@@ -777,7 +839,7 @@ async def callbacks(query: types.CallbackQuery):
                 )
                 return
             await query.answer("Новый отсчёт начат")
-            await query.message.answer(
+            await render_menu(query.message,
                 "✅ Новый отсчёт винрейта S1–S4 начат.\n"
                 "До новых завершённых прогнозов WR будет равен «—». "
                 "Прежняя история WIN/LOSS сохранена.",
@@ -798,7 +860,7 @@ async def callbacks(query: types.CallbackQuery):
                 await query.answer(str(exc), show_alert=True)
                 return
             await query.answer("Сигналы включены")
-            await query.message.answer(
+            await render_menu(query.message,
                 f"✅ Сигналы включены до {timestamp(expiry)}.\n"
                 "Продли сеанс кнопкой «Сигналы на 1 час» или напоминанием. "
                 "После окончания новые сигналы перестанут приходить.",
@@ -807,7 +869,7 @@ async def callbacks(query: types.CallbackQuery):
         else:
             await asyncio.to_thread(store.stop_session, query.message.chat.id)
             await query.answer("Сеанс остановлен")
-            await query.message.answer(
+            await render_menu(query.message,
                 "⏸ Личные сигналы приостановлены. Подписка сохранена. "
                 "Для возобновления нажми «Сигналы на 1 час».",
                 reply_markup=home(), parse_mode=None,
@@ -819,7 +881,7 @@ async def callbacks(query: types.CallbackQuery):
             return
         await query.answer()
         store = subscribers()
-        await query.message.answer(
+        await render_menu(query.message,
             preferences_text(store, query.message.chat.id),
             reply_markup=preferences_menu(store, query.message.chat.id),
             parse_mode=None,
@@ -871,44 +933,36 @@ async def callbacks(query: types.CallbackQuery):
             await query.answer("Нет доступа", show_alert=True)
             return
         await query.answer()
-        await query.message.answer(
-            "👥 Пользователи: Telegram-профили, действия за 7/30 дней, "
-            "сеансы сигналов, заявки и управление доступом.",
-            reply_markup=keyboard([
-                [("📋 Заявки и доступ", "c:access")],
-                [("➕ Выдать доступ", "c:grant_help"), ("⛔ Блокировка", "c:block_help")],
-                [("◀ Меню", "c:home")],
-            ]),
-        )
+        await show_access(query.message, edit=True)
         return
     if target in ("grant_help", "block_help"):
         if not admin_chat:
             await query.answer("Нет доступа", show_alert=True)
             return
         await query.answer()
-        await query.message.answer(
+        await render_menu(query.message,
             "Выдать/продлить: /grant ID ДНИ" if target == "grant_help"
             else "Блокировать: /block ID · Разблокировать: /unblock ID"
         )
         return
     if target == "info":
         await query.answer()
-        await query.message.answer(INFO, reply_markup=guide_menu(), parse_mode=None)
+        await render_menu(query.message, INFO, reply_markup=guide_menu())
         return
     if target == "guide":
         if len(action) != 3 or action[2] not in GUIDES:
             await query.answer("Раздел не найден")
             return
         await query.answer()
-        await query.message.answer(
-            GUIDES[action[2]], reply_markup=guide_menu(), parse_mode=None,
+        await render_menu(
+            query.message, GUIDES[action[2]], reply_markup=guide_menu(),
         )
         return
     if target == "subscription" and not owner:
         await query.answer()
         store = subscribers()
         state = store.status(query.message.chat.id)["state"]
-        await query.message.answer(
+        await render_menu(query.message,
             TERMS if state == "new" else access_text(store, query.message.chat.id),
             reply_markup=subscription_buttons(store, query.message.chat.id),
             parse_mode=None,
@@ -925,7 +979,7 @@ async def callbacks(query: types.CallbackQuery):
             return
         result = await asyncio.to_thread(store.request, query.message.chat.id)
         await query.answer("Заявка отправлена" if result == "pending" else "Статус обновлён")
-        await query.message.answer(access_text(store, query.message.chat.id),
+        await render_menu(query.message,access_text(store, query.message.chat.id),
                                    reply_markup=home(), parse_mode=None)
         if result == "pending" and previous != "pending":
             try:
@@ -935,7 +989,7 @@ async def callbacks(query: types.CallbackQuery):
                     + (f" (@{query.from_user.username})" if getattr(query.from_user, "username", None) else "")
                     + (" · продление" if previous == "expired" else " · 7 дней тест"),
                     reply_markup=keyboard([
-                        [("✅ Одобрить 7 дней", f"c:grant:{query.from_user.id}:7")],
+                        [("✅ Одобрить 7 дней", f"c:approve:{query.from_user.id}:7")],
                         [("⛔ Заблокировать", f"c:block:{query.from_user.id}")],
                     ]), parse_mode=None,
                 )
@@ -960,29 +1014,28 @@ async def callbacks(query: types.CallbackQuery):
             await query.answer("Некорректный период")
             return
         await query.answer()
-        await query.message.answer(
-            await asyncio.to_thread(compact_overview, tf, period),
-            reply_markup=compact_periods(tf, period), parse_mode=None,
-        )
+        await show_cycles(query.message, period=period, timeframe=tf, owner=owner, edit=True)
         return
     if target == "owner":
         if not owner:
             await query.answer("Нет доступа", show_alert=True)
             return
         await query.answer()
-        await otc_commands.show_menu(query.message)
+        await render_menu(query.message, await asyncio.to_thread(otc_commands.panel_text),
+                          reply_markup=otc_commands.menu(query.message.chat.id))
         return
     if target == "home":
         await query.answer()
         if owner:
-            await otc_commands.show_menu(query.message)
+            await render_menu(query.message, await asyncio.to_thread(otc_commands.panel_text),
+                              reply_markup=otc_commands.menu(query.message.chat.id))
         else:
-            await query.message.answer("Меню:", reply_markup=home())
+            await render_menu(query.message, await asyncio.to_thread(subscriber_home_text, query.message.chat.id), reply_markup=home())
         return
     if target == "unsubscribe" and not owner:
         await asyncio.to_thread(subscribers().unsubscribe, query.message.chat.id)
         await query.answer("Личные сигналы отключены")
-        await query.message.answer(
+        await render_menu(query.message,
             "🔕 Новые личные сигналы отключены. "
             "Чтобы снова получать их, нажми кнопку:",
             reply_markup=keyboard([[("🔔 Подписаться", "c:subscribe")]]),
@@ -999,21 +1052,20 @@ async def callbacks(query: types.CallbackQuery):
             await query.answer("Некорректный период")
             return
         await query.answer()
-        text = await asyncio.to_thread(overview_text, period)
-        await query.message.answer(text, reply_markup=sources(period), parse_mode=None)
+        await show_cycles(query.message, period=period, owner=True, edit=True)
         return
     if target == "suggest":
         if owner:
             # Old owner keyboards also lead to the read-only inbox.
             await query.answer()
-            await show_queue(query.message)
+            await show_queue(query.message, edit=True)
             return
         if subscribers().status(query.message.chat.id)["state"] != "approved":
             await query.answer("Нет доступа", show_alert=True)
             return
         await query.answer()
         feedback().begin(query.from_user.id)
-        await query.message.answer(
+        await render_menu(query.message,
             "💡 Напиши предложение одним сообщением (5–1000 символов). "
             "Его увидит владелец. Отмена: /cancel.",
             parse_mode=None,
@@ -1026,10 +1078,7 @@ async def callbacks(query: types.CallbackQuery):
             await query.answer("Некорректный выбор")
             return
         await query.answer()
-        text = await asyncio.to_thread(report_for, source, tf, "B")
-        await query.message.answer(
-            text, reply_markup=metrics_menu(source, tf), parse_mode=None
-        )
+        await show_cycles(query.message, source=source, timeframe=tf, owner=True, edit=True)
         return
     if target == "stats":
         if (len(action) not in (5, 7) or action[2] not in ("main",) + METHODS
@@ -1047,7 +1096,8 @@ async def callbacks(query: types.CallbackQuery):
         )
         messages = list(split_messages(text))
         for index, part in enumerate(messages):
-            await query.message.answer(
+            send = (lambda text, **kw: render_menu(query.message, text, **kw)) if len(messages) == 1 else query.message.answer
+            await send(
                 part,
                 reply_markup=(
                     metrics_menu(action[2], action[3], action[4], limit, period)
@@ -1067,7 +1117,7 @@ async def callbacks(query: types.CallbackQuery):
         return
     if target == "queue":
         await query.answer()
-        await show_queue(query.message)
+        await show_queue(query.message, edit=True)
         return
     if target == "item" and len(action) == 3 and action[2].isdigit():
         item = feedback().get(int(action[2]))
@@ -1082,7 +1132,8 @@ async def callbacks(query: types.CallbackQuery):
         buttons = [[(label, f"c:set:{item['id']}:{status}")]
                    for status, label in LABELS.items() if status != item["status"]]
         buttons.append([("Ответить", f"c:reply:{item['id']}")])
-        await query.message.answer(text, reply_markup=keyboard(buttons), parse_mode=None)
+        buttons.append([("◀ Предложения", "c:queue")])
+        await render_menu(query.message,text, reply_markup=keyboard(buttons), parse_mode=None)
         return
     if target == "set" and len(action) == 4 and action[2].isdigit():
         if action[3] not in STATUSES:
@@ -1097,7 +1148,7 @@ async def callbacks(query: types.CallbackQuery):
             return
         feedback().begin(query.from_user.id, "REPLY", int(action[2]))
         await query.answer()
-        await query.message.answer("Напиши ответ пользователю одним сообщением. Отмена: /cancel")
+        await render_menu(query.message,"Напиши ответ пользователю одним сообщением. Отмена: /cancel")
         return
     await query.answer("Неизвестная команда")
 

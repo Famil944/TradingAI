@@ -41,7 +41,7 @@ def _attempts(values):
     return attempts
 
 
-def main_signals(path, since=0):
+def main_signals(path, since=0, *, include_cancelled=False):
     """Read only delivered Bollinger cycles; never call the private wallet."""
     if not Path(path).is_file():
         return []
@@ -59,8 +59,9 @@ def main_signals(path, since=0):
             "json_extract(evidence,'$.attempt_outcomes') END AS attempts_json,"
             "sent_at,outcome,resolved_at FROM predictions "
             "WHERE sent_at IS NOT NULL AND sent_at >= ? "
-            "AND outcome NOT IN ('LATE','CANCELLED','NOT_DELIVERED') "
-            "ORDER BY created_at,id", (since,)
+            "AND (outcome NOT IN ('LATE','CANCELLED','NOT_DELIVERED') "
+            "OR (?=1 AND outcome='CANCELLED')) "
+            "ORDER BY created_at,id", (since, int(include_cancelled))
         ).fetchall()
     result = []
     for raw in rows:
@@ -86,7 +87,7 @@ def main_signals(path, since=0):
             entry_at=float(row["entry_at"]),
             expires_at=float(row["expires_at"]),
             resolved_at=float(row["resolved_at"] or row["expires_at"]),
-            outcome=_state(row["outcome"]),
+            outcome="CANCELLED" if include_cancelled and row["outcome"] == "CANCELLED" else _state(row["outcome"]),
             attempts=_attempts(attempts),
             provenance="OTCharts · сохранённый цикл; не подтверждено брокером",
         ))

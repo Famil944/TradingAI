@@ -17,6 +17,7 @@ class ConfigureEarlyShadowTests(unittest.TestCase):
                 encoding="utf-8",
             )
             env.chmod(0o600)
+            original_mode = stat.S_IMODE(env.stat().st_mode)
             self.assertTrue(configure(env, True))
             self.assertFalse(configure(env, True))
             contents = env.read_text(encoding="utf-8")
@@ -25,7 +26,7 @@ class ConfigureEarlyShadowTests(unittest.TestCase):
             self.assertIn("OTC_TEST_MODE=false", contents)
             self.assertEqual(contents.count("OTC_EARLY_SHADOW_ENABLED="), 1)
             self.assertIn("OTC_EARLY_SHADOW_ENABLED=true", contents)
-            self.assertEqual(stat.S_IMODE(env.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(env.stat().st_mode), original_mode)
             self.assertTrue(configure(env, False))
             self.assertIn("OTC_EARLY_SHADOW_ENABLED=false",
                           env.read_text(encoding="utf-8"))
@@ -58,7 +59,12 @@ class ConfigureEarlyShadowTests(unittest.TestCase):
             self.assertFalse(target.exists())
             real = root / "outside"
             real.write_text("DO_NOT_TOUCH=1\n", encoding="utf-8")
-            target.symlink_to(real)
+            try:
+                target.symlink_to(real)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("Windows requires symlink privileges for this check")
+                raise
             with self.assertRaises(ValueError):
                 configure(target, True)
             self.assertEqual(real.read_text(encoding="utf-8"), "DO_NOT_TOUCH=1\n")

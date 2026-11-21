@@ -34,6 +34,12 @@ class AnnouncementStoreTests(unittest.TestCase):
         self.assertFalse(self.store.vote(aid, 999, 0))  # Not a recipient.
         self.assertFalse(self.store.vote(aid, 42, 3))  # No such option.
 
+    def test_photo_survives_restart_and_caption_limit(self):
+        aid = self.store.create("notice", "Пост", [], [42], photo_file_id="photo123")
+        self.assertEqual(AnnouncementStore(self.store.path).get(aid)["photo_file_id"], "photo123")
+        with self.assertRaises(ValueError):
+            self.store.create("notice", "😀" * 600, [], [42], photo_file_id="photo123")
+
     def test_validation_and_announcements_have_no_votes(self):
         for options in (["Yes"], ["x", "x"], ["", "OK"], ["x"] * 9):
             with self.assertRaises(ValueError):
@@ -172,6 +178,28 @@ class PollComposerTests(unittest.TestCase):
 
 
 class AnnouncementFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_photo_preview_then_delivery(self):
+        owner_id = announcements.settings.admin_chat_id
+        msg = SimpleNamespace(from_user=SimpleNamespace(id=owner_id),
+                              caption="Текст с фото", media_group_id=None,
+                              photo=[SimpleNamespace(file_id="small"), SimpleNamespace(file_id="large")],
+                              answer=AsyncMock(), answer_photo=AsyncMock())
+        draft = {"kind": "notice", "phase": "body"}
+        announcements.drafts[owner_id] = draft
+        try:
+            await announcements.compose_photo(msg)
+            self.assertEqual(draft["phase"], "confirm")
+            msg.answer_photo.assert_awaited_once_with("large", caption="Текст с фото", parse_mode=None)
+            self.bot.send_message.assert_not_awaited()
+            aid = self.store.create("notice", draft["body"], [], [42, 43],
+                                    photo_file_id=draft["photo_file_id"])
+            self.bot.send_photo = AsyncMock()
+            await announcements.deliver(self.bot, aid)
+            self.bot.send_photo.assert_awaited_once_with(42, "large", caption="Текст с фото", parse_mode=None)
+            self.assertEqual(self.store.summary(aid)["delivery"], {"sent": 1, "skipped": 1})
+        finally:
+            announcements.drafts.pop(owner_id, None)
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

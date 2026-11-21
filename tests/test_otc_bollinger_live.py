@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import sqlite3
 import tempfile
@@ -182,7 +183,7 @@ class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
             clock[0] = 2400
             await engine.settle_pending({})
             self.assertEqual(journal.pending(), [])
-            with sqlite3.connect(journal.path) as db:
+            with closing(sqlite3.connect(journal.path)) as db, db:
                 state, evidence = db.execute(
                     "SELECT outcome,evidence FROM predictions WHERE id=?",
                     (identifier,),
@@ -217,7 +218,7 @@ class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
             clock[0] = 2500
             await engine.settle_pending({})
             self.assertEqual(journal.pending(), [])
-            with sqlite3.connect(journal.path) as db:
+            with closing(sqlite3.connect(journal.path)) as db, db:
                 state, evidence = db.execute(
                     "SELECT outcome,evidence FROM predictions WHERE id=?",
                     (identifier,),
@@ -239,7 +240,7 @@ class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
             clock[0] = 2581  # The settlement loop polls every two seconds.
             await engine.settle_pending({})
             self.assertEqual(journal.pending(), [])
-            with sqlite3.connect(journal.path) as db:
+            with closing(sqlite3.connect(journal.path)) as db, db:
                 state, evidence = db.execute(
                     "SELECT outcome,evidence FROM predictions WHERE id=?",
                     (identifier,),

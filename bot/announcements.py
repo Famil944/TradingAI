@@ -195,12 +195,16 @@ async def deliver(bot, aid):
                     continue
                 for attempt in range(2):
                     try:
-                        await bot.send_message(
-                            chat_id, display(entry),
-                            reply_markup=(vote_keyboard(aid, entry["options"])
-                                          if entry["kind"] == "poll" else None),
-                            parse_mode=None,
-                        )
+                        if entry.get("photo_file_id"):
+                            await bot.send_photo(chat_id, entry["photo_file_id"],
+                                                 caption=entry["body"], parse_mode=None)
+                        else:
+                            await bot.send_message(
+                                chat_id, display(entry),
+                                reply_markup=(vote_keyboard(aid, entry["options"])
+                                              if entry["kind"] == "poll" else None),
+                                parse_mode=None,
+                            )
                         await asyncio.to_thread(store().delivery_state, aid, chat_id, "sent")
                         break
                     except TelegramRetryAfter as exc:
@@ -278,6 +282,9 @@ def preview_controls(kind):
               else "✏️ Изменить сообщение", "a:question")]]
     if kind == "poll":
         rows.append([("↩️ Вернуться к вариантам", "a:back")])
+    else:
+        rows.append([("📷 Добавить / заменить фото", "a:photo"),
+                     ("Убрать фото", "a:nophoto")])
     rows.append([("❌ Отмена", "a:cancel")])
     return kb(rows)
 
@@ -318,6 +325,16 @@ def append_options(draft, content):
 
 
 async def show_preview(message, draft):
+    if draft.get("photo_file_id"):
+        if len(draft["body"].encode("utf-16-le")) // 2 > 1024:
+            draft["phase"] = "body"
+            await message.answer("Подпись слишком длинная для фото. Сократи текст (эмодзи могут занимать два символа).")
+            return
+        draft["phase"] = "confirm"
+        await message.answer_photo(draft["photo_file_id"], caption=draft["body"], parse_mode=None)
+        await message.answer("👁 Предпросмотр. Отправить пост?",
+                             reply_markup=preview_controls(draft["kind"]), parse_mode=None)
+        return
     draft["phase"] = "confirm"
     title = (
         "👁 Шаг 3 из 3. Проверь вопрос и ответы.\n"
@@ -350,6 +367,9 @@ async def compose(message: types.Message):
     draft = drafts[message.from_user.id]
     content = (message.text or "").strip()
     phase = draft["phase"]
+    if phase == "photo":
+        await message.answer("Жду одно фото. Для отмены поста: /cancel")
+        return
     if phase == "body":
         if not 1 <= len(content) <= 1000:
             await message.answer("Текст должен содержать от 1 до 1000 символов.")
@@ -382,6 +402,29 @@ async def compose(message: types.Message):
             "или «✏️ Изменить», если хочешь исправить текст.",
             reply_markup=preview_controls(draft["kind"]), parse_mode=None,
         )
+
+
+@router.message(F.photo, lambda m: owner(m.from_user, m) and m.from_user.id in drafts)
+async def compose_photo(message: types.Message):
+    draft = drafts[message.from_user.id]
+    if draft["kind"] != "notice":
+        await message.answer("Фото можно добавить в объявление. Продолжи создание опроса текстом.")
+        return
+    if message.media_group_id:
+        await message.answer("Пришли одно фото отдельным сообщением, без альбома.")
+        return
+    content = (message.caption or draft.get("body") or "").strip()
+    if content and (len(content) > 1000 or len(content.encode("utf-16-le")) // 2 > 1024):
+        await message.answer("Сократи подпись: до 1000 символов, с учётом лимита Telegram для эмодзи.")
+        return
+    draft["photo_file_id"] = message.photo[-1].file_id
+    draft["options"] = []
+    if not content:
+        draft["phase"] = "body"
+        await message.answer("📷 Фото добавлено. Теперь отправь текст поста. Отмена: /cancel")
+        return
+    draft["body"] = content
+    await show_preview(message, draft)
 
 
 @router.callback_query(F.data.startswith("a:"))
@@ -450,7 +493,7 @@ async def callbacks(query: types.CallbackQuery):
             ("📊 Шаг 1 из 3. Напиши вопрос для голосования одним сообщением.\n"
              "Например: «Стоит ли продолжать развивать TradingAI?»"
              if fields[2] == "poll" else
-             "✉️ Шаг 1 из 2. Напиши объявление одним сообщением.")
+             "✉️ Напиши текст поста или пришли одно фото с подписью. Фото можно добавить и после текста.")
             + "\n\nОтмена: /cancel",
             reply_markup=kb([[("❌ Отмена", "a:cancel")]]), parse_mode=None,
         )
@@ -487,6 +530,18 @@ async def callbacks(query: types.CallbackQuery):
         await query.answer()
         await message.answer(options_status(draft),
                              reply_markup=option_controls(), parse_mode=None)
+    elif action in ("photo", "nophoto"):
+        draft = drafts.get(user_id)
+        if not draft or draft["kind"] != "notice":
+            await query.answer("Черновик объявления не найден", show_alert=True)
+            return
+        await query.answer()
+        if action == "nophoto":
+            draft.pop("photo_file_id", None)
+            await show_preview(message, draft)
+        else:
+            draft["phase"] = "photo"
+            await message.answer("Пришли одно фото. Текст поста сохранится; подпись к новому фото заменит его. Отмена: /cancel")
     elif action == "question":
         draft = drafts.get(user_id)
         if not draft:
@@ -517,7 +572,8 @@ async def callbacks(query: types.CallbackQuery):
             return
         try:
             aid = await asyncio.to_thread(
-                store().create, draft["kind"], draft["body"], draft["options"], targets
+                store().create, draft["kind"], draft["body"], draft["options"], targets,
+                photo_file_id=draft.get("photo_file_id"),
             )
         except ValueError as exc:
             drafts[user_id] = draft

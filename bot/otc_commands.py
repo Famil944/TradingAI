@@ -95,27 +95,12 @@ def menu(chat_id, expanded=False):
                     InlineKeyboardButton(text="Запустить", callback_data="otc:start:0"),
                     InlineKeyboardButton(text="Остановить", callback_data="otc:stop"),
                 ],
-                [
-                    InlineKeyboardButton(
-                        text="Винрейт циклов", callback_data="otc:cyclestats:all:all"
-                    ),
-                    InlineKeyboardButton(
-                        text="Обновить", callback_data="otc:panel:show"
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="Виртуальный баланс", callback_data="otc:wallet:show"
-                    ),
-                    InlineKeyboardButton(
-                        text="📊 Стратегии", callback_data="c:sources"
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(text="🧪 Фоновый WR", callback_data="otc:earlywr:7"),
-                    InlineKeyboardButton(text="⚖️ Сравнить", callback_data="otc:earlyreport"),
-                ],
+                [InlineKeyboardButton(text="📊 Статистика S1–S4", callback_data="c:cycles:all:today:all:global")],
+                [InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users"),
+                 InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue")],
                 [InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")],
+                [InlineKeyboardButton(text="⚙️ Дополнительно", callback_data="otc:more"),
+                 InlineKeyboardButton(text="🔄 Обновить", callback_data="otc:panel:show")],
             ]
         )
     chosen = choices.get(chat_id, TIMEFRAMES)
@@ -265,12 +250,20 @@ def wallet_menu():
 
 
 @router.message(Command("virtual"))
-async def virtual_account(message: types.Message):
+async def menu_response(message, edit, text, **kwargs):
+    if edit:
+        from bot.community import render_menu
+        await render_menu(message, text, **kwargs)
+    else:
+        await message.answer(text, **kwargs)
+
+
+async def virtual_account(message: types.Message, *, edit=False):
     if not service or not hasattr(service, "cycle_preview"):
-        await message.answer("Виртуальный счёт ещё не запущен.")
+        await menu_response(message, edit,"Виртуальный счёт ещё не запущен.")
         return
     text = await asyncio.to_thread(service.cycle_preview.wallet.text)
-    await message.answer(text, reply_markup=wallet_menu(), parse_mode=None)
+    await menu_response(message, edit,text, reply_markup=wallet_menu(), parse_mode=None)
 
 
 @router.message(
@@ -301,9 +294,24 @@ async def edit_virtual_account(message: types.Message):
 MENU_TITLE = "TradingAI · OTC"
 
 
+def panel_text():
+    running = bool(service and service.running())
+    lines = ["TradingAI · 🟢 Работает" if running else "TradingAI · ⏸ Остановлен"]
+    last_tick = getattr(service, "last_tick", None)
+    age = time.time() - last_tick if last_tick is not None else None
+    lines.append(f"Котировки: {age:.0f} с назад" if age is not None and age >= 0 else "Котировки: нет данных")
+    frames = getattr(service, "timeframes", ()) if running else choices.get(settings.admin_chat_id, TIMEFRAMES)
+    lines.append("Экспирации: " + (", ".join(f"M{x // 60}" for x in frames) or "не выбраны"))
+    relay = getattr(getattr(service, "cycle_preview", None), "subscriber_relay", None)
+    if relay is not None:
+        counts = relay.store.dashboard_counts()
+        lines.append(f"👥 {counts['active']} · ▶️ {counts['sessions']} · 📨 {counts['pending']}")
+    return "\n".join(lines)
+
+
 @router.message(Command("otc"))
 async def show_menu(message: types.Message):
-    await message.answer(MENU_TITLE, reply_markup=menu(message.chat.id))
+    await message.answer(await asyncio.to_thread(panel_text), reply_markup=menu(message.chat.id), parse_mode=None)
 
 
 @router.message(Command("otc_status"))
@@ -497,15 +505,13 @@ def stats_menu(period="all", cycles=False):
     )
 
 
-async def early_report(message: types.Message):
-    from services.otc_early_lead import comparison, format_report
+async def early_report(message: types.Message, *, edit=False):
+    from services.otc_early_lead import comparison, format_compact_report
 
     path = ROOT / "data" / "early-lead-30-40.db"
     if not path.is_file():
-        await message.answer(
-            "🧪 Ранний тест пока не активирован. Добавь в локальный .env "
-            "OTC_EARLY_SHADOW_ENABLED=true и перезапусти бот. "
-            "Основные сигналы останутся прежними.",
+        await menu_response(message, edit,
+            "⚖️ Сравнение · 7 дней\nПока нет данных фонового теста.",
             parse_mode=None,
         )
         return
@@ -513,9 +519,12 @@ async def early_report(message: types.Message):
         groups = await asyncio.to_thread(
             comparison, ROOT, time.time() - 7 * 86400
         )
-        await message.answer(format_report(groups), parse_mode=None)
+        await menu_response(message, edit, format_compact_report(groups),
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="🔄 Обновить", callback_data="otc:earlyreport"),
+                                 InlineKeyboardButton(text="◀ Меню", callback_data="c:home")]]), parse_mode=None)
     except Exception as exc:
-        await message.answer(
+        await menu_response(message, edit,
             "🧪 Не удалось прочитать фоновую статистику: "
             + type(exc).__name__, parse_mode=None,
         )
@@ -534,12 +543,12 @@ def early_winrate_keyboard():
     ])
 
 
-async def early_winrate_report(message: types.Message, days=7):
+async def early_winrate_report(message: types.Message, days=7, *, edit=False):
     from services.otc_early_lead import early_winrate, format_early_winrate
 
     path = ROOT / "data" / "early-lead-30-40.db"
     if not path.is_file():
-        await message.answer(
+        await menu_response(message, edit,
             "🧪 Фоновый винрейт пока пуст. "
             "Включи OTC_EARLY_SHADOW_ENABLED=true на своём устройстве, "
             "перезапусти бота и запусти обычный OTC-сеанс. "
@@ -550,14 +559,14 @@ async def early_winrate_report(message: types.Message, days=7):
     try:
         since = time.time() - days * 86400 if days is not None else 0
         stats = await asyncio.to_thread(early_winrate, ROOT, since)
-        await message.answer(
+        await menu_response(message, edit,
             format_early_winrate(
                 stats, period=(f"{days} дней" if days is not None else "всё время")
             ),
             reply_markup=early_winrate_keyboard(), parse_mode=None,
         )
     except Exception as exc:
-        await message.answer(
+        await menu_response(message, edit,
             "🧪 Не удалось прочитать отдельный фоновый винрейт: "
             + type(exc).__name__, parse_mode=None,
         )
@@ -592,20 +601,29 @@ async def diagnostics(message: types.Message):
 
 @router.callback_query(F.data.startswith("otc:"))
 async def callback(query: types.CallbackQuery):
+    from bot.community import render_menu
     parts = (query.data or "").split(":")
     if len(parts) < 2:
         await query.answer("Неизвестное действие")
         return
     action = parts[1]
     chat = query.message.chat.id
+    if action == "more":
+        await query.answer()
+        await render_menu(query.message, "⚙️ Дополнительно", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚖️ Сравнение", callback_data="otc:earlyreport"),
+             InlineKeyboardButton(text="Виртуальный баланс", callback_data="otc:wallet:show")],
+            [InlineKeyboardButton(text="◀ Меню", callback_data="c:home")],
+        ]))
+        return
     if action == "earlyreport":
         await query.answer()
-        await early_report(query.message)
+        await early_report(query.message, edit=True)
         return
     if action == "earlywr" and len(parts) == 3 and parts[2] in ("7", "all"):
         await query.answer()
         await early_winrate_report(
-            query.message, days=(7 if parts[2] == "7" else None)
+            query.message, days=(7 if parts[2] == "7" else None), edit=True
         )
         return
     if action == "wallet" and len(parts) == 3:
@@ -613,7 +631,7 @@ async def callback(query: types.CallbackQuery):
         kind = parts[2]
         if kind in ("show", "cancel"):
             wallet_edits.pop(chat, None)
-            await virtual_account(query.message)
+            await virtual_account(query.message, edit=True)
         elif kind in ("balance", "stakes", "payout"):
             wallet_edits[chat] = kind
             prompt = {
@@ -621,7 +639,7 @@ async def callback(query: types.CallbackQuery):
                 "stakes": "Введите три виртуальные ставки через пробел, например 100 250 625. Уже начатые циклы сохранят прежние ставки.",
                 "payout": "Введите прибыль при WIN в процентах, например 92. Уже начатые циклы сохранят прежнюю выплату.",
             }[kind]
-            await query.message.answer(
+            await render_menu(query.message,
                 prompt,
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
@@ -638,7 +656,7 @@ async def callback(query: types.CallbackQuery):
         # Older Telegram messages can still contain legacy buttons.
         await query.answer()
         from bot.community import overview_text, sources
-        await query.message.answer(
+        await render_menu(query.message,
             await asyncio.to_thread(overview_text),
             reply_markup=sources(), parse_mode=None,
         )
@@ -650,14 +668,14 @@ async def callback(query: types.CallbackQuery):
         await query.answer()
         recovery = getattr(service, "unknown_recovery", None)
         if recovery is None:
-            await query.message.answer("Groq recovery ещё не запущен.")
+            await render_menu(query.message,"Groq recovery ещё не запущен.")
             return
         status = (
             recovery.groq.status()
             if recovery.groq is not None
             else "Groq recovery · API-ключ не подключён"
         )
-        await query.message.answer(
+        await render_menu(query.message,
             "🟣 UNKNOWN recovery\n"
             f"Последний проход: восстановлено {recovery.last_recovered}\n"
             f"Осталось символов с неизвестными исходами: {recovery.last_pending}\n"
@@ -670,7 +688,7 @@ async def callback(query: types.CallbackQuery):
     if action == "shadow":
         await query.answer()
         from bot.community import overview_text, sources
-        await query.message.answer(
+        await render_menu(query.message,
             await asyncio.to_thread(overview_text),
             reply_markup=sources(), parse_mode=None,
         )
@@ -678,8 +696,8 @@ async def callback(query: types.CallbackQuery):
     if action == "panel" and len(parts) == 3 and parts[2] in ("show", "hide"):
         await query.answer()
         expanded = parts[2] == "show"
-        text = MENU_TITLE
-        if expanded:
+        text = await asyncio.to_thread(panel_text)
+        if expanded and not getattr(getattr(service, "config", None), "cycles_only", False):
             text += "\n\n" + await asyncio.to_thread(strategy_status, service)
         keyboard = menu(chat, expanded)
         if query.message.text != text or query.message.reply_markup != keyboard:
@@ -747,13 +765,13 @@ async def callback(query: types.CallbackQuery):
             ]
         )
         if query.message.text != text:
-            await query.message.answer(text, reply_markup=keyboard)
+            await render_menu(query.message,text, reply_markup=keyboard)
         return
     if action in ("stats", "cycles"):
         cycles = action == "cycles"
         if len(parts) == 2:
             await query.answer()
-            await query.message.answer(
+            await render_menu(query.message,
                 "Выбери экспирацию:", reply_markup=stats_menu(cycles=cycles)
             )
         elif (
@@ -840,7 +858,7 @@ async def callback(query: types.CallbackQuery):
     elif action == "status" and len(parts) == 2:
         await query.answer()
         indicators = await asyncio.to_thread(strategy_status, service)
-        await query.message.answer(
+        await render_menu(query.message,
             MENU_TITLE + "\n\n" + indicators, reply_markup=menu(chat, True)
         )
     else:

@@ -1,3 +1,4 @@
+from contextlib import closing
 """Offline regression tests: public forecast stats and private suggestions."""
 import json
 import sqlite3
@@ -66,13 +67,12 @@ class StatisticsPeriodTests(unittest.TestCase):
                 week = community.compact_overview("all", "7d")
                 month = community.compact_overview("all", "30d")
                 m2 = community.compact_overview("2", "today")
-        self.assertIn("S1  M2 100.0% (n=1) · M5 — (n=0) · M15 — (n=0)", today)
-        self.assertIn("S1  M2 50.0% (n=2) · M5 — (n=0) · M15 — (n=0)", week)
-        self.assertIn("S1  M2 33.3% (n=3) · M5 — (n=0) · M15 — (n=0)", month)
+        self.assertIn("S1 · 100.0% · ✅ 1 / ❌ 0", today)
+        self.assertIn("S1 · 50.0% · ✅ 1 / ❌ 1", week)
+        self.assertIn("S1 · 33.3% · ✅ 1 / ❌ 2", month)
         self.assertIn("M2", m2)
         self.assertNotIn("Боллинджер", today)
-        self.assertIn("n=1", today)
-        self.assertNotIn("✅", today)
+        self.assertIn("✅ 1 / ❌ 0", today)
 
     def test_owner_and_subscribers_show_independent_m2_m5_m15_rates(self):
         from bot import community
@@ -91,18 +91,20 @@ class StatisticsPeriodTests(unittest.TestCase):
                            side_effect=lambda s: mapping.get(s, [])),
               patch.object(community, "stats_since", return_value=0),
               patch.object(community, "reset_note", return_value="")):
-            owner = community.overview_text("all")
+            owner = community.cycle_dashboard("main", period="all", owner=True)
+            other_detail = community.cycle_dashboard("bb_reentry", period="all", owner=True)
             subscribers = community.compact_overview("all", "all")
             m5 = community.compact_overview("5", "all")
-        self.assertIn("S1 Боллинджер ×3\nM2 50.0% (n=2) · M5 100.0% (n=1) · M15 — (n=1)", owner)
-        self.assertIn("S2 Боллинджер · возврат\nM2 0.0% (n=1) · M5 — (n=0) · M15 100.0% (n=1)", owner)
-        self.assertIn("S3 Пробой и ретест\nM2 — (n=0) · M5 — (n=0) · M15 — (n=0)", owner)
-        self.assertIn("S1  M2 50.0% (n=2) · M5 100.0% (n=1) · M15 — (n=1)", subscribers)
-        self.assertIn("S2  M2 0.0% (n=1) · M5 — (n=0) · M15 100.0% (n=1)", subscribers)
-        self.assertIn("S1  100.0%", m5)
-        self.assertIn("S2  —", m5)
-        self.assertNotIn("❔", owner)
-        self.assertNotIn("✅", owner)
+        self.assertIn("S1 · Боллинджер ×3", owner)
+        self.assertIn("M2 · 50.0% · ✅ 1 / ❌ 1", owner)
+        self.assertIn("M5 · 100.0% · ✅ 1 / ❌ 0", owner)
+        self.assertIn("M15 · —", owner)
+        self.assertIn("M2 · 0.0% · ✅ 0 / ❌ 1", other_detail)
+        self.assertIn("M15 · 100.0% · ✅ 1 / ❌ 0", other_detail)
+        self.assertIn("S1 · 66.7%", subscribers)
+        self.assertIn("S2 · 50.0%", subscribers)
+        self.assertIn("S1 · 100.0%", m5)
+        self.assertIn("S2 · —", m5)
         self.assertNotIn("H1", owner)
         self.assertNotIn("H1", subscribers)
 
@@ -111,10 +113,10 @@ class StatisticsPeriodTests(unittest.TestCase):
         subscriber = compact_periods("5", "7d")
         buttons = [b.callback_data for row in subscriber.inline_keyboard for b in row]
         for period in ("today", "7d", "30d", "all"):
-            self.assertIn(f"c:wr:{period}:5", buttons)
+            self.assertIn(f"c:cycles:all:{period}:5:global", buttons)
         owner = sources("30d")
         owner_buttons = [b.callback_data for row in owner.inline_keyboard for b in row]
-        self.assertIn("c:sources:30d", owner_buttons)
+        self.assertIn("c:cycles:all:30d:all:global", owner_buttons)
         details = metrics_menu("main")
         detail_buttons = [b.callback_data for row in details.inline_keyboard for b in row]
         self.assertIn("c:stats:main:all:B:10:30d", detail_buttons)
@@ -192,7 +194,7 @@ class ReadOnlyTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.source = self.root / "bollinger-cycles.db"
-        with sqlite3.connect(self.source) as db:
+        with closing(sqlite3.connect(self.source)) as db, db:
             db.execute("""
                 CREATE TABLE predictions(
                     id TEXT PRIMARY KEY,symbol TEXT,created_at REAL,entry_at REAL,
@@ -207,7 +209,7 @@ class ReadOnlyTests(unittest.TestCase):
             "attempt_outcomes": attempts or ["LOSS", "WIN", "PENDING"],
             "virtual": {"status": virtual, "stakes": [999999, 888888]},
         }
-        with sqlite3.connect(self.source) as db:
+        with closing(sqlite3.connect(self.source)) as db, db:
             db.execute("INSERT INTO predictions VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
                 identifier, "BTCOTC", now, now+20, now+380, "UP",
                 "bollinger-live-three-attempts-v1",
@@ -231,7 +233,7 @@ class ReadOnlyTests(unittest.TestCase):
 
     def test_unsupported_expiry_not_added(self):
         self.write("id1", 1000)
-        with sqlite3.connect(self.source) as db:
+        with closing(sqlite3.connect(self.source)) as db, db:
             payload = db.execute(
                 "SELECT evidence FROM predictions WHERE id='id1'"
             ).fetchone()[0]
@@ -288,7 +290,7 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
             (root / "data").mkdir()
             publisher = PublicPublisher(root, -100123)
             now = publisher.enabled_at + 1
-            with sqlite3.connect(root / "data/bollinger-cycles.db") as db:
+            with closing(sqlite3.connect(root / "data/bollinger-cycles.db")) as db, db:
                 db.execute("""
                     CREATE TABLE predictions(
                         id TEXT PRIMARY KEY,symbol TEXT,created_at REAL,entry_at REAL,
@@ -307,7 +309,7 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
             await publisher.update(bot)
             self.assertEqual(len(bot.sent), 1)
             self.assertNotIn("NEVER-LEAK", bot.sent[0])
-            with sqlite3.connect(root / "data/bollinger-cycles.db") as db:
+            with closing(sqlite3.connect(root / "data/bollinger-cycles.db")) as db, db:
                 db.execute("UPDATE predictions SET outcome='WIN' WHERE id='id1'")
             await publisher.update(bot)
             await publisher.update(bot)
@@ -335,7 +337,7 @@ class BatchRecoveryTests(unittest.IsolatedAsyncioTestCase):
             publisher = PublicPublisher(root, -1001234567)
             initial = publisher.enabled_at + 1
             journal = root / "data/bollinger-cycles.db"
-            with sqlite3.connect(journal) as db:
+            with closing(sqlite3.connect(journal)) as db, db:
                 db.execute("""
                     CREATE TABLE predictions(
                         id TEXT PRIMARY KEY,symbol TEXT,created_at REAL,entry_at REAL,
@@ -355,15 +357,15 @@ class BatchRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     ))
             bot = FakeBot()
             await publisher.update(bot)
-            with sqlite3.connect(publisher.path) as db:
+            with closing(sqlite3.connect(publisher.path)) as db, db:
                 initial_reports = db.execute("SELECT COUNT(*) FROM sent_batches").fetchone()[0]
             self.assertEqual(initial_reports, 3)  # A, B, C x 10 wins
             await publisher.update(bot)
-            with sqlite3.connect(publisher.path) as db:
+            with closing(sqlite3.connect(publisher.path)) as db, db:
                 self.assertEqual(
                     db.execute("SELECT COUNT(*) FROM sent_batches").fetchone()[0], 3
                 )
-            with sqlite3.connect(journal) as db:
+            with closing(sqlite3.connect(journal)) as db, db:
                 db.execute("UPDATE predictions SET outcome='WIN',evidence=? WHERE id='b0'", (
                     json.dumps({
                         "name": "Bitcoin OTC", "cycle_seconds": 120,
@@ -380,12 +382,12 @@ class BatchRecoveryTests(unittest.IsolatedAsyncioTestCase):
                         }), at+1, "WIN", at+380,
                     ))
             await publisher.update(bot)
-            with sqlite3.connect(publisher.path) as db:
+            with closing(sqlite3.connect(publisher.path)) as db, db:
                 self.assertEqual(
                     db.execute("SELECT COUNT(*) FROM sent_batches").fetchone()[0], 6
                 )
             await publisher.update(bot)
-            with sqlite3.connect(publisher.path) as db:
+            with closing(sqlite3.connect(publisher.path)) as db, db:
                 self.assertEqual(
                     db.execute("SELECT COUNT(*) FROM sent_batches").fetchone()[0], 6
                 )
@@ -421,7 +423,7 @@ class ExportTests(unittest.TestCase):
             root = Path(folder)
             (root / "data").mkdir()
             path = root / "data/bollinger-cycles.db"
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute("""
                     CREATE TABLE predictions(
                         id TEXT PRIMARY KEY,symbol TEXT,created_at REAL,entry_at REAL,

@@ -182,11 +182,12 @@ class PreviewJournal:
                 for r in db.execute("SELECT * FROM predictions WHERE outcome='PENDING'")
             ]
 
-    def cancel_future(self, now):
+    def cancel_future(self, now, *, preserve_sent=False):
         with contextlib.closing(sqlite3.connect(self.path, timeout=10)) as db:
             db.execute(
-                "UPDATE predictions SET outcome='CANCELLED' WHERE entry_at>? AND outcome='PENDING'",
-                (now,),
+                "UPDATE predictions SET outcome='CANCELLED' WHERE entry_at>? AND outcome='PENDING' "
+                "AND (?=0 OR sent_at IS NULL)",
+                (now, int(preserve_sent)),
             )
             db.commit()
 
@@ -424,7 +425,10 @@ class MLPreview:
         if self.planning and not self.planning.done():
             self.planning.cancel()
             await asyncio.gather(self.planning, return_exceptions=True)
-        await asyncio.to_thread(self.journal.cancel_future, self.clock())
+        await asyncio.to_thread(
+            self.journal.cancel_future, self.clock(),
+            preserve_sent=getattr(self, "preserve_delivered_on_stop", False),
+        )
 
     async def settle_pending(self, history):
         if self.audit_journal is not None and self.clock() >= self.next_audit_flush:
@@ -640,41 +644,39 @@ class MLPreview:
             await asyncio.to_thread(self.journal.card_updated, identifier)
 
     async def run(self, bot, chat_id):
-        next_card_update = 0
-        try:
+        async def maintain():
+            next_card_update = 0
             while True:
                 try:
+                    if self.snapshot:
+                        await self.settle_pending(self.snapshot[0])
                     if self.clock() >= next_card_update:
                         next_card_update = self.clock() + 10
                         await self.update_cards(bot, chat_id)
+                except Exception:
+                    logger.exception("Preview result maintenance failed")
+                await asyncio.sleep(0.5)
+
+        maintenance = asyncio.create_task(maintain())
+        try:
+            while True:
+                try:
                     if self.planning and self.planning.done():
-                        if not self.planning.cancelled():
-                            error = self.planning.exception()
-                            if error:
-                                logger.warning(
-                                    "XGBoost preview prediction: %s",
-                                    type(error).__name__,
-                                )
+                        if not self.planning.cancelled() and self.planning.exception():
+                            logger.warning("Preview planning failed: %s", type(self.planning.exception()).__name__)
                         self.planning = None
-                    if self.snapshot:
-                        history, assets, quotes, end = self.snapshot
-                        await self.settle_pending(history)
-                        now = self.clock()
-                        entry = int(now) // 60 * 60 + 60
-                        if (
-                            self.enabled
-                            and self.planning_window[0]
-                            <= entry - now
-                            <= self.planning_window[1]
+                    now = self.clock()
+                    entry = int(now) // 60 * 60 + 60
+                    if (self.snapshot and self.enabled
+                            and self.planning_window[0] <= entry - now <= self.planning_window[1]
                             and self.attempted != entry
-                            and (self.planning is None or self.planning.done())
-                        ):
-                            self.attempted = entry
-                            self.planning = asyncio.create_task(
-                                self.plan(bot, chat_id, self.snapshot)
-                            )
-                except Exception as exc:
-                    logger.warning("XGBoost preview loop: %s", type(exc).__name__)
+                            and (self.planning is None or self.planning.done())):
+                        self.attempted = entry
+                        self.planning = asyncio.create_task(self.plan(bot, chat_id, self.snapshot))
+                except Exception:
+                    logger.exception("Preview planning loop failed")
                 await asyncio.sleep(0.5)
         finally:
+            maintenance.cancel()
+            await asyncio.gather(maintenance, return_exceptions=True)
             await self.stop()

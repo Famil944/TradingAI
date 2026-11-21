@@ -25,18 +25,18 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 "bot.community.overview_text", return_value="📊 ЧЕТЫРЕ СТРАТЕГИИ"
             ):
                 await commands.callback(query)
-            message.answer.assert_awaited_once()
-            self.assertIn("ЧЕТЫРЕ СТРАТЕГИИ", message.answer.call_args.args[0])
+            message.edit_text.assert_awaited_once()
+            self.assertIn("ЧЕТЫРЕ СТРАТЕГИИ", message.edit_text.call_args.args[0])
             buttons = [
                 button.callback_data
-                for row in message.answer.call_args.kwargs["reply_markup"].inline_keyboard
+                for row in message.edit_text.call_args.kwargs["reply_markup"].inline_keyboard
                 for button in row
             ]
             self.assertTrue(all(
-                "c:source:" + code in buttons
+                "c:cycles:" + code + ":today:all:global" in buttons
                 for code in ("main", "bb_reentry", "break_retest", "ema_pullback")
             ))
-            message.edit_text.assert_not_awaited()
+            message.answer.assert_not_awaited()
 
     async def test_separate_source_stats_today_routes_and_preserves_period(self):
         from zoneinfo import ZoneInfo
@@ -50,7 +50,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 journal=journal, client=SimpleNamespace(status=lambda: "ready")
             )
             message = SimpleNamespace(
-                chat=SimpleNamespace(id=1), text="menu", answer=AsyncMock()
+                chat=SimpleNamespace(id=1), text="menu", answer=AsyncMock(), edit_text=AsyncMock()
             )
             query = SimpleNamespace(
                 data=f"otc:{action}:2:today", message=message, answer=AsyncMock()
@@ -69,7 +69,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             )
             buttons = [
                 b.callback_data
-                for row in message.answer.call_args.kwargs[
+                for row in message.edit_text.call_args.kwargs[
                     "reply_markup"
                 ].inline_keyboard
                 for b in row
@@ -121,10 +121,6 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             {c for c, _ in COMMANDS},
             {
                 "start",
-                "otc_stats",
-                "signal_stats",
-                "access",
-                "suggestions",
             },
         )
         commands.choices[1] = (300,)

@@ -76,6 +76,11 @@ def safe_card(row, live_cycle=None):
 
 def subscriber_card(row, live_cycle=None):
     """Minimal subscriber-only signal; owner and channel cards stay unchanged."""
+    if row["outcome"] == "CANCELLED":
+        return (f"⛔ СИГНАЛ {STRATEGY_IDS.get(row['strategy'], 'S?')} ОТМЕНЁН\n"
+                f"{row['symbol']} · M{row['seconds'] // 60}\n"
+                f"Планировался: {_ts(row['entry_at'])} МСК\n"
+                "Не входить по этой карточке. Цикл исключён из винрейта.")
     if live_cycle is not None and row["origin"] == "main":
         states = getattr(live_cycle, "card_cache", {}).get(
             row["id"].removeprefix("main:")

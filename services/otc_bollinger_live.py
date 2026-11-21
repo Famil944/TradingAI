@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from services.otc_candidate_research import CandidateJournal, TickSampler
 from services.otc_delivery_guard import check_data, claim, completed
+from services.otc_delivery_timing import MIN_LEAD, MAX_LEAD, in_window, send_timeout
 from services.otc_groq import fresh
 from services.otc_ml.preview import MLPreview, PreviewJournal, aligned_entry
 from services.otc_shadow_variants import pattern_directions
@@ -190,7 +191,7 @@ class CycleJournal(PreviewJournal):
 
 class BollingerCycles(MLPreview):
     label = "Боллинджер ×3"
-    planning_window = (15, 20)
+    planning_window = (MIN_LEAD, MAX_LEAD)
 
     def __init__(self, journal, clock=time.time, subscriber_relay=None):
         super().__init__(journal, None, clock)
@@ -244,7 +245,7 @@ class BollingerCycles(MLPreview):
         history, assets, quotes, end = snapshot
         now = self.clock()
         entry = int(now) // 60 * 60 + 60
-        if not 15 <= entry - now <= 20:
+        if not in_window(entry, now):
             return
         plans = []
         for seconds in self.allowed_timeframes:
@@ -286,7 +287,7 @@ class BollingerCycles(MLPreview):
             if (
                 (plan["symbol"], plan["cycle_seconds"]) in used
                 or not self.enabled
-                or not 15 <= plan["entry_at"] - self.clock() <= 20
+                or not in_window(plan["entry_at"], self.clock())
             ):
                 continue
             if check_data(plan, self.snapshot, self.clock()):
@@ -307,7 +308,7 @@ class BollingerCycles(MLPreview):
             if (
                 not claimed
                 or check_data(plan, self.snapshot, self.clock())
-                or not 15 <= plan["entry_at"] - self.clock() <= 20
+                or send_timeout(plan["entry_at"], self.clock()) <= 0
             ):
                 await asyncio.to_thread(self.journal.finish, identifier, "CANCELLED")
                 continue
@@ -319,11 +320,11 @@ class BollingerCycles(MLPreview):
             await asyncio.to_thread(self.research.record, [plan])
             self.sampler.register([plan], self.clock())
             try:
-                timeout = min(3, max(0.1, plan["entry_at"] - 15 - self.clock()))
+                timeout = send_timeout(plan["entry_at"], self.clock())
                 message = await asyncio.wait_for(
                     bot.send_message(chat_id, card(plan), parse_mode=None), timeout
                 )
-                late = not 15 <= plan["entry_at"] - self.clock() <= 20
+                late = not in_window(plan["entry_at"], self.clock())
                 sent_at = self.clock()
                 await asyncio.to_thread(
                     self.journal.sent,
@@ -334,27 +335,38 @@ class BollingerCycles(MLPreview):
                 )
                 if late:
                     await asyncio.to_thread(self.wallet.cancel, identifier)
+                    try:
+                        await asyncio.wait_for(bot.edit_message_text(
+                            "⚠️ Сигнал опоздал — НЕ ВХОДИТЬ.\n" + plan["name"],
+                            chat_id=chat_id, message_id=message.message_id,
+                            parse_mode=None,
+                        ), 3)
+                    except Exception:
+                        logger.warning("Could not mark a late S1 card")
                 elif self.subscriber_relay is not None:
-                    await self.subscriber_relay.publish_now(
-                        bot,
-                        dict(
-                            id="main:" + identifier,
-                            origin="main",
-                            strategy="bollinger_live",
-                            version=plan["model_sha256"],
-                            label=self.label,
-                            seconds=plan["cycle_seconds"],
-                            symbol=plan["name"],
-                            direction=plan["direction"],
-                            created_at=plan.get("observed_at", sent_at),
-                            sent_at=sent_at,
-                            entry_at=plan["entry_at"],
-                            expires_at=plan["expires_at"],
-                            resolved_at=plan["expires_at"],
-                            outcome="PENDING",
-                            attempts=[],
-                        ),
-                    )
+                    try:
+                        await self.subscriber_relay.publish_now(
+                            bot,
+                            dict(
+                                id="main:" + identifier,
+                                origin="main",
+                                strategy="bollinger_live",
+                                version=plan["model_sha256"],
+                                label=self.label,
+                                seconds=plan["cycle_seconds"],
+                                symbol=plan["name"],
+                                direction=plan["direction"],
+                                created_at=plan.get("observed_at", sent_at),
+                                sent_at=sent_at,
+                                entry_at=plan["entry_at"],
+                                expires_at=plan["expires_at"],
+                                resolved_at=plan["expires_at"],
+                                outcome="PENDING",
+                                attempts=[],
+                            ),
+                        )
+                    except Exception:
+                        logger.exception("Subscriber relay failed after confirmed S1 delivery")
                 logger.info(
                     "Bollinger cycle sent: %s M%d lead=%.1f",
                     plan["symbol"],
@@ -373,8 +385,12 @@ class BollingerCycles(MLPreview):
             return
         self.next_flush = self.clock() + 2
         await self.flush()
-        _, prices = await asyncio.to_thread(load, self.research.path, 0, self.clock())
-        for row in await asyncio.to_thread(self.journal.pending):
+        pending = await asyncio.to_thread(self.journal.pending)
+        if not pending:
+            return
+        since = min(row["entry_at"] for row in pending)
+        _, prices = await asyncio.to_thread(load, self.research.path, since, self.clock())
+        for row in pending:
             plan = json.loads(row["evidence"])
             if row.get("sent_at") is None and self.clock() >= row["entry_at"]:
                 await asyncio.to_thread(self.wallet.cancel, row["id"])
@@ -421,7 +437,7 @@ class BollingerCycles(MLPreview):
                 outcomes = list(plan["attempt_outcomes"])
             elif outcomes is None:
                 _, prices = await asyncio.to_thread(
-                    load, self.research.path, 0, self.clock()
+                    load, self.research.path, plan["entry_at"], self.clock()
                 )
                 attempts, _, _ = await asyncio.to_thread(
                     evaluate_cycle,

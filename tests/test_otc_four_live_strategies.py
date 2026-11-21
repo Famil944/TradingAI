@@ -1,9 +1,12 @@
+from contextlib import closing
 """Four independently delivered strategies: causality, isolation, concise UI."""
 import sqlite3
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from services.otc_candidate_research import CandidateJournal
 from services.otc_community_cycles import VERSION
@@ -55,19 +58,42 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         self.publisher = LiveStrategyPublisher(
             self.root, clock=lambda: self.now[0]
         )
-        # Publisher starts while S1's 15-20s window is still open; S2-S4
-        # become actionable after that priority window.
-        self.now[0] = 1007
+        # All four strategies now share the 15-20s delivery window.
+        self.now[0] = 1001
         self.bot = FakeBot()
 
-    async def test_secondary_strategies_wait_for_s1_to_have_first_choice(self):
+    async def test_secondary_strategies_share_s1_delivery_window(self):
         self.candidates.record([candidate("bb_reentry", "BTC")])
         self.now[0] = 1001
         await self.publisher.publish(self.bot, 777)
-        self.assertEqual(self.bot.sent, [])
+        self.assertEqual(len(self.bot.sent), 1)
         self.now[0] = 1007
         await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 1)
+
+    async def test_independent_sends_do_not_wait_for_other_telegram_replies(self):
+        self.candidates.record([
+            candidate("bb_reentry", "BTC", seconds=120),
+            candidate("break_retest", "ETH", seconds=300),
+            candidate("ema_pullback", "AUDCHF", seconds=900),
+        ])
+        started = []
+        ready = asyncio.Event()
+        async def send(*args, **kwargs):
+            started.append(args)
+            if len(started) == 3:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), 1)
+            return SimpleNamespace(message_id=len(started))
+        self.bot.send_message = send
+        await self.publisher.publish(self.bot, 777)
+        self.assertEqual(len(load_live_signals(self.publisher.journal.path)), 3)
+
+    async def test_runtime_rejects_candidate_when_live_snapshot_is_unavailable(self):
+        self.candidates.record([candidate("bb_reentry", "BTC")])
+        self.publisher.snapshot_provider = lambda: None
+        await self.publisher.publish(self.bot, 777)
+        self.assertEqual(self.bot.sent, [])
 
     async def test_different_strategies_and_timeframes_can_deliver_in_parallel(self):
         self.candidates.record([
@@ -118,14 +144,14 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         self.candidates.record([candidate(
             "break_retest", "BTC", observed=1180, entry=1200
         )])
-        self.now[0] = 1187
+        self.now[0] = 1181
         await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 2)
         # A second S3 M2 waits until the S3 M2 cycle ends at 1560.
         self.candidates.record([candidate(
             "break_retest", "ETH", observed=1360, entry=1380
         )])
-        self.now[0] = 1367
+        self.now[0] = 1361
         await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 2)
         # The candidate journal retains the rejected ETH proposal at 1380,
@@ -133,7 +159,7 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         self.candidates.record([candidate(
             "break_retest", "AUDCAD", observed=1540, entry=1560
         )])
-        self.now[0] = 1547
+        self.now[0] = 1541
         await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 3)
 
@@ -260,7 +286,7 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
             store = Subscribers(root / "data" / "subscribers.db")
             store.subscribe(41, now=990)
             store.grant(41, now=990)
-            relay = SubscriberRelay(root, store=store, clock=lambda: 1005)
+            relay = SubscriberRelay(root, store=store, clock=lambda: 1004)
             await relay.update(bot)
             self.assertEqual(bot.sent, [])
 
@@ -275,7 +301,7 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
             store = Subscribers(root / "data" / "subscribers.db")
             store.subscribe(41, now=990)
             store.grant(41, now=990)
-            relay = SubscriberRelay(root, store=store, clock=lambda: 1005)
+            relay = SubscriberRelay(root, store=store, clock=lambda: 1004)
             await relay.update(bot)
             self.assertEqual(len(bot.sent), 1)
             self.assertIn("S3", bot.sent[0][1])
@@ -307,7 +333,7 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             archive = root / "market-history.db"
-            with sqlite3.connect(archive) as db:
+            with closing(sqlite3.connect(archive)) as db, db:
                 db.execute(
                     "CREATE TABLE bars("
                     "symbol TEXT,time INTEGER,open REAL,source TEXT,revisions INTEGER)"
@@ -324,7 +350,7 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(state, "WIN")
             self.assertEqual(attempts, ["WIN"])
             self.assertEqual(sources, ["otcharts_history"])
-            with sqlite3.connect(archive) as db:
+            with closing(sqlite3.connect(archive)) as db, db:
                 db.execute("UPDATE bars SET revisions=1 WHERE time=1140")
             attempts, sources, state = evaluate_cycle(
                 row, {}, 1400, archive
@@ -334,7 +360,7 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
     def test_unknown_recovery_does_not_fabricate_unentered_coverage(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "market-history.db"
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute(
                     "CREATE TABLE bars("
                     "symbol TEXT,time INTEGER,open REAL,source TEXT,revisions INTEGER)"
@@ -354,7 +380,7 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sources, ["otcharts_history"])
             # No synthetic attempt 2/3: cycle remains UNKNOWN.
             self.assertEqual(state, "UNKNOWN")
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute("UPDATE bars SET open=101 WHERE time=1140")
             attempts, _, state = reconcile_unknown(record, {}, 1700, path)
             self.assertEqual(attempts, ["WIN"])
@@ -368,15 +394,15 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
                 for row in community.sources().inline_keyboard
                 for button in row
             ]
-            self.assertEqual(sum("①" in x or "②" in x or "③" in x or "④" in x
-                                 for x in labels), 4)
+            self.assertEqual(sum(x in ("S1", "S2", "S3", "S4") for x in labels), 4)
             self.assertFalse(any("ФОН" in x for x in labels))
-            self.assertLessEqual(len(community.sources().inline_keyboard), 3)
-            overview = community.overview_text()
-            self.assertIn("Винрейт", overview)
-            self.assertEqual(overview.count("M2 "), 4)
-            self.assertEqual(overview.count("M5 "), 4)
-            self.assertEqual(overview.count("M15 "), 4)
+            with patch.object(community, "snapshots", return_value=[]), \
+                 patch.object(community, "stats_since", return_value=0), \
+                 patch.object(community, "reset_note", return_value=""):
+                overview = community.overview_text()
+            self.assertIn("📊 Винрейт", overview)
+            self.assertEqual(overview.count("✅ 0 / ❌ 0"), 4)
+
 
 
 if __name__ == "__main__":

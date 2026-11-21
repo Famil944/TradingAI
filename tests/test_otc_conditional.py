@@ -278,7 +278,7 @@ class ConditionalSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(setup(broken, self.at))
         self.provider.usage = AsyncMock(
             return_value=AccessPlan(
-                "fake", 100, 100, "day", self.at + 999, 0, 1, 5, ("otc",)
+                "fake", 1000, 1000, "day", self.at + 999, 0, 1, 5, ("otc",)
             )
         )
         future = Candle(self.at, 1, 1, 1, 1)
@@ -294,7 +294,7 @@ class ConditionalSessionTests(unittest.IsolatedAsyncioTestCase):
 
         self.provider.usage = AsyncMock(
             return_value=AccessPlan(
-                "fake", 100, 100, "day", self.at + 999, 0, 1, 5, ("otc",)
+                "fake", 1000, 1000, "day", self.at + 999, 0, 1, 5, ("otc",)
             )
         )
         self.provider.candles = AsyncMock(return_value=self.bars)

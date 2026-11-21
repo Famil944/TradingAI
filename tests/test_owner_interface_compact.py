@@ -24,7 +24,7 @@ class OwnerMenuTests(unittest.IsolatedAsyncioTestCase):
             for row in keyboard.inline_keyboard
             for button in row
         ]
-        self.assertEqual(targets, ["c:sources", "c:users", "c:queue", "c:owner"])
+        self.assertEqual(targets, ["c:cycles:all:today:all:global", "c:users", "c:queue", "c:owner"])
         self.assertNotIn("c:suggest", targets)
 
     def test_owner_panel_has_compact_navigation(self):
@@ -69,7 +69,7 @@ class OwnerMenuTests(unittest.IsolatedAsyncioTestCase):
              patch.object(community, "show_queue", new_callable=AsyncMock) as queue, \
              patch.object(community, "feedback") as feedback:
             await community.callbacks(query)
-        queue.assert_awaited_once_with(msg)
+        queue.assert_awaited_once_with(msg, edit=True)
         feedback.assert_not_called()
 
     async def test_owner_old_unfinished_suggestion_cannot_be_submitted(self):

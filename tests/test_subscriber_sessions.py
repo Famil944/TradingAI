@@ -28,7 +28,7 @@ def live_signal(index, sent_at):
         id=f"live-{index}", origin="live", strategy="bb_reentry",
         label="Test private", version="v1", seconds=120,
         symbol="TEST OTC", direction="UP", created_at=sent_at - 5,
-        sent_at=sent_at, entry_at=sent_at + 30, expires_at=sent_at + 390,
+        sent_at=sent_at, entry_at=sent_at + 20, expires_at=sent_at + 390,
         resolved_at=sent_at + 390, outcome="PENDING", attempts=[],
     )
 
@@ -139,15 +139,15 @@ class SessionRelayTests(unittest.IsolatedAsyncioTestCase):
             t = at()
             approved(store, t)
             store.record_interaction(42, "Тест <User>", "", "tester42", now=t)
-            message = SimpleNamespace(answer=AsyncMock())
+            message = SimpleNamespace(answer=AsyncMock(), edit_text=AsyncMock())
             with patch.object(community, "subscribers", return_value=store):
                 await community.show_access(message)
                 await community.show_user(message, 42)
-            output = "\n".join(str(c.args[0]) for c in message.answer.call_args_list)
+            output = "\n".join(str(c.args[0]) for c in message.answer.call_args_list + message.edit_text.call_args_list)
             self.assertIn("Тест &lt;User&gt;", output)
             self.assertIn("https://t.me/tester42", output)
-            self.assertIn("Действий за 7 дней: 1", output)
-            self.assertIn("не время чтения", output)
+            self.assertIn("Действия / 7д: 1 · сигналы: 0", output)
+            self.assertIn("Был в боте:", output)
 
 
 if __name__ == "__main__":

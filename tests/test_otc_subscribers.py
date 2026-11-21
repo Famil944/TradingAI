@@ -1,3 +1,4 @@
+from contextlib import closing
 """Regression tests for viewer-only menus, opt-in signal relay and privacy."""
 import json
 import sqlite3
@@ -16,7 +17,7 @@ from services.otc_strategies_live import LiveStrategyJournal, display_name, load
 
 def journal(path, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("""
             CREATE TABLE predictions(
                 id TEXT PRIMARY KEY, symbol TEXT, created_at REAL, entry_at REAL,
@@ -66,7 +67,7 @@ class DisplayNameTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "community-live.db"
             # Simulate a pre-update database without display_name.
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute("""
                     CREATE TABLE signals(
                         id TEXT PRIMARY KEY,
@@ -114,7 +115,7 @@ class SubscriberStoreTests(unittest.TestCase):
     def test_legacy_subscribers_require_new_consent_and_owner_approval(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "users.db"
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute(
                     "CREATE TABLE subscribers(chat_id INTEGER PRIMARY KEY,"
                     "enabled INTEGER NOT NULL DEFAULT 1,subscribed_at REAL NOT NULL,"
@@ -209,7 +210,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             journal(root / "data" / "bollinger-cycles.db", [
                 {"id": "new", "created": 1000, "outcome": "PENDING"}
             ])
-            current = [1005]
+            current = [1004]
             relay = SubscriberRelay(root, store=store, clock=lambda: current[0])
             bot = FakeBot()
             await relay.update(bot)
@@ -217,7 +218,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bot.sent[0][0], 41)
             self.assertNotIn("DO_NOT_DISCLOSE", bot.sent[0][1])
             self.assertNotIn("123456", bot.sent[0][1])
-            with sqlite3.connect(root / "data" / "bollinger-cycles.db") as db:
+            with closing(sqlite3.connect(root / "data" / "bollinger-cycles.db")) as db, db:
                 db.execute(
                     "UPDATE predictions SET outcome='WIN',evidence=? WHERE id='new'",
                     (json.dumps({
@@ -237,17 +238,17 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             store = Subscribers(root / "data" / "subscribers.db")
-            store.subscribe(41, now=1005)
-            store.grant(41, now=1005)
+            store.subscribe(41, now=1001)
+            store.grant(41, now=1001)
             journal(root / "data" / "bollinger-cycles.db", [
                 {"id": "new_after_join", "created": 1000, "outcome": "PENDING"}
             ])
-            with sqlite3.connect(root / "data" / "bollinger-cycles.db") as db:
+            with closing(sqlite3.connect(root / "data" / "bollinger-cycles.db")) as db, db:
                 db.execute(
                     "UPDATE predictions SET sent_at=? WHERE id=?",
-                    (1006, "new_after_join"),
+                    (1002, "new_after_join"),
                 )
-            relay = SubscriberRelay(root, store=store, clock=lambda: 1007)
+            relay = SubscriberRelay(root, store=store, clock=lambda: 1003)
             bot = FakeBot()
             await relay.update(bot)
             self.assertEqual(len(bot.sent), 1)
@@ -259,7 +260,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             store = Subscribers(root / "data" / "subscribers.db")
             store.subscribe(41, now=990)
             store.grant(41, now=990)
-            relay = SubscriberRelay(root, store=store, clock=lambda: 1005)
+            relay = SubscriberRelay(root, store=store, clock=lambda: 1004)
             bot = FakeBot()
             for index, label in enumerate((
                 "Боллинджер ×3",
@@ -272,7 +273,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "id": f"signal-{index}",
                         "origin": "main" if index == 0 else "live",
-                        "strategy": "bollinger_live" if index == 0 else "test",
+                        "strategy": ("bollinger_live", "bb_reentry", "break_retest", "ema_pullback")[index],
                         "version": "v1",
                         "label": label,
                         "seconds": 120,
@@ -289,7 +290,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
                 )
             self.assertEqual(len(bot.sent), 4)
             self.assertTrue(all("TEST OTC" in text for _, text in bot.sent))
-            self.assertTrue(all(" · S" in text for _, text in bot.sent))
+            self.assertTrue(all("СИГНАЛ S" in text for _, text in bot.sent))
             self.assertTrue(all("Итог: ⏳" in text for _, text in bot.sent))
 
     async def test_no_backfill_and_disabled_user_cannot_receive(self):
@@ -337,7 +338,7 @@ class LiveAttemptTests(unittest.IsolatedAsyncioTestCase):
             ])
             live = SimpleNamespace(card_cache={"pending1": ["LOSS", "PENDING", "PENDING"]})
             relay = SubscriberRelay(
-                root, store=store, clock=lambda: 1005, live_cycle=live
+                root, store=store, clock=lambda: 1004, live_cycle=live
             )
             bot = FakeBot()
             await relay.update(bot)
@@ -362,7 +363,7 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
                 data="c:accept", bot=bot,
                 from_user=SimpleNamespace(id=41, username="tester"),
                 message=SimpleNamespace(
-                    chat=SimpleNamespace(id=41, type="private"), answer=AsyncMock()
+                    chat=SimpleNamespace(id=41, type="private"), answer=AsyncMock(), edit_text=AsyncMock()
                 ),
                 answer=AsyncMock(),
             )
@@ -401,15 +402,15 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
     def test_compact_winrate_excludes_pending_unknown_draw(self):
         from bot import community
         data = [
-            dict(seconds=120, outcome=outcome)
+            dict(seconds=120, outcome=outcome, sent_at=1000, attempts=[])
             for outcome in ("WIN", "LOSS", "UNKNOWN", "DRAW", "PENDING")
         ]
-        with patch.object(community, "snapshots", return_value=data):
+        with patch.object(community, "snapshots", return_value=data), patch.object(community, "stats_since", return_value=0), patch.object(community, "reset_note", return_value=""):
             text = community.compact_overview("2")
         self.assertEqual(text.count("50.0%"), 4)
-        self.assertIn("S1  50.0%", text)
-        self.assertIn("n=5", text)
-        self.assertNotIn("✅", text)
+        self.assertIn("S1 · 50.0% · ✅ 1 / ❌ 1", text)
+        self.assertIn("⏳ 1 · ➖ 1 · ❔ 1", text)
+        self.assertIn("WR = ✅ / (✅ + ❌)", text)
         self.assertNotIn("UNKNOWN", text)
         self.assertNotIn("Боллинджер", text)
 

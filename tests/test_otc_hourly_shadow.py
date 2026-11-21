@@ -1,3 +1,4 @@
+from contextlib import closing
 """Causal H1 shadow tests: a single 60-minute result, never Telegram delivery."""
 import asyncio
 import sqlite3
@@ -82,7 +83,7 @@ class HourlyCausalityTests(unittest.TestCase):
     def test_archive_does_not_accept_retroactively_imported_history(self):
         with tempfile.TemporaryDirectory() as root:
             dbpath = Path(root) / "archive.db"
-            with sqlite3.connect(dbpath) as db:
+            with closing(sqlite3.connect(dbpath)) as db, db:
                 db.execute("CREATE TABLE bars("
                     "symbol TEXT,time INTEGER,open REAL,high REAL,low REAL,close REAL,"
                     "first_observed REAL,last_observed REAL,revisions INTEGER,source TEXT)")
@@ -99,7 +100,7 @@ class HourlyCausalityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             archive = Path(root) / "data" / "market-history.db"
             archive.parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(archive) as db:
+            with closing(sqlite3.connect(archive)) as db, db:
                 db.execute(
                     "CREATE TABLE bars(symbol TEXT,time INTEGER,open REAL,"
                     "high REAL,low REAL,close REAL,first_observed REAL,"

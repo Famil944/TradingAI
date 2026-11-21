@@ -1,3 +1,4 @@
+from contextlib import closing
 """Early 30-40s experiment must stay prospective and isolated from live delivery."""
 import asyncio
 import json
@@ -100,7 +101,7 @@ class EarlyPlanningTests(unittest.TestCase):
             ])
             main = CycleJournal(root / "data" / "bollinger-cycles.db",
                                 per_horizon=True)
-            with sqlite3.connect(main.path) as db:
+            with closing(sqlite3.connect(main.path)) as db, db:
                 db.execute(
                     "INSERT INTO predictions "
                     "(id,symbol,created_at,entry_at,expires_at,direction,payout,"
@@ -111,7 +112,7 @@ class EarlyPlanningTests(unittest.TestCase):
                      ENTRY - 17, "WIN"),
                 )
             other = LiveStrategyJournal(root / "data" / "community-live.db")
-            with sqlite3.connect(other.path) as db:
+            with closing(sqlite3.connect(other.path)) as db, db:
                 db.execute(
                     "INSERT INTO signals "
                     "(id,strategy,symbol,seconds,created_at,entry_at,expires_at,"
@@ -158,7 +159,7 @@ class EarlyPlanningTests(unittest.TestCase):
                            expires_at=r["expires_at"] + 360,
                            observed_at=NOW + 360) for r in rows]
             self.assertEqual(len(store.record(moved2)), 4)
-            with sqlite3.connect(store.path) as db:
+            with closing(sqlite3.connect(store.path)) as db, db:
                 self.assertEqual(db.execute("SELECT count(*) FROM candidates").fetchone()[0], 8)
                 self.assertEqual(db.execute("SELECT count(*) FROM early_slots").fetchone()[0], 8)
 

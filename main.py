@@ -38,18 +38,13 @@ from services.otc_unknown_recovery import UnknownRecovery
 # available through inline buttons and existing commands.
 COMMANDS = [
     ("start", "Главное меню"),
-    ("signal_stats", "Винрейт S1–S4"),
-    ("otc_stats", "Виртуальная статистика"),
-    ("access", "Пользователи"),
-    ("suggestions", "Предложения пользователей"),
 ]
 
 # Menu commands are a convenience only; the owner-only middleware is the
 # actual authorization boundary. Never advertise trading controls to viewers.
 SUBSCRIBER_COMMANDS = [
-    ("start", "Запросить доступ"),
+    ("start", "Главное меню и доступ"),
     ("help", "О сигналах и рисках"),
-    ("signal_stats", "Винрейт S1–S4"),
 ]
 
 
@@ -186,7 +181,7 @@ async def main(*, session_minutes=None, session_end=None):
     cycle_journal = CycleJournal(
         ROOT / "data" / "bollinger-cycles.db", label="Боллинджер ×3", per_horizon=True
     )
-    await asyncio.to_thread(cycle_journal.cancel_future, time.time())
+    await asyncio.to_thread(cycle_journal.cancel_future, time.time(), preserve_sent=True)
     cycles = BollingerCycles(cycle_journal, subscriber_relay=subscriber_relay)
     subscriber_relay.live_cycle = cycles
     service.cycle_preview = cycles
@@ -275,6 +270,8 @@ async def main(*, session_minutes=None, session_end=None):
             await service._notify(bot, text + "\n\n" + indicators)
         await dp.start_polling(bot, close_bot_session=False)
     finally:
+        # Shutdown/restart is not an owner cancellation of published signals.
+        cycles.preserve_delivered_on_stop = True
         await announcements.stop_workers()
         strategy_task.cancel()
         await asyncio.gather(strategy_task, return_exceptions=True)

@@ -21,12 +21,13 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from services.otc_public_broadcast import subscriber_card
 from services.otc_public_stats import main_signals
 from services.otc_strategies_live import load_live_signals
+from services.otc_delivery_timing import MIN_LEAD, in_window, send_timeout
 
 LOG = logging.getLogger(__name__)
 
 # The owner gets original private cards through the existing strategy.
 # A subscriber is never sent a stale, already-entered signal as a new entry.
-MIN_ENTRY_LEAD_SECONDS = 3
+MIN_ENTRY_LEAD_SECONDS = MIN_LEAD
 MAX_SEND_AGE_SECONDS = 90
 POLL_SECONDS = 2  # fallback/reconciliation only; new signals are pushed immediately
 MAX_USERS_PER_TICK = 200
@@ -92,6 +93,19 @@ class Subscribers:
                 );
                 CREATE INDEX IF NOT EXISTS deliveries_signal_id
                     ON deliveries(signal_id);
+                CREATE TABLE IF NOT EXISTS delivery_attempts(
+                    chat_id INTEGER NOT NULL,
+                    signal_id TEXT NOT NULL,
+                    attempted_at REAL NOT NULL,
+                    PRIMARY KEY(chat_id,signal_id)
+                );
+                CREATE TABLE IF NOT EXISTS access_grants(
+                    request_key TEXT PRIMARY KEY,
+                    chat_id INTEGER NOT NULL,
+                    days INTEGER NOT NULL,
+                    granted_at REAL NOT NULL,
+                    expires_at REAL NOT NULL
+                );
             """)
             fields = {row[1] for row in db.execute("PRAGMA table_info(deliveries)")}
             if "content_sha" not in fields:
@@ -170,13 +184,17 @@ class Subscribers:
             state = "new"
         return dict(state=state, expires_at=expires_at, trial_used=bool(trial_used))
 
-    def grant(self, chat_id, days=TRIAL_DAYS, now=None):
+    def grant(self, chat_id, days=TRIAL_DAYS, now=None, *, request_key=None, approval_only=False):
         """Owner-only caller. Reapproval/renewal never grants a second free trial."""
         if not isinstance(days, int) or not 1 <= days <= 365:
             raise ValueError("Срок доступа: от 1 до 365 дней")
         now = time.time() if now is None else float(now)
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
+            if request_key is not None and db.execute(
+                "SELECT 1 FROM access_grants WHERE request_key=?", (request_key,)
+            ).fetchone():
+                raise ValueError("Эта выдача доступа уже выполнена. Для нового продления откройте карточку пользователя заново.")
             row = db.execute(
                 "SELECT status,accepted_at,expires_at FROM subscribers WHERE chat_id=?",
                 (chat_id,),
@@ -184,6 +202,8 @@ class Subscribers:
             if not row or row[1] is None or row[0] == "blocked":
                 db.rollback()
                 raise ValueError("Нет принятой заявки или пользователь заблокирован")
+            if approval_only and row[0] == "approved" and row[2] and row[2] > now:
+                raise ValueError("Доступ уже одобрен. Продление доступно отдельно в карточке пользователя.")
             expiry = max(now, row[2] or 0) + days * DAY
             db.execute(
                 "UPDATE subscribers SET status='approved',enabled=1,"
@@ -191,6 +211,11 @@ class Subscribers:
                 "reminded_at=NULL,expired_notice_at=NULL WHERE chat_id=?",
                 (expiry, now, now, chat_id),
             )
+            if request_key is not None:
+                db.execute(
+                    "INSERT INTO access_grants VALUES(?,?,?,?,?)",
+                    (request_key, chat_id, days, now, expiry),
+                )
             db.commit()
             return expiry
 
@@ -338,7 +363,7 @@ class Subscribers:
             )
             db.commit()
 
-    def member_profiles(self, limit=30):
+    def member_profiles(self, limit=30, offset=0):
         """Existing members, with last known public Telegram profile and delivery count."""
         with closing(self._connect()) as db:
             db.row_factory = sqlite3.Row
@@ -350,10 +375,28 @@ class Subscribers:
                 "FROM subscribers s LEFT JOIN subscriber_profiles p ON p.chat_id=s.chat_id "
                 "LEFT JOIN subscriber_sessions t ON t.chat_id=s.chat_id "
                 "ORDER BY CASE WHEN s.status='pending' AND s.accepted_at IS NOT NULL "
-                "THEN 0 ELSE 1 END, s.updated_at DESC LIMIT ?",
-                (limit,),
+                "THEN 0 ELSE 1 END, s.updated_at DESC,s.chat_id LIMIT ? OFFSET ?",
+                (limit, offset),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def dashboard_counts(self, now=None):
+        now = time.time() if now is None else now
+        with closing(self._connect()) as db:
+            pending, active, sessions = db.execute(
+                "SELECT COALESCE(SUM(s.status='pending' AND s.accepted_at IS NOT NULL),0),"
+                "COALESCE(SUM(s.status='approved' AND s.expires_at>?),0),"
+                "COALESCE(SUM(s.status='approved' AND s.enabled=1 AND s.expires_at>? "
+                "AND t.expires_at>?),0) FROM subscribers s "
+                "LEFT JOIN subscriber_sessions t ON t.chat_id=s.chat_id", (now, now, now)
+            ).fetchone()
+            attempted, confirmed = db.execute(
+                "SELECT COUNT(*),COUNT(d.signal_id) FROM delivery_attempts a "
+                "LEFT JOIN deliveries d ON d.chat_id=a.chat_id AND d.signal_id=a.signal_id "
+                "WHERE a.attempted_at>=?", (now - DAY,)
+            ).fetchone()
+        return dict(pending=pending, active=active, sessions=sessions,
+                    attempted=attempted, confirmed=confirmed)
 
     def profiles(self, chat_ids):
         """Fetch existing opt-in Telegram profile labels for an owner-only view.
@@ -523,6 +566,12 @@ class Subscribers:
                 (chat_id, signal_id),
             ).fetchone()
 
+    def delivered_ids(self, chat_id):
+        with closing(self._connect()) as db:
+            return {r[0] for r in db.execute(
+                "SELECT signal_id FROM deliveries WHERE chat_id=?", (chat_id,)
+            )}
+
     def saved(self, chat_id, signal_id, message_id, outcome, content_sha):
         with closing(self._connect()) as db:
             db.execute(
@@ -533,6 +582,18 @@ class Subscribers:
                 (chat_id, signal_id, message_id, outcome, content_sha),
             )
             db.commit()
+
+    def claim_delivery(self, chat_id, signal_id, now):
+        """Reserve before network I/O; ambiguous failures must not be retried."""
+        with closing(self._connect()) as db:
+            cursor = db.execute(
+                "INSERT OR IGNORE INTO delivery_attempts(chat_id,signal_id,attempted_at) "
+                "SELECT ?,?,? WHERE NOT EXISTS (SELECT 1 FROM deliveries "
+                "WHERE chat_id=? AND signal_id=?)",
+                (chat_id, signal_id, now, chat_id, signal_id),
+            )
+            db.commit()
+            return cursor.rowcount == 1
 
 class SubscriberActivityMiddleware(BaseMiddleware):
     """Observe only accepted users' private interactions, never their reading time."""
@@ -569,6 +630,55 @@ class SubscriberRelay:
         self.live_cycle = live_cycle
         self.require_sessions = require_sessions
         self._last_notice_check = 0.0
+        self._send_slots = asyncio.Semaphore(20)
+
+    def _eligible(self, chat_id, joined_at, row):
+        now = self.clock()
+        sent_at = row.get("sent_at")
+        return (
+            row.get("origin") in ("main", "live")
+            and row.get("outcome") == "PENDING"
+            and row.get("seconds") in SIGNAL_TIMEFRAMES
+            and sent_at is not None and joined_at <= sent_at <= now
+            and now - sent_at <= MAX_SEND_AGE_SECONDS
+            and in_window(row["entry_at"], now)
+            and self.store.status(chat_id, now)["state"] == "approved"
+            and self.store.allows_source(chat_id, row["strategy"])
+            and self.store.allows_timeframe(chat_id, row["seconds"])
+            and (not self.require_sessions or self.store.session_allows_signal(
+                chat_id, sent_at, now
+            ))
+        )
+
+    async def _deliver(self, bot, chat_id, joined_at, row, content, content_sha):
+        async with self._send_slots:
+            if not await asyncio.to_thread(self._eligible, chat_id, joined_at, row):
+                return
+            if not await asyncio.to_thread(
+                self.store.claim_delivery, chat_id, row["id"], self.clock()
+            ):
+                return
+            timeout = send_timeout(row["entry_at"], self.clock())
+            if timeout <= 0:
+                return
+            try:
+                msg = await asyncio.wait_for(
+                    bot.send_message(chat_id, content, parse_mode=None), timeout
+                )
+                if not in_window(row["entry_at"], self.clock()):
+                    await asyncio.wait_for(bot.edit_message_text(
+                        "⚠️ Сигнал опоздал — НЕ ВХОДИТЬ.",
+                        chat_id=chat_id, message_id=msg.message_id, parse_mode=None,
+                    ), 3)
+                    return
+                await asyncio.to_thread(
+                    self.store.saved, chat_id, row["id"],
+                    msg.message_id, row["outcome"], content_sha,
+                )
+            except TelegramForbiddenError:
+                await asyncio.to_thread(self.store.unsubscribe, chat_id)
+            except Exception as exc:
+                LOG.warning("Subscriber delivery not confirmed: %s", type(exc).__name__)
 
     def _signals(self):
         since = self.store.min_active_since(now=self.clock())
@@ -576,7 +686,7 @@ class SubscriberRelay:
             return []
         cutoff = max(0, since - 120, self.clock() - 7200)
         return sorted(
-            main_signals(self.root / "data" / "bollinger-cycles.db", cutoff)
+            main_signals(self.root / "data" / "bollinger-cycles.db", cutoff, include_cancelled=True)
             + load_live_signals(self.root / "data" / "community-live.db", cutoff),
             key=lambda row: (row["created_at"], row["id"]),
         )
@@ -598,7 +708,7 @@ class SubscriberRelay:
             sent_at is None
             or sent_at > current_time
             or current_time - sent_at > MAX_SEND_AGE_SECONDS
-            or row["entry_at"] - current_time < MIN_ENTRY_LEAD_SECONDS
+            or not in_window(row["entry_at"], current_time)
         ):
             return
 
@@ -613,38 +723,12 @@ class SubscriberRelay:
                 break
             offset += len(subscribers)
 
-            async def deliver(chat_id, joined_at):
-                if (sent_at < joined_at or self.store.status(chat_id, self.clock())["state"] != "approved"
-                        or not self.store.allows_source(chat_id, row["strategy"])
-                        or not self.store.allows_timeframe(chat_id, row["seconds"])
-                        or (self.require_sessions and not self.store.session_allows_signal(
-                            chat_id, sent_at, self.clock()
-                        ))):
-                    return
-                already = await asyncio.to_thread(
-                    self.store.delivered, chat_id, row["id"]
-                )
-                if already:
-                    return
-                try:
-                    msg = await bot.send_message(chat_id, safe_text, parse_mode=None)
-                    await asyncio.to_thread(
-                        self.store.saved, chat_id, row["id"],
-                        msg.message_id, row["outcome"], content_sha,
-                    )
-                except TelegramForbiddenError:
-                    await asyncio.to_thread(self.store.unsubscribe, chat_id)
-                except TelegramBadRequest:
-                    LOG.warning("Subscriber message rejected for %d", chat_id)
-                except Exception as exc:
-                    LOG.warning(
-                        "Subscriber immediate delivery failed: %s",
-                        type(exc).__name__,
-                    )
-
             await asyncio.gather(
-                *(deliver(chat_id, joined_at) for chat_id, joined_at in subscribers)
+                *(self._deliver(bot, chat_id, joined_at, row, safe_text, content_sha)
+                  for chat_id, joined_at in subscribers)
             )
+            if send_timeout(row["entry_at"], self.clock()) <= 0:
+                break
 
     async def update(self, bot):
         rows = await asyncio.to_thread(self._signals)
@@ -662,8 +746,6 @@ class SubscriberRelay:
                 if self.store.status(chat_id, self.clock())["state"] != "approved":
                     continue
                 for row in rows:
-                    if not self.store.allows_source(chat_id, row["strategy"]):
-                        continue
                     current_time = self.clock()
                     safe_text = subscriber_card(row, self.live_cycle)
                     content_sha = hashlib.sha256(safe_text.encode("utf-8")).hexdigest()
@@ -714,21 +796,9 @@ class SubscriberRelay:
                         or row["entry_at"] - current_time < MIN_ENTRY_LEAD_SECONDS
                     ):
                         continue
-                    try:
-                        msg = await bot.send_message(
-                            chat_id, safe_text, parse_mode=None
-                        )
-                        await asyncio.to_thread(
-                            self.store.saved, chat_id, row["id"],
-                            msg.message_id, row["outcome"], content_sha,
-                        )
-                    except TelegramForbiddenError:
-                        await asyncio.to_thread(self.store.unsubscribe, chat_id)
-                        break
-                    except TelegramBadRequest:
-                        LOG.warning("Subscriber message rejected for %d", chat_id)
-                    except Exception as exc:
-                        LOG.warning("Subscriber delivery failed: %s", type(exc).__name__)
+                    await self._deliver(
+                        bot, chat_id, joined_at, row, safe_text, content_sha
+                    )
 
     async def notify_expiry(self, bot):
         """Send a 24-hour reminder and a one-off expiration notice."""

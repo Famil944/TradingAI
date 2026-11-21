@@ -1,3 +1,4 @@
+from contextlib import closing
 """Rotation must preserve active forecasts and stay within a single stream."""
 
 import asyncio
@@ -100,13 +101,13 @@ class PairSelectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             first = Path(folder) / "cycles.db"
             second = Path(folder) / "live.db"
-            with sqlite3.connect(first) as db:
+            with closing(sqlite3.connect(first)) as db, db:
                 db.execute("CREATE TABLE predictions(symbol TEXT,outcome TEXT,sent_at REAL)")
                 db.executemany("INSERT INTO predictions VALUES(?,?,?)", [
                     ("A", "PENDING", now - 100),
                     ("B", "WIN", now - 100),
                 ])
-            with sqlite3.connect(second) as db:
+            with closing(sqlite3.connect(second)) as db, db:
                 db.execute("CREATE TABLE signals(symbol TEXT,outcome TEXT,sent_at REAL)")
                 db.executemany("INSERT INTO signals VALUES(?,?,?)", [
                     ("C", "LOSS", now - 200),
@@ -121,7 +122,7 @@ class PairSelectionTests(unittest.TestCase):
     def test_unreadable_journal_never_authorizes_rotation(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "old.db"
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute("CREATE TABLE unrelated(value INTEGER)")
             self.assertIsNone(journal_activity([(path, "predictions")], 1000))
             self.assertIsNone(journal_activity([(path.with_name("missing.db"),
@@ -186,7 +187,7 @@ class PairRotationRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_open_cycle_blocks_switch_until_it_is_resolved(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "cycles.db"
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute("CREATE TABLE predictions(symbol TEXT,outcome TEXT,sent_at REAL)")
                 db.execute("INSERT INTO predictions VALUES(?,?,?)",
                            ("B", "PENDING", self.now[0] - 20))
@@ -200,7 +201,7 @@ class PairRotationRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIsNone(await self.session._commit_rotation(self.chosen, history))
             self.assertEqual(set(history), {"A", "B"})
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute("UPDATE predictions SET outcome='WIN'")
             replacement = await self.session._commit_rotation(self.chosen, history)
             self.assertEqual(set(replacement), {"A", "C"})

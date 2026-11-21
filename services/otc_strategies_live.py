@@ -19,19 +19,16 @@ from pathlib import Path
 from services.otc_candidate_report import outcome as direction_outcome
 from services.otc_community_cycles import METHODS
 from services.otc_community_cycles import VERSION as RESEARCH_VERSION
-from services.otc_delivery_guard import blocking_claim, claim, completed
+from services.otc_delivery_guard import blocking_claim, check_data, claim, completed
+from services.otc_delivery_timing import MIN_LEAD, MAX_LEAD, in_window, send_timeout
 from services.otc_public_broadcast import public_text
 from services.otc_validation_report import load
 
 LOG = logging.getLogger(__name__)
-LIVE_VERSION = "independent-delivered-cycles-v1"
-MIN_LEAD = 5
-MAX_LEAD = 30
+LIVE_VERSION = "independent-cycles-lead15-20-v2"
 RECOVERY_GRACE = 180
 POLL_INTERVAL = 1.0
-# S1 prepares entries 15-20 seconds ahead. Let it claim first; S2-S4
-# publish during the following window if S1 did not select that instrument.
-SECONDARY_MAX_LEAD = 14
+# S1-S4 have independent strategy/timeframe reservations and one live window.
 STRATEGY_PRIORITY = {"bb_reentry": 0, "break_retest": 1, "ema_pullback": 2}
 
 
@@ -357,6 +354,7 @@ class LiveStrategyPublisher:
         self.started_at = self.clock()
         self._last_settlement = 0
         self.subscriber_relay = subscriber_relay
+        self.snapshot_provider = None
         self._diagnostic = {key: 0 for key in (
             "candidates", "timeframe", "stale_or_timing", "reserved_duplicate",
             "claim_error", "overlap", "late", "owner_error", "sent", "relay_error",
@@ -384,19 +382,24 @@ class LiveStrategyPublisher:
             STRATEGY_PRIORITY[r["experiment"]["method"]],
             -r["experiment"]["cycle_seconds"], -r["payout"], r["symbol"],
         ))
-        for row in rows:
+        async def publish_row(row):
             now = self.clock()
             if row["experiment"]["cycle_seconds"] not in allowed_timeframes:
                 self._diagnostic["timeframe"] += 1
-                continue
+                return
             if (row["observed_at"] < self.started_at - 2
-                    or not MIN_LEAD < row["entry_at"] - now <= SECONDARY_MAX_LEAD):
+                    or not in_window(row["entry_at"], now)):
                 self._diagnostic["stale_or_timing"] += 1
-                continue
+                return
+            if self.snapshot_provider is not None and check_data(
+                row, self.snapshot_provider(), self.clock()
+            ):
+                self._diagnostic["stale_or_timing"] += 1
+                return
             ident = await asyncio.to_thread(self.journal.reserve, row, now)
             if not ident:
                 self._diagnostic["reserved_duplicate"] += 1
-                continue
+                return
             method, seconds = row["experiment"]["method"], row["experiment"]["cycle_seconds"]
             try:
                 claimed = await asyncio.to_thread(
@@ -409,7 +412,7 @@ class LiveStrategyPublisher:
                 self._diagnostic["claim_error"] += 1
                 LOG.exception("Strategy claim failed")
                 await asyncio.to_thread(self.journal.not_delivered, ident)
-                continue
+                return
             if not claimed:
                 self._diagnostic["overlap"] += 1
                 await asyncio.to_thread(self.journal.not_delivered, ident)
@@ -446,11 +449,14 @@ class LiveStrategyPublisher:
                         "candidate_entry=%s",
                         method, row["symbol"], seconds // 60, row["entry_at"],
                     )
-                continue
-            if row["entry_at"] - self.clock() <= MIN_LEAD:
+                return
+            if (send_timeout(row["entry_at"], self.clock()) <= 0
+                    or (self.snapshot_provider is not None and check_data(
+                        row, self.snapshot_provider(), self.clock()
+                    ))):
                 self._diagnostic["late"] += 1
                 await asyncio.to_thread(self.journal.not_delivered, ident)
-                continue
+                return
             from services.otc_public_stats import METHOD_LABELS
             signal = dict(
                 id=ident, origin="live", label=METHOD_LABELS[method],
@@ -460,14 +466,14 @@ class LiveStrategyPublisher:
                 outcome="PENDING", attempts=[],
             )
             try:
-                timeout = min(3, max(0.1, row["entry_at"] - MIN_LEAD - self.clock()))
+                timeout = send_timeout(row["entry_at"], self.clock())
                 card_text = public_text(signal)
                 message = await asyncio.wait_for(
                     bot.send_message(owner, card_text, parse_mode=None),
                     timeout,
                 )
                 when = self.clock()
-                if row["entry_at"] - when <= MIN_LEAD:
+                if not in_window(row["entry_at"], when):
                     self._diagnostic["late"] += 1
                     # A delivered late card is not counted as an actionable win.
                     await asyncio.to_thread(self.journal.not_delivered, ident)
@@ -480,7 +486,7 @@ class LiveStrategyPublisher:
                         )
                     except Exception:
                         LOG.warning("Could not mark a late owner card")
-                    continue
+                    return
                 await asyncio.to_thread(
                     self.journal.sent, ident, when, message.message_id,
                     hashlib.sha256(card_text.encode()).hexdigest()
@@ -507,6 +513,8 @@ class LiveStrategyPublisher:
                 self._diagnostic["owner_error"] += 1
                 LOG.exception("Strategy %s owner delivery failed", method)
                 await asyncio.to_thread(self.journal.not_delivered, ident)
+
+        await asyncio.gather(*(publish_row(row) for row in rows))
 
     async def settle(self):
         now = self.clock()
@@ -577,18 +585,27 @@ class LiveStrategyPublisher:
                     LOG.warning("Strategy card update: %s", type(exc).__name__)
 
     async def run(self, bot, owner, session=None, cycles=None):
-        while True:
-            try:
-                enabled = bool(
-                    session and session.running()
-                    and cycles and getattr(cycles, "enabled", False)
-                )
-                allowed = tuple(getattr(cycles, "allowed_timeframes", (120, 300, 900)))
-                await self.publish(bot, owner, enabled, allowed)
-                await self.settle()
-                await self.update_owner_cards(bot, owner)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                LOG.warning("Strategy publisher skipped tick: %s", type(exc).__name__)
-            await asyncio.sleep(POLL_INTERVAL)
+        self.snapshot_provider = lambda: getattr(cycles, "snapshot", None)
+        async def maintain():
+            while True:
+                try:
+                    await self.settle()
+                    await self.update_owner_cards(bot, owner)
+                except Exception:
+                    LOG.exception("Strategy result maintenance failed")
+                await asyncio.sleep(POLL_INTERVAL)
+
+        maintenance = asyncio.create_task(maintain())
+        try:
+            while True:
+                try:
+                    enabled = bool(session and session.running()
+                                   and cycles and getattr(cycles, "enabled", False))
+                    allowed = tuple(getattr(cycles, "allowed_timeframes", (120, 300, 900)))
+                    await self.publish(bot, owner, enabled, allowed)
+                except Exception:
+                    LOG.exception("Strategy publishing tick failed")
+                await asyncio.sleep(POLL_INTERVAL)
+        finally:
+            maintenance.cancel()
+            await asyncio.gather(maintenance, return_exceptions=True)

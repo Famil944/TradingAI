@@ -60,7 +60,7 @@ class TimeframeDeliveryTests(unittest.IsolatedAsyncioTestCase):
             store.set_timeframe(42, 300, False)
             store.set_timeframe(42, 900, False)
             bot = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=1)))
-            relay = SubscriberRelay(root, store=store, clock=lambda: 1005)
+            relay = SubscriberRelay(root, store=store, clock=lambda: 1004)
             for index, seconds in enumerate((120, 300, 900)):
                 await relay.publish_now(bot, signal(f"new-{index}", seconds))
             sent = [call.args[0] for call in bot.send_message.await_args_list]
@@ -80,7 +80,7 @@ class TimeframeDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 send_message=AsyncMock(return_value=SimpleNamespace(message_id=5)),
                 edit_message_text=AsyncMock(),
             )
-            relay = SubscriberRelay(root, store=store, clock=lambda: 1005)
+            relay = SubscriberRelay(root, store=store, clock=lambda: 1004)
             existing = signal("m2-existing", 120)
             await relay.publish_now(bot, existing)
             self.assertEqual(bot.send_message.await_count, 1)
