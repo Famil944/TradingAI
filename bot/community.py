@@ -114,15 +114,22 @@ async def render_menu(message, text, *, reply_markup=None, parse_mode=None):
         await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
 
 
+def with_admin_contact(markup):
+    markup.inline_keyboard.append([InlineKeyboardButton(
+        text="✉️ Написать администратору", url="https://t.me/Feymll"
+    )])
+    return markup
+
+
 def home(owner=False):
     if not owner:
-        return keyboard([
+        return with_admin_contact(keyboard([
             [("▶️ Сигналы на 1 час", "c:session:start"),
              ("⏸ Пауза", "c:session:stop")],
             [("🎛 Мои сигналы", "c:prefs"), ("📊 Винрейт циклов", "c:cycles:all:today:all:global")],
             [("💎 Подписка", "c:subscription"), ("💡 Предложение", "c:suggest")],
             [("ℹ️ Справка", "c:info")],
-        ])
+        ]))
     return keyboard([
         [("📊 Стратегии", "c:cycles:all:today:all:global"), ("👥 Пользователи", "c:users")],
         [("💡 Предложения", "c:queue"), ("🔧 OTC", "c:owner")],
@@ -385,13 +392,13 @@ def subscriber_home_text(user_id):
 def subscription_buttons(store, user_id):
     state = store.status(user_id)["state"]
     if state == "new":
-        return keyboard([[("✅ Принимаю условия · запросить", "c:accept")],
-                         [("ℹ️ О сигналах", "c:info")]])
+        return with_admin_contact(keyboard([[("✅ Принимаю условия · запросить", "c:accept")],
+                         [("ℹ️ О сигналах", "c:info")]]))
     if state == "expired":
-        return keyboard([[("📩 Запросить продление", "c:request")],
-                         [("◀ Меню", "c:home")]])
+        return with_admin_contact(keyboard([[("📩 Запросить продление", "c:request")],
+                         [("◀ Меню", "c:home")]]))
     if state == "paused":
-        return keyboard([[("🔔 Возобновить уведомления", "c:request")]])
+        return with_admin_contact(keyboard([[("🔔 Возобновить уведомления", "c:request")]]))
     return home()
 
 
