@@ -186,7 +186,11 @@ async def main(*, session_minutes=None, session_end=None):
     subscriber_relay.live_cycle = cycles
     service.cycle_preview = cycles
     cycle_task = asyncio.create_task(cycles.run(bot, settings.admin_chat_id))
-    # Retired shadow experiments: historical databases remain available.
+    # Separate prospective RSI experiment; retired experiments stay disabled.
+    from services.otc_rsi_shadow import RSIShadow
+    service.early_observer = RSIShadow(ROOT)
+    rsi_shadow_task = asyncio.create_task(service.early_observer.run(service, cycles))
+    logging.getLogger(__name__).info("RSI2/SMA200 M1 shadow enabled; M2/M5/M15; no delivery")
     from services.otc_strategies_live import LiveStrategyPublisher
     strategy_engine = LiveStrategyPublisher(
         ROOT, subscriber_relay=subscriber_relay
@@ -260,6 +264,8 @@ async def main(*, session_minutes=None, session_end=None):
         # Shutdown/restart is not an owner cancellation of published signals.
         cycles.preserve_delivered_on_stop = True
         await announcements.stop_workers()
+        rsi_shadow_task.cancel()
+        await asyncio.gather(rsi_shadow_task, return_exceptions=True)
         strategy_task.cancel()
         await asyncio.gather(strategy_task, return_exceptions=True)
         subscriber_task.cancel()

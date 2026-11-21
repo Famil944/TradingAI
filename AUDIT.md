@@ -112,3 +112,18 @@ and cooldowns. It excludes UNKNOWN/DRAW and does not establish future accuracy.
 Early 30–40 second observer and community shadow cycle generation are retired
 from runtime. Their databases are preserved; the owner menu no longer advertises
 background WR/comparison. Legacy report routes remain for historical access.
+
+
+## 2026-11-21: prospective RSI2 shadow v1
+
+Separate rsi2-shadow.db, no delivery or live claims. Uses closed M1 bars (201–250
+contiguous bars), SMA200 and Wilder RSI2 crossing below 5 above SMA200 (UP), or
+above 95 below SMA200 (DOWN). Decisions fixed 15–20s before aligned entry;
+M2/M5/M15 outcomes are independent, at most one reserved full cycle per horizon.
+Highest payout then symbol determines selection, without looking at outcomes.
+Same feed and freshness gates; no extra network requests. Tick endpoints sampled
+prospectively; missing prices remain unknown, never filled with fabricated wins.
+Admin menu exposes first-attempt and full-cycle WR and winning attempt counts.
+Old early/H1/community experiments remain disabled. This is an experimental M1
+adaptation, not a replication of stock studies or an established OTC edge.
+Background collection requires the bot, live session and computer to remain active.
