@@ -98,6 +98,7 @@ def menu(chat_id, expanded=False):
                 [InlineKeyboardButton(text="📊 Статистика S1–S4", callback_data="c:cycles:all:today:all:global")],
                 [InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users"),
                  InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue")],
+                [InlineKeyboardButton(text="🧪 Новый фон · RSI(2)", callback_data="otc:rsishadow")],
                 [InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")],
                 [InlineKeyboardButton(text="⚙️ Дополнительно", callback_data="otc:more"),
                  InlineKeyboardButton(text="🔄 Обновить", callback_data="otc:panel:show")],
