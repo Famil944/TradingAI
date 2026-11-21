@@ -186,20 +186,7 @@ async def main(*, session_minutes=None, session_end=None):
     subscriber_relay.live_cycle = cycles
     service.cycle_preview = cycles
     cycle_task = asyncio.create_task(cycles.run(bot, settings.admin_chat_id))
-    # Optional observer uses the SAME live feed, never sends forecasts, and
-    # never writes into trading, subscribers, wallet or delivery databases.
-    early_task = None
-    if os.getenv("OTC_EARLY_SHADOW_ENABLED", "false").strip().lower() in (
-        "1", "true", "yes", "on"
-    ):
-        from services.otc_early_lead import EarlyLeadObserver
-        early = EarlyLeadObserver(ROOT)
-        service.early_observer = early
-        early_task = asyncio.create_task(early.run(service, cycles))
-        logging.getLogger(__name__).info(
-            "OTC shadow-only 30–40s lead experiment enabled; "
-            "published forecast windows remain unchanged"
-        )
+    # Retired shadow experiments: historical databases remain available.
     from services.otc_strategies_live import LiveStrategyPublisher
     strategy_engine = LiveStrategyPublisher(
         ROOT, subscriber_relay=subscriber_relay
@@ -277,9 +264,6 @@ async def main(*, session_minutes=None, session_end=None):
         await asyncio.gather(strategy_task, return_exceptions=True)
         subscriber_task.cancel()
         await asyncio.gather(subscriber_task, return_exceptions=True)
-        if early_task is not None:
-            early_task.cancel()
-            await asyncio.gather(early_task, return_exceptions=True)
         if public_task is not None:
             public_task.cancel()
             await asyncio.gather(public_task, return_exceptions=True)

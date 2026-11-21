@@ -152,10 +152,6 @@ def menu(chat_id, expanded=False):
         InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users"),
         InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue"),
     ])
-    rows.append([
-        InlineKeyboardButton(text="🧪 Фоновый WR", callback_data="otc:earlywr:7"),
-        InlineKeyboardButton(text="⚖️ Сравнить", callback_data="otc:earlyreport"),
-    ])
     rows.append([InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")])
     if expanded:
         rows.append(

@@ -94,3 +94,21 @@ Validation: 33 offline unit/integration tests, including a loopback HTTP/SSE ser
 ## Follow-up: explicitly authorized research metadata policy
 
 The owner requested free-tier testing with signals despite missing payout/open metadata. Added explicit OTC_TEST_MODE and bounded REST snapshots for zero-stream plans; unknown metadata stays NULL and is disclosed in notifications. Strict mode remains available. Journal schema v2 relaxes only payout/payout_at nullability with an online backup and atomic data/index/trigger-preserving migration. Updated validation: 46 passing offline tests. No live credentials used, no push/deploy performed.
+
+
+## 2026-11-21: S1 stricter selection; shadow experiments retired
+
+S1 v2 requires the closed trigger candle to close inside Bollinger bands and
+reject at least 60% of its high-low range in the signal direction. Missing
+pattern evidence fails closed. The existing 15–20 second delivery window and
+full-cycle WR calculation are unchanged; S2–S4 are unchanged.
+
+Exploratory retrospective screen of 665 delivered, resolved WIN/LOSS cycles,
+ordered chronologically: earlier 443 cycles had 88.49% WR; the filter retained
+117 at 93.16%. Later 222 had 87.39%; retained 71 at 91.55%. This is a conditional
+historical subset, not an independent prospective test or a replay of scheduling
+and cooldowns. It excludes UNKNOWN/DRAW and does not establish future accuracy.
+
+Early 30–40 second observer and community shadow cycle generation are retired
+from runtime. Their databases are preserved; the owner menu no longer advertises
+background WR/comparison. Legacy report routes remain for historical access.

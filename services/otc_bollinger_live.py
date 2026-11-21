@@ -20,7 +20,29 @@ from services.otc_strategies_live import evaluate_cycle
 from services.otc_validation_report import load
 
 logger = logging.getLogger(__name__)
-VERSION = "bollinger-live-three-attempts-v1"
+VERSION = "bollinger-reentry-rejection-v2"
+
+
+def quality_rejection(pattern):
+    """Require a closed-bar re-entry and at least 60% rejection of the extreme."""
+    import math
+    candle = pattern.get("candle") or {}
+    values = [candle.get(k) for k in ("open", "high", "low", "close")]
+    values += [pattern.get("lower"), pattern.get("upper")]
+    if any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in values):
+        return "missing_evidence"
+    opening, high, low, close, lower, upper = values
+    if not low <= min(opening, close) <= max(opening, close) <= high or high <= low:
+        return "invalid_candle"
+    if not lower < close < upper:
+        return "no_reentry"
+    direction = pattern.get("direction")
+    if direction not in ("UP", "DOWN"):
+        return "invalid_direction"
+    rebound = (close - low) if direction == "UP" else (high - close)
+    if rebound / (high - low) < 0.6:
+        return "weak_rejection"
+    return None
 
 
 def card(plan, outcomes=None, result=None):
@@ -207,9 +229,6 @@ class BollingerCycles(MLPreview):
         from services.otc_virtual_wallet import VirtualWallet
 
         self.wallet = VirtualWallet(journal.path.with_name("virtual-wallet.db"))
-        from services.otc_community_cycles import ShadowCycles
-
-        self.shadow = ShadowCycles(journal.path.with_name("community-cycles.db"), clock)
         for row in journal.pending():
             self.sampler.register([json.loads(row["evidence"])], self.clock())
         with closing(sqlite3.connect(journal.path)) as db:
@@ -221,10 +240,8 @@ class BollingerCycles(MLPreview):
 
     def observe_tick(self, tick, now):
         self.sampler.observe(tick, now)
-        self.shadow.observe(tick, now)
 
     async def flush(self):
-        await self.shadow.flush()
         samples = self.sampler.drain(self.clock())
         if samples:
             try:
@@ -238,10 +255,6 @@ class BollingerCycles(MLPreview):
         await self.flush()
 
     async def plan(self, bot, chat_id, snapshot):
-        try:
-            await self.shadow.plan(snapshot)
-        except Exception:
-            logger.exception("Community cycles audit unavailable")
         history, assets, quotes, end = snapshot
         now = self.clock()
         entry = int(now) // 60 * 60 + 60
@@ -260,7 +273,7 @@ class BollingerCycles(MLPreview):
                 pattern = pattern_directions(list(minutes), seconds, entry - 60).get(
                     "bollinger_reversal"
                 )
-                if pattern:
+                if pattern and quality_rejection(pattern) is None:
                     plans.append(
                         dict(
                             symbol=symbol,
@@ -275,7 +288,7 @@ class BollingerCycles(MLPreview):
                             evidence={"pattern": pattern},
                             version=VERSION,
                             observed_at=now,
-                            gates={"cycle": True},
+                            gates={"cycle": True, "reentry": True, "rejection_min": 0.6},
                             experiment={"cycle_seconds": seconds},
                         )
                     )

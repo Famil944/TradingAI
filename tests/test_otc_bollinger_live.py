@@ -18,6 +18,22 @@ from services.otc_market_archive import MarketArchive
 from services.otc_strategy import Candle
 
 
+class QualityTests(unittest.TestCase):
+    def test_reentry_requires_directional_rejection_and_complete_evidence(self):
+        from services.otc_bollinger_live import quality_rejection
+        base = dict(direction="UP", lower=99.5, upper=102,
+                    candle=dict(open=100, high=101, low=99, close=100.5))
+        self.assertIsNone(quality_rejection(base))
+        for close, expected in [(99.4, "no_reentry"), (100, "weak_rejection")]:
+            with self.subTest(close=close):
+                self.assertEqual(quality_rejection(dict(base, candle=dict(base["candle"], close=close))), expected)
+        self.assertEqual(quality_rejection({"direction": "UP"}), "missing_evidence")
+        down = dict(direction="DOWN", lower=98, upper=100.5,
+                    candle=dict(open=100, high=101, low=99, close=99.5))
+        self.assertIsNone(quality_rejection(down))
+        self.assertEqual(quality_rejection(dict(down, candle=dict(down["candle"], close=100))), "weak_rejection")
+
+
 class LiveCycleTests(unittest.TestCase):
     def plan(self, entry=2100, seconds=300):
         return dict(
@@ -89,7 +105,7 @@ class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
             )
             with patch(
                 "services.otc_bollinger_live.pattern_directions",
-                return_value={"bollinger_reversal": {"direction": "UP"}},
+                return_value={"bollinger_reversal": {"direction": "UP", "lower": 99.5, "upper": 102, "candle": {"open": 100, "high": 101, "low": 99, "close": 100.5}}},
             ):
                 await engine.plan(bot, 1, snapshot)
                 await engine.plan(bot, 1, snapshot)
@@ -118,7 +134,7 @@ class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
             with patch("services.otc_bollinger_live.check_data", return_value=None), \
                  patch(
                      "services.otc_bollinger_live.pattern_directions",
-                     return_value={"bollinger_reversal": {"direction": "UP"}},
+                     return_value={"bollinger_reversal": {"direction": "UP", "lower": 99.5, "upper": 102, "candle": {"open": 100, "high": 101, "low": 99, "close": 100.5}}},
                  ):
                 await engine.plan(bot, 777, snapshot)
             self.assertEqual(bot.send_message.await_count, 3)

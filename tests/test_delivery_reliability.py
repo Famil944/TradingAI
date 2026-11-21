@@ -85,10 +85,9 @@ class OwnerAccountingTests(unittest.IsolatedAsyncioTestCase):
             engine.observe(*snapshot)
             bot = SimpleNamespace(send_message=AsyncMock(
                 return_value=SimpleNamespace(message_id=7)))
-            with patch.object(engine.shadow, "plan", new_callable=AsyncMock), \
-                 patch("services.otc_bollinger_live.check_data", return_value=None), \
+            with patch("services.otc_bollinger_live.check_data", return_value=None), \
                  patch("services.otc_bollinger_live.pattern_directions",
-                       return_value={"bollinger_reversal": {"direction": "UP"}}):
+                       return_value={"bollinger_reversal": {"direction": "UP", "lower": 99.5, "upper": 102, "candle": {"open": 100, "high": 101, "low": 99, "close": 100.5}}}):
                 await engine.plan(bot, 1, snapshot)
             pending = engine.journal.pending()
             self.assertEqual(len(pending), 1)
