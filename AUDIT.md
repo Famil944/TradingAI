@@ -191,3 +191,10 @@ Descriptive leaders require >=20 known cycles over >=3 distinct entry dates
 and <=20% unknown/incomplete among finished rows. These are presentation gates,
 not statistical significance or a recommendation to restrict trading hours.
 No scheduling or strategy selection changes. Mixed versions remain disclosed.
+
+
+## 2026-11-22: BITB OTC excluded at owner request
+
+BITB_otc is excluded from strict/research catalogue selection and final delivery
+gates, plus live S1 and RSI/custom shadow candidate analysis. Historical rows
+and already published cycle settlement are preserved. No other symbols excluded.

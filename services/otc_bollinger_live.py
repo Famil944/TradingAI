@@ -1,6 +1,6 @@
 """Read-only three-attempt Bollinger plans. No orders or stake escalation."""
 
-from services.otc_market import ACTIVE_TIMEFRAMES
+from services.otc_market import ACTIVE_TIMEFRAMES, EXCLUDED_SYMBOLS
 
 import asyncio
 import json
@@ -281,6 +281,8 @@ class BollingerCycles(MLPreview):
             ):
                 continue
             for symbol, minutes in history.items():
+                if symbol in EXCLUDED_SYMBOLS:
+                    continue
                 asset = assets.get(symbol)
                 if not fresh(asset, quotes.get(symbol), now):
                     continue

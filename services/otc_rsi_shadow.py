@@ -1,5 +1,5 @@
 """RSI(2)/SMA200 on closed M1 candles, prospective shadow only."""
-from services.otc_market import ACTIVE_TIMEFRAMES
+from services.otc_market import ACTIVE_TIMEFRAMES, EXCLUDED_SYMBOLS
 
 import asyncio
 import logging
@@ -55,6 +55,8 @@ def candidates(snapshot, now, *, decision_fn=None, version=VERSION):
     histories, assets, quotes, end = snapshot
     ranked = {}
     for symbol, minutes in histories.items():
+        if symbol in EXCLUDED_SYMBOLS:
+            continue
         asset = assets.get(symbol)
         if not fresh(asset, quotes.get(symbol), now):
             continue

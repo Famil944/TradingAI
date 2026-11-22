@@ -7,6 +7,7 @@ from services.otc_strategy import Candle
 
 TIMEFRAMES = (60, 300, 900)
 ACTIVE_TIMEFRAMES = (120,)
+EXCLUDED_SYMBOLS = frozenset({"BITB_otc"})
 
 
 def utc_timestamp(value):
@@ -37,6 +38,7 @@ class Asset:
 
 
 def eligible(instruments, now, max_age=60, *, research=False):
+    instruments = [a for a in instruments if a.symbol not in EXCLUDED_SYMBOLS]
     if research:
         # Unknown metadata is permitted for testing; a confirmed closure is not.
         return sorted(

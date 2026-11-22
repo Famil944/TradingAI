@@ -1,5 +1,7 @@
 """Atomic cross-source entry claims; ambiguous send failures retain the claim."""
 
+from services.otc_market import EXCLUDED_SYMBOLS
+
 import math
 import sqlite3
 import time
@@ -13,6 +15,8 @@ def check_data(selected, snapshot, now):
         return "missing_snapshot"
     history, assets, quotes, end = snapshot
     symbol = selected["symbol"]
+    if symbol in EXCLUDED_SYMBOLS:
+        return "excluded_symbol"
     if end and selected["expires_at"] + 60 > end:
         return "session_ending"
     quote = quotes.get(symbol)
