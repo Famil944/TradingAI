@@ -34,6 +34,7 @@ class UnknownRecovery:
         fetch_limit=1,
         foreground=None,
         quota_reserve=100,
+        allow_backfill=True,
     ):
         self.root = Path(root)
         self.provider = provider
@@ -41,9 +42,10 @@ class UnknownRecovery:
         self.clock = clock
         self.interval = max(15, interval)
         self.fetch_limit = max(1, fetch_limit)
-        # A live signal session always has priority over old UNKNOWN records.
-        # Historical backfills resume when the owner stops the live session.
+        # Local reconciliation remains active during live signals.
+        # Only network backfills pause until the owner stops the session.
         self.foreground = foreground
+        self.allow_backfill = allow_backfill
         self.quota_reserve = max(100, int(quota_reserve))
         self.archive_path = self.root / "data" / "market-history.db"
         self.live_path = self.root / "data" / "community-live.db"
@@ -308,7 +310,7 @@ class UnknownRecovery:
         return live_audits + boll_audits, live_missing | boll_missing
 
     async def _backfill(self, symbols):
-        if self._foreground_running():
+        if not self.allow_backfill or self._foreground_running():
             return
         now = self.clock()
         eligible = [
@@ -350,19 +352,16 @@ class UnknownRecovery:
 
     async def sweep(self):
         self.paused_for_signals = self._foreground_running()
-        if self.paused_for_signals:
-            self.last_recovered = 0
-            return 0, self.last_pending
         self.last_scan = self.clock()
         audits, missing = await asyncio.to_thread(self.recover_local)
-        if missing:
+        if missing and self.allow_backfill and not self.paused_for_signals:
             await self._backfill(missing)
             more_audits, missing = await asyncio.to_thread(self.recover_local)
             known = {item["id"] for item in audits}
             audits.extend(item for item in more_audits if item["id"] not in known)
         self.last_recovered = len(audits)
         self.last_pending = len(missing)
-        if audits and self.groq is not None:
+        if audits and self.groq is not None and self.allow_backfill and not self.paused_for_signals:
             # Groq only audits arithmetic already established by canonical prices.
             await self.groq.audit_recovery(audits)
         if audits:

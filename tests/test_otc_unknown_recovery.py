@@ -46,7 +46,7 @@ class NoopProvider:
 
 
 class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_live_session_pauses_old_unknown_without_using_quota(self):
+    async def test_live_session_scans_local_unknown_without_using_quota(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             data = root / "data"
@@ -66,7 +66,7 @@ class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
             running = [True]
             foreground = SimpleNamespace(running=lambda: running[0])
             recovery = UnknownRecovery(root, provider, foreground=foreground, clock=lambda: 1700)
-            self.assertEqual(await recovery.sweep(), (0, 0))
+            self.assertEqual(await recovery.sweep(), (0, 1))
             self.assertTrue(recovery.paused_for_signals)
             provider.usage.assert_not_awaited()
             provider.candles.assert_not_awaited()
@@ -74,6 +74,39 @@ class UnknownRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await recovery.sweep(), (0, 1))
             self.assertFalse(recovery.paused_for_signals)
             provider.candles.assert_awaited_once()
+
+    async def test_s1_recovers_during_live_session_without_network(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            data = root / "data"
+            journal = CycleJournal(data / "bollinger-cycles.db", per_horizon=True)
+            plan = dict(symbol="A", direction="UP", entry_at=1200, expires_at=1560,
+                        cycle_seconds=120, payout=95)
+            ident = journal.reserve(plan, 1180)
+            journal.sent(ident, 1181, 9)
+            journal.complete(ident, ["UNKNOWN"], "UNKNOWN", 1500, ["unconfirmed"])
+            archive(data / "market-history.db", [("A",1200,100), ("A",1320,101)])
+            provider = SimpleNamespace(usage=AsyncMock(), candles=AsyncMock())
+            groq = SimpleNamespace(audit_recovery=AsyncMock())
+            recovery = UnknownRecovery(root, provider, groq, clock=lambda:1700,
+                foreground=SimpleNamespace(running=lambda:True), allow_backfill=False)
+            self.assertEqual(await recovery.sweep(), (1,0))
+            with closing(sqlite3.connect(journal.path)) as db:
+                state, evidence = db.execute("SELECT outcome,evidence FROM predictions WHERE id=?", (ident,)).fetchone()
+            self.assertEqual(state, "WIN")
+            self.assertEqual(json.loads(evidence)["attempt_sources"], ["otcharts_history"])
+            self.assertEqual(await recovery.sweep(), (0,0))
+            provider.usage.assert_not_awaited()
+            provider.candles.assert_not_awaited()
+            groq.audit_recovery.assert_not_awaited()
+
+    async def test_local_only_does_not_fetch_missing_prices_while_idle(self):
+        with tempfile.TemporaryDirectory() as folder:
+            provider = SimpleNamespace(usage=AsyncMock(), candles=AsyncMock())
+            recovery = UnknownRecovery(folder, provider, allow_backfill=False)
+            await recovery._backfill({"A"})
+            provider.usage.assert_not_awaited()
+            provider.candles.assert_not_awaited()
 
     async def test_recovery_reserves_quota_for_new_signals(self):
         with tempfile.TemporaryDirectory() as folder:

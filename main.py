@@ -206,15 +206,12 @@ async def main(*, session_minutes=None, session_end=None):
         interval=settings.groq_recovery_interval_seconds,
         foreground=service,
         quota_reserve=settings.pair_rotation_quota_reserve,
+        allow_backfill=os.getenv("OTC_UNKNOWN_RECOVERY_ENABLED", "false").strip().lower()
+        in ("1", "true", "yes", "on"),
     )
     service.unknown_recovery = recovery
-    # Historical UNKNOWN backfills are opt-in: preserve API quota by default.
-    recovery_task = (
-        asyncio.create_task(recovery.run())
-        if os.getenv("OTC_UNKNOWN_RECOVERY_ENABLED", "false").strip().lower()
-        in ("1", "true", "yes", "on")
-        else None
-    )
+    # Always reconcile saved prices; extra API requests remain opt-in.
+    recovery_task = asyncio.create_task(recovery.run())
     # New signals are mirrored immediately after the owner's send succeeds.
     # The relay loop remains a fallback and mirrors later WIN/LOSS edits.
     subscriber_task = asyncio.create_task(subscriber_relay.run(bot))

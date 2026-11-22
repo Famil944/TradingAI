@@ -127,3 +127,19 @@ Admin menu exposes first-attempt and full-cycle WR and winning attempt counts.
 Old early/H1/community experiments remain disabled. This is an experimental M1
 adaptation, not a replication of stock studies or an established OTC edge.
 Background collection requires the bot, live session and computer to remain active.
+
+
+## 2026-11-22: UNKNOWN local reconciliation
+
+Found a pre-existing recovery gap: S1 settlement reads only PENDING rows; the
+shared UNKNOWN worker was opt-in and skipped even local reconciliation during
+an active session. It now runs local canonical-history reconciliation regardless
+of the session state. Network backfill remains opt-in and paused during signals;
+Groq auditing also stays off in the local-only path. No price tolerance or
+strategy thresholds changed. Missing exact unrevised historical prices stay UNKNOWN.
+
+Read-only inspection and temporary SQLite backup experiment (originals unchanged):
+S1 UNKNOWN 64 -> 4; S2–S4 UNKNOWN 66 -> 3 using existing reconstruction logic.
+Recovered forecasts include losses and draws, not only wins. This evidence is
+from the laptop archive through the previous evening, not the phone's overnight
+run. The cause of missing phone ticks remains unconfirmed without phone logs/data.
