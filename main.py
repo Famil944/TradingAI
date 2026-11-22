@@ -188,9 +188,10 @@ async def main(*, session_minutes=None, session_end=None):
     cycle_task = asyncio.create_task(cycles.run(bot, settings.admin_chat_id))
     # Separate prospective RSI experiment; retired experiments stay disabled.
     from services.otc_rsi_shadow import RSIShadow
-    service.early_observer = RSIShadow(ROOT)
+    from services.otc_exhaustion_shadow import ExhaustionShadow, ShadowObservers
+    service.early_observer = ShadowObservers(RSIShadow(ROOT), ExhaustionShadow(ROOT))
     rsi_shadow_task = asyncio.create_task(service.early_observer.run(service, cycles))
-    logging.getLogger(__name__).info("RSI2/SMA200 M1 shadow enabled; M2 only; no delivery")
+    logging.getLogger(__name__).info("RSI2 and exhaustion-v1 shadow enabled; M2 only; no delivery")
     from services.otc_strategies_live import LiveStrategyPublisher
     strategy_engine = LiveStrategyPublisher(
         ROOT, subscriber_relay=subscriber_relay

@@ -95,7 +95,8 @@ def menu(chat_id, expanded=False):
                 [InlineKeyboardButton(text="📊 Статистика S1–S4", callback_data="c:cycles:all:today:all:global")],
                 [InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users"),
                  InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue")],
-                [InlineKeyboardButton(text="🧪 Новый фон · RSI(2)", callback_data="otc:rsishadow")],
+                [InlineKeyboardButton(text="🧪 Фон · RSI(2)", callback_data="otc:rsishadow"),
+                 InlineKeyboardButton(text="🧪 Свой метод", callback_data="otc:exhaustion")],
                 [InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")],
                 [InlineKeyboardButton(text="⚙️ Дополнительно", callback_data="otc:more"),
                  InlineKeyboardButton(text="🔄 Обновить", callback_data="otc:panel:show")],
@@ -147,7 +148,8 @@ def menu(chat_id, expanded=False):
         InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users"),
         InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue"),
     ])
-    rows.append([InlineKeyboardButton(text="🧪 Новый фон · RSI(2)", callback_data="otc:rsishadow")])
+    rows.append([InlineKeyboardButton(text="🧪 Фон · RSI(2)", callback_data="otc:rsishadow"),
+                 InlineKeyboardButton(text="🧪 Свой метод", callback_data="otc:exhaustion")])
     rows.append([InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")])
     if expanded:
         rows.append(
@@ -607,6 +609,14 @@ async def callback(query: types.CallbackQuery):
              InlineKeyboardButton(text="Виртуальный баланс", callback_data="otc:wallet:show")],
             [InlineKeyboardButton(text="◀ Меню", callback_data="c:home")],
         ]))
+        return
+    if action == "exhaustion":
+        from services.otc_exhaustion_shadow import report
+        await query.answer()
+        text = await asyncio.to_thread(report, ROOT)
+        await render_menu(query.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="otc:exhaustion"),
+             InlineKeyboardButton(text="◀ Меню", callback_data="c:home")]]))
         return
     if action == "rsishadow":
         from services.otc_rsi_shadow import report

@@ -153,3 +153,29 @@ cannot re-enable those horizons. Historical records and settlement of already
 published M5/M15 plans remain supported; saved delivery cards can still update.
 Subscriber source selections and existing access are preserved. Historical
 statistics remain available without deleting previous M5/M15 results.
+
+
+## 2026-11-22: independent exhaustion/rejection shadow v1
+
+Frozen hypothesis; closed M1 input, M2 outcomes only, three attempts in one
+direction, stop on WIN/DRAW/UNKNOWN. Main metric is full-cycle WIN/(WIN+LOSS),
+with all unknown/draw/pending counts and winning stages shown separately.
+
+Rules use 30 consecutive valid closed candles. Baseline median true range is
+computed on the 21 candles preceding the last four bars (20 ranges). Prior
+three-bar displacement must be 1.5–4 baseline ranges. Baseline directional
+efficiency must be <=0.75. The confirming candle must span 0.5–2.5 baseline
+ranges, revisit the previous extreme, close in the reversal direction beyond
+the prior close, close >=65% away from its rejection extreme and leave >=35%
+rejection wick. UP/DOWN rules are symmetric. No fitting to cycle outcomes.
+
+Descriptive screen of latest 1200 unrevised archive candles on 10 recently
+updated symbols: 271 patterns in 11710 windows. This is frequency only, not a
+causal performance replay; archive availability/selection bias precludes a WR
+claim. Prospective testing is required before any live promotion.
+
+Storage: data/exhaustion-shadow.db, independent of RSI and live journals.
+Shared existing quote stream, bounded off-thread calculations, no extra API
+requests or subscriber sends. Same 15–20s observation window. Highest payout
+then symbol ranking; one full-cycle slot per method/expiry survives restart.
+Report is admin-only via “Свой метод”; old experiments stay disabled.

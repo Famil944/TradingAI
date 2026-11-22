@@ -47,7 +47,8 @@ def decision(minutes, asof):
                 analysis_period=60)
 
 
-def candidates(snapshot, now):
+def candidates(snapshot, now, *, decision_fn=None, version=VERSION):
+    decision_fn = decision if decision_fn is None else decision_fn
     entry = int(now) // 60 * 60 + 60
     if not 15 <= entry - now <= 20:
         return []
@@ -57,7 +58,7 @@ def candidates(snapshot, now):
         asset = assets.get(symbol)
         if not fresh(asset, quotes.get(symbol), now):
             continue
-        evidence = decision(minutes, entry - 60)
+        evidence = decision_fn(minutes, entry - 60)
         if evidence is None:
             continue
         for seconds in PERIODS:
@@ -66,8 +67,8 @@ def candidates(snapshot, now):
             row = dict(symbol=symbol, name=asset.name or symbol, direction=evidence['direction'],
                        entry_at=entry, expires_at=entry+3*seconds, cycle_seconds=seconds,
                        observed_at=now, feature_asof=entry-60, payout=asset.payout,
-                       version=VERSION, evidence=evidence, gates={"cycle": True},
-                       experiment=dict(strategy=VERSION, version=VERSION,
+                       version=version, evidence=evidence, gates={"cycle": True},
+                       experiment=dict(strategy=version, version=version,
                                        cycle_seconds=seconds, shadow_only=True))
             if check_data(row, snapshot, now):
                 continue
@@ -78,9 +79,15 @@ def candidates(snapshot, now):
 
 
 class RSIShadow(EarlyLeadObserver):
+    filename = "rsi2-shadow.db"
+    label = "RSI2"
+
+    def candidate_rows(self, snapshot, now):
+        return candidates(snapshot, now)
+
     def __init__(self, root, clock=time.time):
         self.root, self.clock = Path(root), clock
-        self.journal = EarlyJournal(self.root / 'data' / 'rsi2-shadow.db')
+        self.journal = EarlyJournal(self.root / 'data' / self.filename)
         self.sampler = TickSampler()
         self.snapshot = None
         self.last_entry = None
@@ -101,14 +108,14 @@ class RSIShadow(EarlyLeadObserver):
         self.last_entry = entry
         h, a, q, end = self.snapshot
         frozen = ({s: list(b) for s, b in h.items()}, dict(a), dict(q), end)
-        rows = await asyncio.to_thread(candidates, frozen, now)
+        rows = await asyncio.to_thread(self.candidate_rows, frozen, now)
         actual = self.clock()
         if not 15 <= entry-actual <= 20:
             return
         rows = [dict(r, observed_at=actual) for r in rows if check_data(r, self.snapshot, actual) is None]
         accepted = await asyncio.to_thread(self.journal.record, rows)
         self.sampler.register(accepted, self.clock())
-        LOG.info('RSI2 shadow scan: candidates=%d recorded=%d', len(rows), len(accepted))
+        LOG.info('%s shadow scan: candidates=%d recorded=%d', self.label, len(rows), len(accepted))
 
 
 def report(root, now=None):
