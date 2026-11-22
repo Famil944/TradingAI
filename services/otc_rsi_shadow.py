@@ -1,4 +1,6 @@
 """RSI(2)/SMA200 on closed M1 candles, prospective shadow only."""
+from services.otc_market import ACTIVE_TIMEFRAMES
+
 import asyncio
 import logging
 import math
@@ -17,7 +19,7 @@ from services.otc_strategies_live import evaluate_cycle
 from services.otc_validation_report import load
 
 VERSION = "rsi2-sma200-m1-v1"
-PERIODS = (120, 300, 900)
+PERIODS = ACTIVE_TIMEFRAMES
 LOG = logging.getLogger(__name__)
 
 
@@ -113,7 +115,7 @@ def report(root, now=None):
     root = Path(root)
     now = time.time() if now is None else now
     rows, prices = load(root / 'data' / 'rsi2-shadow.db', 0, now)
-    lines = ['🧪 Новый фон · RSI(2) + SMA200', 'Анализ M1 · экспирации M2/M5/M15',
+    lines = ['🧪 Новый фон · RSI(2) + SMA200', 'Анализ M1 · экспирация M2',
              'С начала теста · прогнозы, не сделки', '']
     for seconds in PERIODS:
         subset = [r for r in rows if r['version'] == VERSION and r['cycle_seconds'] == seconds]

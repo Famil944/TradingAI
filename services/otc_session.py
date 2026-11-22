@@ -27,7 +27,7 @@ from services.otc_data import (
     RetryableFeedError,
     StreamSlotBusy,
 )
-from services.otc_market import TIMEFRAMES, MinuteBuilder, Tick, eligible, settle
+from services.otc_market import ACTIVE_TIMEFRAMES, TIMEFRAMES, MinuteBuilder, Tick, eligible, settle
 from services.otc_pair_rotation import (
     choose_pair_swap,
     journal_activity,
@@ -221,6 +221,8 @@ class OTCSession:
         return self.task is not None and not self.task.done()
 
     async def start(self, bot, chat_id, minutes, timeframes):
+        if getattr(self.config, "cycles_only", False):
+            timeframes = ACTIVE_TIMEFRAMES
         if (
             minutes not in (0, 30, 60, 120, 240, 480)
             or not timeframes

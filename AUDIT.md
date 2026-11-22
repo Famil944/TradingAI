@@ -143,3 +143,13 @@ S1 UNKNOWN 64 -> 4; S2–S4 UNKNOWN 66 -> 3 using existing reconstruction logic.
 Recovered forecasts include losses and draws, not only wins. This evidence is
 from the laptop archive through the previous evening, not the phone's overnight
 run. The cause of missing phone ticks remains unconfirmed without phone logs/data.
+
+
+## 2026-11-22: M2-only operation
+
+Active timeframe policy is now M2 only for S1–S4, the RSI shadow experiment,
+owner session selection and new subscriber deliveries. Retired M5/M15 callbacks
+cannot re-enable those horizons. Historical records and settlement of already
+published M5/M15 plans remain supported; saved delivery cards can still update.
+Subscriber source selections and existing access are preserved. Historical
+statistics remain available without deleting previous M5/M15 results.

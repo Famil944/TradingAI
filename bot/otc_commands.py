@@ -85,10 +85,7 @@ def menu(chat_id, expanded=False):
                         callback_data="otc:tf:" + key,
                     )
                     for key, label, value in (
-                        ("all", "Все", TIMEFRAMES),
                         ("2", "M2", (120,)),
-                        ("5", "M5", (300,)),
-                        ("15", "M15", (900,)),
                     )
                 ],
                 [
@@ -112,10 +109,7 @@ def menu(chat_id, expanded=False):
     )
     buttons = []
     for key, label, value in [
-        ("all", "Все", TIMEFRAMES),
         ("2", "M2", (120,)),
-        ("5", "M5", (300,)),
-        ("15", "M15", (900,)),
     ]:
         buttons.append(
             InlineKeyboardButton(
@@ -826,7 +820,10 @@ async def callback(query: types.CallbackQuery):
             await query.answer("Недопустимый выбор")
         return
     if action == "tf" and len(parts) == 3 and parts[2] in ("all", "2", "5", "15"):
-        choices[chat] = TIMEFRAMES if parts[2] == "all" else (int(parts[2]) * 60,)
+        if parts[2] not in ("all", "2"):
+            await query.answer("Доступна только экспирация M2", show_alert=True)
+            return
+        choices[chat] = TIMEFRAMES
         if getattr(getattr(service, "config", None), "cycles_only", False) and hasattr(
             service, "cycle_preview"
         ):

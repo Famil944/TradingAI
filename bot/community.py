@@ -146,7 +146,7 @@ def preferences_menu(store, user_id):
     rows.append([
         (("✅ " if timeframes[seconds] else "❌ ") + f"M{seconds // 60}",
          f"c:tfpref:{seconds // 60}")
-        for seconds in (120, 300, 900)
+        for seconds in (120,)
     ])
     rows.append([("◀ Меню", "c:home")])
     return keyboard(rows)
@@ -157,11 +157,11 @@ def preferences_text(store, user_id):
     timeframes = store.timeframe_preferences(user_id)
     count = sum(selected.values())
     enabled_times = [f"M{seconds // 60}" for seconds, enabled
-                     in timeframes.items() if enabled]
+                     in timeframes.items() if enabled and seconds == 120]
     return (
         f"🎛 Мои сигналы · стратегий {count}/4\n"
         "Нажми на стратегию или экспирацию, чтобы включить или отключить.\n"
-        "M2 / M5 / M15 — независимые настройки только твоих уведомлений.\n"
+        "Сейчас доступна только экспирация M2 (2 минуты).\n"
         "Включённые экспирации: "
         + (", ".join(enabled_times) if enabled_times else "ни одной") + "\n"
         "Основные сигналы других пользователей не изменяются."
@@ -195,7 +195,7 @@ INFO = (
     "и точным временем предполагаемого входа по Москве.\n\n"
     "🟢 ВВЕРХ — прогноз роста цены\n"
     "🔴 ВНИЗ — прогноз снижения цены\n"
-    "M2 / M5 / M15 — длительность одной попытки: 2, 5 или 15 минут.\n\n"
+    "M2 — длительность одной попытки: 2 минуты.\n\n"
     "S1–S4 — четыре независимых способа анализа, а не уровни сложности.\n\n"
     "Выбери раздел ниже, чтобы узнать подробности."
 )
@@ -224,8 +224,6 @@ GUIDE_CODES = (
     "S1, S2, S3, S4 — номера четырёх отдельных систем анализа. "
     "Каждая формирует свои прогнозы.\n\n"
     "M2 = 2 минуты\n"
-    "M5 = 5 минут\n"
-    "M15 = 15 минут\n"
     "Это длительность ОДНОЙ попытки, не количество сигналов.\n\n"
     "1 / 2 / 3 — запланированные попытки в одном прогнозе.\n"
     "✅ WIN — прогноз завершён выигрышем\n"
@@ -288,7 +286,7 @@ def cycle_menu(source="all", period="today", timeframe="all", scope="global", ow
          for key, label in (("today", "Сегодня"), ("7d", "7 дней"),
                             ("30d", "30 дней"), ("all", "Всё время"))],
         [(("✓ " if timeframe == key else "") + label, target(tf=key))
-         for key, label in (("all", "Все сроки"), ("2", "M2"), ("5", "M5"), ("15", "M15"))],
+         for key, label in (("all", "Все сроки"), ("2", "M2"))],
     ]
     if not owner:
         rows.append([(("✓ " if scope == "global" else "") + "Общая", target(sc="global")),
@@ -374,7 +372,7 @@ def subscriber_home_text(user_id):
     selected = store.source_preferences(user_id)
     frames = store.timeframe_preferences(user_id)
     sources_text = ", ".join(IDS[k] for k, enabled in selected.items() if enabled)
-    frames_text = ", ".join(f"M{k // 60}" for k, enabled in frames.items() if enabled)
+    frames_text = ", ".join(f"M{k // 60}" for k, enabled in frames.items() if enabled and k == 120)
     body += f"\n\nСтратегии: {sources_text or 'не выбраны'}\nЭкспирации: {frames_text or 'не выбраны'}"
     if not sources_text or not frames_text:
         return body + "\nВыбери хотя бы одну стратегию и экспирацию в «Мои сигналы»."
@@ -913,7 +911,7 @@ async def callbacks(query: types.CallbackQuery):
         )
         return
     if target == "tfpref":
-        if (owner or len(action) != 3 or action[2] not in ("2", "5", "15")
+        if (owner or len(action) != 3 or action[2] not in ("2",)
                 or query.from_user.id != query.message.chat.id):
             await query.answer("Недоступно", show_alert=True)
             return

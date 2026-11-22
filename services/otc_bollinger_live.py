@@ -1,5 +1,7 @@
 """Read-only three-attempt Bollinger plans. No orders or stake escalation."""
 
+from services.otc_market import ACTIVE_TIMEFRAMES
+
 import asyncio
 import json
 import logging
@@ -218,7 +220,7 @@ class BollingerCycles(MLPreview):
     def __init__(self, journal, clock=time.time, subscriber_relay=None):
         super().__init__(journal, None, clock)
         self.subscriber_relay = subscriber_relay
-        self.allowed_timeframes = (120, 300, 900)
+        self.allowed_timeframes = ACTIVE_TIMEFRAMES
         self.research = CandidateJournal(
             journal.path.with_name("bollinger-live-ticks.db")
         )
@@ -272,6 +274,8 @@ class BollingerCycles(MLPreview):
             return
         plans = []
         for seconds in self.allowed_timeframes:
+            if seconds not in ACTIVE_TIMEFRAMES:
+                continue
             if not aligned_entry(entry, seconds) or (
                 end and entry + 3 * seconds + 2 > end
             ):

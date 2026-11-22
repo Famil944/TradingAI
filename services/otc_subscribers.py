@@ -4,6 +4,8 @@ Never opens the owner's wallet and never copies the owner's Telegram message.
 Joining a public Telegram channel is handled by Telegram; this store is for
 people who send /start to the bot in a private chat.
 """
+from services.otc_market import ACTIVE_TIMEFRAMES
+
 import asyncio
 import hashlib
 import logging
@@ -638,7 +640,7 @@ class SubscriberRelay:
         return (
             row.get("origin") in ("main", "live")
             and row.get("outcome") == "PENDING"
-            and row.get("seconds") in SIGNAL_TIMEFRAMES
+            and row.get("seconds") in ACTIVE_TIMEFRAMES
             and sent_at is not None and joined_at <= sent_at <= now
             and now - sent_at <= MAX_SEND_AGE_SECONDS
             and in_window(row["entry_at"], now)
@@ -783,7 +785,7 @@ class SubscriberRelay:
                         continue
                     if (
                         not self.store.allows_timeframe(chat_id, row["seconds"])
-                        or row["seconds"] not in SIGNAL_TIMEFRAMES
+                        or row["seconds"] not in ACTIVE_TIMEFRAMES
                     ):
                         continue
                     if (

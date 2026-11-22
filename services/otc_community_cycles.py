@@ -1,5 +1,7 @@
 """Shadow-only variants: M2/M5/M15 cycles and two separate M1 methods."""
 
+from services.otc_market import ACTIVE_TIMEFRAMES
+
 import asyncio
 import logging
 import time
@@ -65,7 +67,7 @@ def prepare(snapshot, now, diagnostic=None):
     if diagnostic is not None:
         diagnostic["planning_windows"] += 1
     rows = []
-    for seconds in (120, 300, 900):
+    for seconds in ACTIVE_TIMEFRAMES:
         if not aligned_entry(entry, seconds):
             if diagnostic is not None:
                 diagnostic["unaligned_timeframe"] += 1

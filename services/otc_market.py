@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from services.otc_strategy import Candle
 
 TIMEFRAMES = (60, 300, 900)
-ACTIVE_TIMEFRAMES = (120, 300, 900)
+ACTIVE_TIMEFRAMES = (120,)
 
 
 def utc_timestamp(value):

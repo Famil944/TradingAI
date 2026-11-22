@@ -65,11 +65,11 @@ class TimeframeDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 await relay.publish_now(bot, signal(f"new-{index}", seconds))
             sent = [call.args[0] for call in bot.send_message.await_args_list]
             self.assertEqual(sent.count(42), 1)
-            self.assertEqual(sent.count(43), 3)
+            self.assertEqual(sent.count(43), 1)
             self.assertTrue(store.delivered(42, "new-0"))
             self.assertIsNone(store.delivered(42, "new-1"))
             self.assertIsNone(store.delivered(42, "new-2"))
-            self.assertTrue(store.delivered(43, "new-1"))
+            self.assertIsNone(store.delivered(43, "new-1"))
 
     async def test_fallback_filters_new_messages_but_updates_prior_outcome(self):
         with tempfile.TemporaryDirectory() as d:
@@ -94,8 +94,8 @@ class TimeframeDeliveryTests(unittest.IsolatedAsyncioTestCase):
             bot.edit_message_text.assert_awaited_once()
             store.set_timeframe(42, 300, True)
             await relay.update(bot)
-            self.assertEqual(bot.send_message.await_count, 2)
-            self.assertTrue(store.delivered(42, "m5-new"))
+            self.assertEqual(bot.send_message.await_count, 1)
+            self.assertIsNone(store.delivered(42, "m5-new"))
 
 
 class TimeframeMenuTests(unittest.IsolatedAsyncioTestCase):
@@ -107,9 +107,9 @@ class TimeframeMenuTests(unittest.IsolatedAsyncioTestCase):
             menu = community.preferences_menu(store, 42)
             labels = [b.text for row in menu.inline_keyboard for b in row]
             self.assertIn("✅ M2", labels)
-            self.assertIn("✅ M5", labels)
-            self.assertIn("✅ M15", labels)
-            self.assertIn("c:tfpref:15", [b.callback_data
+            self.assertNotIn("✅ M5", labels)
+            self.assertNotIn("✅ M15", labels)
+            self.assertNotIn("c:tfpref:15", [b.callback_data
                                           for row in menu.inline_keyboard for b in row])
             msg = SimpleNamespace(
                 chat=SimpleNamespace(id=42, type="private"),
@@ -117,16 +117,16 @@ class TimeframeMenuTests(unittest.IsolatedAsyncioTestCase):
             )
             query = SimpleNamespace(
                 from_user=SimpleNamespace(id=42),
-                message=msg, data="c:tfpref:5",
+                message=msg, data="c:tfpref:2",
                 answer=AsyncMock(),
             )
             with patch.object(community, "subscribers", return_value=store):
                 await community.callbacks(query)
-                self.assertFalse(store.allows_timeframe(42, 300))
+                self.assertFalse(store.allows_timeframe(42, 120))
                 self.assertTrue(store.allows_timeframe(42, 900))
-                self.assertIn("M2, M15", msg.edit_text.await_args.args[0])
+                self.assertIn("ни одной", msg.edit_text.await_args.args[0])
                 await community.callbacks(query)
-                self.assertTrue(store.allows_timeframe(42, 300))
+                self.assertTrue(store.allows_timeframe(42, 120))
                 query.from_user.id = 43
                 query.message.chat.id = 43
                 await community.callbacks(query)

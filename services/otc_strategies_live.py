@@ -4,6 +4,8 @@ Candidates are produced prospectively by the existing causal research engine.
 A candidate only becomes a LIVE forecast after Telegram confirms delivery
 *before* entry. Older research candidates remain research, never backfilled.
 """
+from services.otc_market import ACTIVE_TIMEFRAMES
+
 import asyncio
 import hashlib
 import json
@@ -370,7 +372,7 @@ class LiveStrategyPublisher:
         self._diagnostic = {key: 0 for key in self._diagnostic}
         self._diagnostic_at = now
 
-    async def publish(self, bot, owner, enabled=True, allowed_timeframes=(120, 300, 900)):
+    async def publish(self, bot, owner, enabled=True, allowed_timeframes=ACTIVE_TIMEFRAMES):
         if not enabled:
             return
         now = self.clock()
@@ -384,7 +386,8 @@ class LiveStrategyPublisher:
         ))
         async def publish_row(row):
             now = self.clock()
-            if row["experiment"]["cycle_seconds"] not in allowed_timeframes:
+            if (row["experiment"]["cycle_seconds"] not in allowed_timeframes
+                    or row["experiment"]["cycle_seconds"] not in ACTIVE_TIMEFRAMES):
                 self._diagnostic["timeframe"] += 1
                 return
             if (row["observed_at"] < self.started_at - 2
