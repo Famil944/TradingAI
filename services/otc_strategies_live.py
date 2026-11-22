@@ -4,7 +4,7 @@ Candidates are produced prospectively by the existing causal research engine.
 A candidate only becomes a LIVE forecast after Telegram confirms delivery
 *before* entry. Older research candidates remain research, never backfilled.
 """
-from services.otc_market import ACTIVE_TIMEFRAMES
+from services.otc_market import symbol_priority, ACTIVE_TIMEFRAMES
 
 import asyncio
 import hashlib
@@ -234,7 +234,7 @@ def candidate_list(path, now):
     # deterministically without looking at future WIN/LOSS outcomes.
     result.sort(key=lambda r: (
         r["experiment"]["method"], r["experiment"]["cycle_seconds"],
-        r["entry_at"], -r["payout"], r["symbol"],
+        r["entry_at"], symbol_priority(r["symbol"]), -r["payout"], r["symbol"],
     ))
     unique = {}
     for row in result:

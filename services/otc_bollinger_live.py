@@ -1,6 +1,6 @@
 """Read-only three-attempt Bollinger plans. No orders or stake escalation."""
 
-from services.otc_market import ACTIVE_TIMEFRAMES, EXCLUDED_SYMBOLS
+from services.otc_market import symbol_priority, ACTIVE_TIMEFRAMES, EXCLUDED_SYMBOLS
 
 import asyncio
 import json
@@ -311,7 +311,7 @@ class BollingerCycles(MLPreview):
         # Stable ranking, not an invented probability; best payout then longer period.
         used = set()
         for plan in sorted(
-            plans, key=lambda r: (-r["payout"], -r["cycle_seconds"], r["symbol"])
+            plans, key=lambda r: (symbol_priority(r["symbol"]), -r["payout"], -r["cycle_seconds"], r["symbol"])
         ):
             if (
                 (plan["symbol"], plan["cycle_seconds"]) in used

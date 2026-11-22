@@ -1,5 +1,5 @@
 """RSI(2)/SMA200 on closed M1 candles, prospective shadow only."""
-from services.otc_market import ACTIVE_TIMEFRAMES, EXCLUDED_SYMBOLS
+from services.otc_market import symbol_priority, ACTIVE_TIMEFRAMES, EXCLUDED_SYMBOLS
 
 import asyncio
 import logging
@@ -74,7 +74,7 @@ def candidates(snapshot, now, *, decision_fn=None, version=VERSION):
                                        cycle_seconds=seconds, shadow_only=True))
             if check_data(row, snapshot, now):
                 continue
-            priority = (-asset.payout, symbol)
+            priority = (symbol_priority(symbol), -asset.payout, symbol)
             if seconds not in ranked or priority < ranked[seconds][0]:
                 ranked[seconds] = priority, row
     return [v[1] for _, v in sorted(ranked.items())]

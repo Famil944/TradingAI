@@ -198,3 +198,13 @@ No scheduling or strategy selection changes. Mixed versions remain disclosed.
 BITB_otc is excluded from strict/research catalogue selection and final delivery
 gates, plus live S1 and RSI/custom shadow candidate analysis. Historical rows
 and already published cycle settlement are preserved. No other symbols excluded.
+
+
+## 2026-11-22: explicit owner instrument preference
+
+AMZN_otc, ADA-USD_otc, AUDCAD_otc, AUDUSD_otc and #AXP_otc now form an
+equal preferred tier for catalogue and live/shadow candidate selection. Health,
+closure, payout and pending-cycle protection still apply. Rotation admits a
+preferred alternative after dwell time; healthy preferred pairs are not rotated
+out for lower-tier quiet exploration/payout alone. Other symbols remain fallbacks.
+This is a fixed owner instruction, not automatic fitting to rolling winrates.

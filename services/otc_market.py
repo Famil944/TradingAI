@@ -8,6 +8,11 @@ from services.otc_strategy import Candle
 TIMEFRAMES = (60, 300, 900)
 ACTIVE_TIMEFRAMES = (120,)
 EXCLUDED_SYMBOLS = frozenset({"BITB_otc"})
+PREFERRED_SYMBOLS = frozenset({"AMZN_otc", "ADA-USD_otc", "AUDCAD_otc", "AUDUSD_otc", "#AXP_otc"})
+
+
+def symbol_priority(symbol):
+    return 0 if symbol in PREFERRED_SYMBOLS else 1
 
 
 def utc_timestamp(value):
@@ -49,6 +54,7 @@ def eligible(instruments, now, max_age=60, *, research=False):
                 and math.isfinite(a.payout)
                 and 90 <= a.payout <= 100
                 else 1,
+                symbol_priority(a.symbol),
                 a.symbol,
             ),
         )
@@ -65,7 +71,7 @@ def eligible(instruments, now, max_age=60, *, research=False):
             and a.payout_at is not None
             and 0 <= now - a.payout_at <= max_age
         ),
-        key=lambda a: (-a.payout, a.symbol),
+        key=lambda a: (symbol_priority(a.symbol), -a.payout, a.symbol),
     )
 
 

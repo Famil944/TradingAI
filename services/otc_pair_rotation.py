@@ -6,6 +6,8 @@ returns never rank instruments. The caller must verify the pending journals
 again before closing a stream and must prefetch valid history for the new pair.
 """
 
+from services.otc_market import symbol_priority
+
 import math
 import sqlite3
 from contextlib import closing
@@ -70,6 +72,7 @@ def choose_pair_swap(
         if a.symbol not in chosen and _payout(a) >= 90
         and now - last_removed.get(a.symbol, float("-inf")) >= RETURN_COOLDOWN
     ]
+    alternatives.sort(key=lambda a: (symbol_priority(a.symbol), -_payout(a), a.symbol))
     if not alternatives:
         return None
 
@@ -92,13 +95,23 @@ def choose_pair_swap(
         ):
             return symbol, alternatives[0], "no_complete_candles"
 
+    # User-selected preferences apply only after health/protection checks.
+    for symbol in available:
+        if now - selected_at.get(symbol, now) < 600:
+            continue
+        preferred = next((a for a in alternatives
+                          if symbol_priority(a.symbol) < symbol_priority(symbol)), None)
+        if preferred:
+            return symbol, preferred, "owner_preference"
+
     # Prefer a meaningfully better offered payout, with a dwell period so
     # minor catalogue fluctuations cannot cause reconnect storms.
     for symbol in sorted(available, key=lambda s: (_payout(allowed[s]), s)):
         if now - selected_at.get(symbol, now) < 600:
             continue
         better = next(
-            (a for a in alternatives if _payout(a) >= _payout(allowed[symbol]) + 2),
+            (a for a in alternatives if symbol_priority(a.symbol) <= symbol_priority(symbol)
+             and _payout(a) >= _payout(allowed[symbol]) + 2),
             None,
         )
         if better:
@@ -117,7 +130,8 @@ def choose_pair_swap(
             continue
         comparable = next(
             (a for a in alternatives
-             if _payout(allowed[symbol]) >= 90
+             if symbol_priority(a.symbol) <= symbol_priority(symbol)
+             and _payout(allowed[symbol]) >= 90
              and _payout(a) >= _payout(allowed[symbol]) - MAX_PAYOUT_DROP),
             None,
         )
