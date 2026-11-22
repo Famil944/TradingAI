@@ -41,7 +41,7 @@ class CycleReportTests(unittest.TestCase):
             self.assertEqual(m5["resolved"], 1)
             self.assertEqual(m5["counts"]["stage2"], 1)
             self.assertEqual(m5["win_rate"], 1)
-            self.assertEqual(len(result["shadow"]), 9)
+            self.assertEqual(len(result["shadow"]), 12)
             public = export(root, now=200)
             self.assertIn("cycles", public)
             self.assertNotIn("private-value", json.dumps(public))

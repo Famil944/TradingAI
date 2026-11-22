@@ -92,11 +92,11 @@ def menu(chat_id, expanded=False):
                     InlineKeyboardButton(text="Запустить", callback_data="otc:start:0"),
                     InlineKeyboardButton(text="Остановить", callback_data="otc:stop"),
                 ],
-                [InlineKeyboardButton(text="📊 Статистика S1–S4", callback_data="c:cycles:all:today:all:global")],
+                [InlineKeyboardButton(text="📊 Статистика S1–S5", callback_data="c:cycles:all:today:all:global")],
                 [InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users"),
                  InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue")],
                 [InlineKeyboardButton(text="🧪 Фон · RSI(2)", callback_data="otc:rsishadow"),
-                 InlineKeyboardButton(text="🧪 Свой метод", callback_data="otc:exhaustion")],
+                 InlineKeyboardButton(text="🧪 S5 · История фона", callback_data="otc:exhaustion")],
                 [InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")],
                 [InlineKeyboardButton(text="⚙️ Дополнительно", callback_data="otc:more"),
                  InlineKeyboardButton(text="🔄 Обновить", callback_data="otc:panel:show")],
@@ -149,7 +149,7 @@ def menu(chat_id, expanded=False):
         InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue"),
     ])
     rows.append([InlineKeyboardButton(text="🧪 Фон · RSI(2)", callback_data="otc:rsishadow"),
-                 InlineKeyboardButton(text="🧪 Свой метод", callback_data="otc:exhaustion")])
+                 InlineKeyboardButton(text="🧪 S5 · История фона", callback_data="otc:exhaustion")])
     rows.append([InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")])
     if expanded:
         rows.append(

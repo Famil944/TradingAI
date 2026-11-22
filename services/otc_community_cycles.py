@@ -21,6 +21,7 @@ METHODS = {
     "bb_reentry": "Боллинджер · возврат внутрь",
     "break_retest": "Пробой и ретест",
     "ema_pullback": "Откат EMA9/19",
+    "exhaustion": "Свой метод · Истощение и отскок",
 }
 
 
@@ -28,6 +29,11 @@ def signals(minutes, seconds, asof):
     decisions = {
         k: v for k, v in forecasts(minutes, seconds, asof).items() if k in METHODS
     }
+    if seconds == 120:
+        from services.otc_exhaustion_shadow import decision as exhaustion_decision
+        custom = exhaustion_decision(minutes, asof)
+        if custom is not None:
+            decisions["exhaustion"] = custom
     period = 60 if seconds == 120 else seconds
     bars = aggregate([b for b in minutes if b.time + 60 <= asof], period)[-60:]
     if (
@@ -172,7 +178,7 @@ class ShadowCycles:
         await asyncio.to_thread(self.journal.record, rows)
         self.diagnostic["written_to_journal"] += len(rows)
         if self.clock() - self.diagnostic_at >= 300:
-            LOG.info("OTC S2-S4 candidate production diagnostics (last %.0fs): %s",
+            LOG.info("OTC S2-S5 candidate production diagnostics (last %.0fs): %s",
                      self.clock() - self.diagnostic_at, dict(self.diagnostic))
             self.diagnostic.clear()
             self.diagnostic_at = self.clock()

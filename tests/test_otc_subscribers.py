@@ -407,7 +407,7 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
         ]
         with patch.object(community, "snapshots", return_value=data), patch.object(community, "stats_since", return_value=0), patch.object(community, "reset_note", return_value=""):
             text = community.compact_overview("2")
-        self.assertEqual(text.count("50.0%"), 4)
+        self.assertEqual(text.count("50.0%"), 5)
         self.assertIn("S1 · 50.0% · ✅ 1 / ❌ 1", text)
         self.assertIn("⏳ 1 · ➖ 1 · ❔ 1", text)
         self.assertIn("WR = ✅ / (✅ + ❌)", text)

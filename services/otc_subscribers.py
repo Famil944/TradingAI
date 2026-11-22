@@ -34,7 +34,7 @@ MAX_SEND_AGE_SECONDS = 90
 POLL_SECONDS = 2  # fallback/reconciliation only; new signals are pushed immediately
 MAX_USERS_PER_TICK = 200
 TRIAL_DAYS = 7
-SIGNAL_SOURCES = ("main", "bb_reentry", "break_retest", "ema_pullback")
+SIGNAL_SOURCES = ("main", "bb_reentry", "break_retest", "ema_pullback", "exhaustion")
 SIGNAL_TIMEFRAMES = (120, 300, 900)  # M2, M5, M15; subscriber delivery only.
 DAY = 86400
 SESSION_SECONDS = 3600
@@ -504,7 +504,7 @@ class Subscribers:
             ).fetchone()[0]
 
     def source_preferences(self, chat_id):
-        """Default: all four published sources enabled; preferences persist per user."""
+        """Default: all five published sources enabled; preferences persist per user."""
         with closing(self._connect()) as db:
             rows = db.execute(
                 "SELECT source,enabled FROM source_preferences WHERE chat_id=?",

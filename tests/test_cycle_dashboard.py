@@ -68,7 +68,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_all_four_strategies_stay_independent(self):
         groups = {"main": [signal("s1")], "bb_reentry": [signal("s2", "LOSS", ["LOSS"] * 3)],
-                  "break_retest": [], "ema_pullback": [signal("s4", "PENDING", [])]}
+                  "break_retest": [], "ema_pullback": [signal("s4", "PENDING", [])], "exhaustion": [signal("s5", "WIN", ["LOSS", "WIN"])]}
         with patch.object(community, "stats_since", return_value=0), \
              patch.object(community, "reset_note", return_value=""), \
              patch.object(community, "snapshots", side_effect=lambda k: groups[k]):
@@ -76,6 +76,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("S1 · 100.0% · ✅ 1 / ❌ 0", body)
         self.assertIn("S2 · 0.0% · ✅ 0 / ❌ 1", body)
         self.assertIn("S3 · —", body)
+        self.assertIn("S5 · 100.0% · ✅ 1 / ❌ 0", body)
         self.assertLess(len(body), 650)
 
     def test_expiry_filter_does_not_mix_cycle_lengths(self):

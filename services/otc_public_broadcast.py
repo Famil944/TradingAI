@@ -23,6 +23,7 @@ STRATEGY_IDS = {
     "bb_reentry": "S2",
     "break_retest": "S3",
     "ema_pullback": "S4",
+    "exhaustion": "S5",
 }
 
 

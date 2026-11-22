@@ -62,6 +62,26 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         self.now[0] = 1001
         self.bot = FakeBot()
 
+    async def test_s5_delivery_deduplicates_and_settles_full_cycle(self):
+        self.candidates.record([candidate("exhaustion", "AUDCAD_otc")])
+        await self.publisher.publish(self.bot, 777)
+        await self.publisher.publish(self.bot, 777)
+        self.assertEqual(len(self.bot.sent), 1)
+        self.assertIn("S5", self.bot.sent[0][1])
+        rows = load_live_signals(self.publisher.journal.path)
+        self.assertEqual(rows[0]["strategy"], "exhaustion")
+        self.candidates.samples([("AUDCAD_otc", t, t, t, p)
+                                 for t, p in [(1020, 100), (1140, 99), (1260, 101)]])
+        self.now[0] = 1261
+        await self.publisher.settle()
+        row = load_live_signals(self.publisher.journal.path)[0]
+        self.assertEqual(row["outcome"], "WIN")
+        self.assertEqual(row["attempts"], ["LOSS", "WIN"])
+        store = Subscribers(self.root / "data" / "subscribers.db")
+        self.assertTrue(store.source_preferences(123)["exhaustion"])
+        store.set_source(123, "exhaustion", False)
+        self.assertFalse(store.source_preferences(123)["exhaustion"])
+
     async def test_secondary_strategies_share_s1_delivery_window(self):
         self.candidates.record([candidate("bb_reentry", "BTC")])
         self.now[0] = 1001
@@ -398,7 +418,7 @@ class HistoricalAndSubscriberTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(community, "reset_note", return_value=""):
                 overview = community.overview_text()
             self.assertIn("📊 Винрейт", overview)
-            self.assertEqual(overview.count("✅ 0 / ❌ 0"), 4)
+            self.assertEqual(overview.count("✅ 0 / ❌ 0"), 5)
 
 
 

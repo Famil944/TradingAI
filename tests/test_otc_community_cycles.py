@@ -18,7 +18,7 @@ class CommunityCyclesTests(unittest.TestCase):
         decisions = {key: {"direction": "UP"} for key in METHODS}
         with patch("services.otc_community_cycles.signals", return_value=decisions):
             rows = prepare(({"A": bars}, {"A": asset}, {"A": now}, None), now)
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 4)
         self.assertTrue(all(not r["selected"] for r in rows))
         self.assertEqual(
             {r["experiment"]["cycle_seconds"] for r in rows}, {120}

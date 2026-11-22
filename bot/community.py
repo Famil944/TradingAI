@@ -23,7 +23,7 @@ from services.otc_public_stats import (
 
 router = Router(name="community")
 MZ = ZoneInfo("Europe/Moscow")
-METHODS = ("bb_reentry", "break_retest", "ema_pullback")
+METHODS = ("bb_reentry", "break_retest", "ema_pullback", "exhaustion")
 SECONDS = {"2": 120, "5": 300, "15": 900, "all": None}
 PERIODS = {
     "today": "Сегодня (МСК)",
@@ -159,7 +159,7 @@ def preferences_text(store, user_id):
     enabled_times = [f"M{seconds // 60}" for seconds, enabled
                      in timeframes.items() if enabled and seconds == 120]
     return (
-        f"🎛 Мои сигналы · стратегий {count}/4\n"
+        f"🎛 Мои сигналы · стратегий {count}/5\n"
         "Нажми на стратегию или экспирацию, чтобы включить или отключить.\n"
         "Сейчас доступна только экспирация M2 (2 минуты).\n"
         "Включённые экспирации: "
@@ -173,9 +173,10 @@ STRATEGIES = (
     ("bb_reentry", "② Стратегия 2"),
     ("break_retest", "③ Стратегия 3"),
     ("ema_pullback", "④ Стратегия 4"),
+    ("exhaustion", "⑤ S5 · Свой метод"),
 )
 
-IDS = {"main": "S1", "bb_reentry": "S2", "break_retest": "S3", "ema_pullback": "S4"}
+IDS = {"main": "S1", "bb_reentry": "S2", "break_retest": "S3", "ema_pullback": "S4", "exhaustion": "S5"}
 TERMS = (
     "💎 TRADINGAI · ДОСТУП К СИГНАЛАМ\n\n"
     "Бот публикует автоматические прогнозы движения цены. "
@@ -196,7 +197,7 @@ INFO = (
     "🟢 ВВЕРХ — прогноз роста цены\n"
     "🔴 ВНИЗ — прогноз снижения цены\n"
     "M2 — длительность одной попытки: 2 минуты.\n\n"
-    "S1–S4 — четыре независимых способа анализа, а не уровни сложности.\n\n"
+    "S1–S5 — пять независимых способа анализа, а не уровни сложности.\n\n"
     "Выбери раздел ниже, чтобы узнать подробности."
 )
 
@@ -221,7 +222,7 @@ GUIDE_TRADE = (
 
 GUIDE_CODES = (
     "🔎 ЧТО ЗНАЧАТ ОБОЗНАЧЕНИЯ\n\n"
-    "S1, S2, S3, S4 — номера четырёх отдельных систем анализа. "
+    "S1, S2, S3, S4, S5 — номера пяти отдельных систем анализа. "
     "Каждая формирует свои прогнозы.\n\n"
     "M2 = 2 минуты\n"
     "Это длительность ОДНОЙ попытки, не количество сигналов.\n\n"
@@ -245,7 +246,7 @@ GUIDE_ACCESS = (
     "• Если час истёк или наступило 00:00 МСК, получение новых "
     "сигналов приостанавливается до следующего запуска. "
     "Подписка при этом сохраняется.\n"
-    "• В «Мои сигналы» можно включить или выключить S1–S4 по отдельности.\n"
+    "• В «Мои сигналы» можно включить или выключить S1–S5 по отдельности.\n"
     "• В «Винрейт» доступны результаты за сегодня, 7 и 30 дней.\n\n"
     "⚠️ Прогнозы не гарантируют прибыль. Бинарные опционы сопряжены "
     "с высоким риском. Рассчитывайте возможный убыток до любой сделки."
@@ -314,7 +315,7 @@ def cycle_dashboard(source="all", period="today", timeframe="all", scope="global
                 if stats_timestamp(r) >= since
                 and (timeframe == "all" or r["seconds"] == SECONDS[timeframe])
                 and (delivered is None or r["id"] in delivered)]
-        label = IDS[code] + (" · " + source_title(code) if owner else " · Стратегия " + IDS[code][1:])
+        label = IDS[code] + (" · " + source_title(code) if owner or code == "exhaustion" else " · Стратегия " + IDS[code][1:])
         lines.append(cycle_compact(IDS[code], rows) if source == "all"
                      else cycle_block(label, rows, detailed=True))
         if source != "all" and timeframe == "all":
@@ -322,7 +323,7 @@ def cycle_dashboard(source="all", period="today", timeframe="all", scope="global
         lines.append("")
     if source == "all":
         lines.extend(["WR = ✅ / (✅ + ❌). ⏳ в работе · ➖ ничья · ❔ нет данных.",
-                      "Нажми S1–S4 для подробностей.",
+                      "Нажми S1–S5 для подробностей.",
                       "Результаты прогнозов, не сделок на счёте."])
     else:
         lines.extend(["① / ② / ③ — на какой попытке выигран цикл.",
@@ -343,7 +344,7 @@ def hourly_dashboard(source="all", period="7d", timeframe="2", scope="global", u
             if stats_timestamp(r) >= since
             and (timeframe == "all" or r["seconds"] == SECONDS[timeframe])
             and (delivered is None or r["id"] in delivered)]
-    label = "S1–S4 вместе" if source == "all" else IDS[source]
+    label = "S1–S5 вместе" if source == "all" else IDS[source]
     label += " · " + PERIODS[period] + " · " + ("все сроки" if timeframe == "all" else "M"+timeframe)
     label += " · " + ("мои сигналы" if scope == "personal" else "общая")
     return hourly_text(rows,label) + reset_note()
@@ -566,7 +567,7 @@ async def help_menu(message: types.Message):
         await message.answer(
             "ℹ️ Управление TradingAI\n"
             "/start или /otc — главное меню и управление потоком.\n"
-            "/signal_stats — статистика S1–S4.\n"
+            "/signal_stats — статистика S1–S5.\n"
             "/otc_stats — виртуальная статистика.\n"
             "/access — пользователи и подписки.\n"
             "/suggestions — предложения подписчиков.\n"
@@ -604,7 +605,7 @@ async def reset_winrate_command(message: types.Message):
         return
     token = await asyncio.to_thread(winrate_reset().prepare)
     await message.answer(
-        "🧹 Начать новый отсчёт статистики S1–S4?\n"
+        "🧹 Начать новый отсчёт статистики S1–S5?\n"
         "Периоды «Сегодня», «7 дней», «30 дней» и «Всё» будут считать "
         "только прогнозы, отправленные после подтверждения.\n\n"
         "Все старые WIN/LOSS сохранятся в журналах. "
@@ -862,7 +863,7 @@ async def callbacks(query: types.CallbackQuery):
             token = await asyncio.to_thread(winrate_reset().prepare)
             await query.answer()
             await render_menu(query.message,
-                "🧹 Сбросить отображаемый винрейт всех S1–S4?\n"
+                "🧹 Сбросить отображаемый винрейт всех S1–S5?\n"
                 "Новый отсчёт начнётся с момента подтверждения. "
                 "Старые исходы останутся в журналах, но не войдут "
                 "в текущие отчёты.",
@@ -885,7 +886,7 @@ async def callbacks(query: types.CallbackQuery):
                 return
             await query.answer("Новый отсчёт начат")
             await render_menu(query.message,
-                "✅ Новый отсчёт винрейта S1–S4 начат.\n"
+                "✅ Новый отсчёт винрейта S1–S5 начат.\n"
                 "До новых завершённых прогнозов WR будет равен «—». "
                 "Прежняя история WIN/LOSS сохранена.",
                 reply_markup=sources(), parse_mode=None,

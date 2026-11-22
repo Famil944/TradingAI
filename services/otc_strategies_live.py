@@ -30,8 +30,8 @@ LOG = logging.getLogger(__name__)
 LIVE_VERSION = "independent-cycles-lead15-20-v2"
 RECOVERY_GRACE = 180
 POLL_INTERVAL = 1.0
-# S1-S4 have independent strategy/timeframe reservations and one live window.
-STRATEGY_PRIORITY = {"bb_reentry": 0, "break_retest": 1, "ema_pullback": 2}
+# S1-S5 have independent strategy/timeframe reservations and one live window.
+STRATEGY_PRIORITY = {"bb_reentry": 0, "break_retest": 1, "ema_pullback": 2, "exhaustion": 3}
 
 
 def _connect(path):
@@ -367,7 +367,7 @@ class LiveStrategyPublisher:
         now = self.clock()
         if now - self._diagnostic_at < 300:
             return
-        LOG.info("OTC S2-S4 delivery diagnostics (last %.0fs): %s",
+        LOG.info("OTC S2-S5 delivery diagnostics (last %.0fs): %s",
                  now - self._diagnostic_at, self._diagnostic)
         self._diagnostic = {key: 0 for key in self._diagnostic}
         self._diagnostic_at = now

@@ -15,6 +15,7 @@ METHOD_LABELS = {
     "bb_reentry": "Боллинджер · возврат",
     "break_retest": "Пробой и ретест",
     "ema_pullback": "Откат EMA9/19",
+    "exhaustion": "Свой метод · Истощение и отскок",
 }
 MAIN_LABEL = "Боллинджер ×3"
 

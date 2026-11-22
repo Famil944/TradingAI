@@ -17,6 +17,13 @@ def bars():
 
 
 class ExhaustionTests(unittest.TestCase):
+    def test_live_engine_uses_same_closed_candle_rule_only_for_m2(self):
+        from services.otc_community_cycles import signals
+        history = bars()
+        expected = decision(history, 1800)
+        self.assertEqual(signals(history, 120, 1800)["exhaustion"], expected)
+        self.assertNotIn("exhaustion", signals(history, 900, 1800))
+
     def test_symmetric_confirmation_closed_only(self):
         history=bars()
         self.assertEqual(decision(history,1800)['direction'],'UP')
