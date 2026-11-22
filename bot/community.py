@@ -295,6 +295,7 @@ def cycle_menu(source="all", period="today", timeframe="all", scope="global", ow
         rows.append([("Все стратегии", target(s="all"))])
         if owner:
             rows.append([("📋 Журнал циклов", f"c:stats:{source}:{timeframe}:B:10:{period}")])
+    rows.append([("🕒 По часам МСК", f"c:hours:{source}:{period}:{timeframe}:{scope}")])
     rows.append([("🔄 Обновить", target()), ("◀ Меню", "c:home")])
     return keyboard(rows)
 
@@ -331,6 +332,41 @@ def cycle_dashboard(source="all", period="today", timeframe="all", scope="global
     if scope == "personal":
         lines.append("Только карточки с подтверждённой доставкой в твой чат.")
     return "\n".join(lines) + reset_note()
+
+
+def hourly_dashboard(source="all", period="7d", timeframe="2", scope="global", user_id=None, owner=False):
+    from services.otc_hourly_stats import hourly_text
+    since = stats_since(period)
+    delivered = subscribers().delivered_ids(user_id) if scope == "personal" else None
+    rows = [r for code, _ in STRATEGIES if source in ("all", code)
+            for r in snapshots(code)
+            if stats_timestamp(r) >= since
+            and (timeframe == "all" or r["seconds"] == SECONDS[timeframe])
+            and (delivered is None or r["id"] in delivered)]
+    label = "S1–S4 вместе" if source == "all" else IDS[source]
+    label += " · " + PERIODS[period] + " · " + ("все сроки" if timeframe == "all" else "M"+timeframe)
+    label += " · " + ("мои сигналы" if scope == "personal" else "общая")
+    return hourly_text(rows,label) + reset_note()
+
+
+async def show_hours(message, *, source, period, timeframe, scope, owner):
+    text = await asyncio.to_thread(hourly_dashboard,source,period,timeframe,scope,message.chat.id,owner)
+    markup = cycle_menu(source,period,timeframe,scope,owner)
+    filtered=[]
+    for row in markup.inline_keyboard:
+        kept=[]
+        for button in row:
+            action=button.callback_data or ""
+            if action.startswith(("c:hours:","c:stats:")):
+                continue
+            if action.startswith("c:cycles:"):
+                button.callback_data=action.replace("c:cycles:","c:hours:",1)
+            kept.append(button)
+        if kept:
+            filtered.append(kept)
+    markup.inline_keyboard=filtered
+    markup.inline_keyboard.append([InlineKeyboardButton(text="◀ Общий винрейт",callback_data=f"c:cycles:{source}:{period}:{timeframe}:{scope}")])
+    await render_menu(message,text,reply_markup=markup)
 
 
 async def show_cycles(message, *, source="all", period="today", timeframe="all", scope="global", owner=False, edit=False):
@@ -781,7 +817,7 @@ async def callbacks(query: types.CallbackQuery):
     owner = is_owner(query.from_user)
     admin_chat = owner and query.message.chat.id == settings.admin_chat_id
     target = action[1] if len(action) > 1 else ""
-    if target == "cycles":
+    if target in ("cycles", "hours"):
         if len(action) != 6 or action[2] not in ("all", *IDS) or action[3] not in PERIODS or action[4] not in SECONDS or action[5] not in ("global", "personal"):
             await query.answer("Некорректный фильтр", show_alert=True)
             return
@@ -789,8 +825,12 @@ async def callbacks(query: types.CallbackQuery):
             await query.answer("Нет активного доступа", show_alert=True)
             return
         await query.answer()
-        await show_cycles(query.message, source=action[2], period=action[3],
-                          timeframe=action[4], scope=action[5], owner=owner, edit=True)
+        if target == "hours":
+            await show_hours(query.message, source=action[2], period=action[3],
+                             timeframe=action[4], scope=action[5], owner=owner)
+        else:
+            await show_cycles(query.message, source=action[2], period=action[3],
+                              timeframe=action[4], scope=action[5], owner=owner, edit=True)
         return
     if target in ("grant", "approve", "block", "unblock", "access", "user"):
         if not admin_chat:

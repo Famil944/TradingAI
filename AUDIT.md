@@ -179,3 +179,15 @@ Shared existing quote stream, bounded off-thread calculations, no extra API
 requests or subscriber sends. Same 15–20s observation window. Highest payout
 then symbol ranking; one full-cycle slot per method/expiry survives restart.
 Report is admin-only via “Свой метод”; old experiments stay disabled.
+
+
+## 2026-11-22: hourly full-cycle report
+
+Cycle statistics now link to a Moscow-hour report, grouped by original entry_at
+(not resolution time or individual attempts). Strategy, period, expiry, personal
+confirmed-delivery scope and reset cutoff are preserved. All 24 hours show WR,
+WIN/LOSS and unknown/pending counts; missing entry timestamps are disclosed.
+Descriptive leaders require >=20 known cycles over >=3 distinct entry dates
+and <=20% unknown/incomplete among finished rows. These are presentation gates,
+not statistical significance or a recommendation to restrict trading hours.
+No scheduling or strategy selection changes. Mixed versions remain disclosed.
