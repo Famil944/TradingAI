@@ -21,7 +21,7 @@ class RelayReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.now = 1001
         self.relay = SubscriberRelay(self.root, store=self.store, clock=lambda: self.now)
         self.row = dict(id="live:one", origin="live", strategy="bb_reentry",
-                        symbol="TEST OTC", direction="UP", seconds=120,
+                        symbol="TEST OTC", direction="UP", seconds=60,
                         sent_at=1000, entry_at=1020, created_at=1000,
                         outcome="PENDING", attempts=[])
         self.bot = SimpleNamespace(
@@ -79,7 +79,7 @@ class OwnerAccountingTests(unittest.IsolatedAsyncioTestCase):
                                      clock=lambda: 7180,
                                      subscriber_relay=SimpleNamespace(
                                          publish_now=AsyncMock(side_effect=RuntimeError)))
-            engine.allowed_timeframes = (120,)
+            engine.allowed_timeframes = (60,)
             asset = SimpleNamespace(open=True, payout=93, observed_at=7180, name="TEST")
             snapshot = ({"A": []}, {"A": asset}, {"A": 7180}, None)
             engine.observe(*snapshot)

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from services.otc_strategy import Candle
 
 TIMEFRAMES = (60, 300, 900)
-ACTIVE_TIMEFRAMES = (120,)
+ACTIVE_TIMEFRAMES = (60,)
 EXCLUDED_SYMBOLS = frozenset({"BITB_otc"})
 PREFERRED_SYMBOLS = frozenset({"AMZN_otc", "ADA-USD_otc", "AUDCAD_otc", "AUDUSD_otc", "#AXP_otc"})
 

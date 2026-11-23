@@ -99,7 +99,7 @@ class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             journal = CycleJournal(Path(folder) / "cycles.db", per_horizon=True)
             engine = BollingerCycles(journal, clock=lambda: 7180)
-            engine.allowed_timeframes = (120,)
+            engine.allowed_timeframes = (60,)
             bars = [
                 Candle(7140 - i * 60, 100, 101, 99, 100.5) for i in range(60, 0, -1)
             ]
@@ -119,8 +119,8 @@ class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
                 await engine.plan(bot, 1, snapshot)
             bot.send_message.assert_awaited_once()
             self.assertEqual(len(journal.pending()), 1)
-            self.assertTrue({7200, 7320, 7440, 7560} <= engine.sampler.targets["A"])
-            self.assertIn("БОЛЛИНДЖЕР ×3 · M2", bot.send_message.call_args.args[1])
+            self.assertTrue({7200, 7260, 7320, 7380} <= engine.sampler.targets["A"])
+            self.assertIn("БОЛЛИНДЖЕР ×3 · M1", bot.send_message.call_args.args[1])
 
     async def test_s1_only_sends_m2_even_at_shared_boundary(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -149,7 +149,7 @@ class LiveCycleAsyncTests(unittest.IsolatedAsyncioTestCase):
             pending = journal.pending()
             self.assertEqual(
                 {r["expires_at"] - r["entry_at"] for r in pending},
-                {360},
+                {180},
             )
 
     async def test_first_win_settles_early_and_preserves_attempt(self):

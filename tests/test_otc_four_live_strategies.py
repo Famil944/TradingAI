@@ -34,7 +34,7 @@ class FakeBot:
         self.edited.append((chat_id, message_id, text))
 
 
-def candidate(method, symbol, observed=1000, entry=1020, seconds=120, payout=92):
+def candidate(method, symbol, observed=1000, entry=1020, seconds=60, payout=92):
     return {
         "symbol": symbol, "direction": "UP", "observed_at": observed,
         "entry_at": entry, "expires_at": entry + 3 * seconds,
@@ -71,7 +71,7 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         rows = load_live_signals(self.publisher.journal.path)
         self.assertEqual(rows[0]["strategy"], "exhaustion")
         self.candidates.samples([("AUDCAD_otc", t, t, t, p)
-                                 for t, p in [(1020, 100), (1140, 99), (1260, 101)]])
+                                 for t, p in [(1020, 100), (1080, 99), (1140, 101)]])
         self.now[0] = 1261
         await self.publisher.settle()
         row = load_live_signals(self.publisher.journal.path)[0]
@@ -93,9 +93,9 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_independent_sends_do_not_wait_for_other_telegram_replies(self):
         self.candidates.record([
-            candidate("bb_reentry", "BTC", seconds=120),
-            candidate("break_retest", "ETH", seconds=120),
-            candidate("ema_pullback", "AUDCHF", seconds=120),
+            candidate("bb_reentry", "BTC", seconds=60),
+            candidate("break_retest", "ETH", seconds=60),
+            candidate("ema_pullback", "AUDCHF", seconds=60),
         ])
         started = []
         ready = asyncio.Event()
@@ -117,10 +117,11 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_disabled_timeframes_are_not_published(self):
         self.candidates.record([
-            candidate("bb_reentry", "BTC", seconds=120),
+            candidate("bb_reentry", "BTC", seconds=60),
+            candidate("break_retest", "BTC", seconds=120),
             candidate("break_retest", "BTC", seconds=300),
             candidate("ema_pullback", "BTC", seconds=900),
-            candidate("break_retest", "ETH", seconds=120),
+            candidate("break_retest", "ETH", seconds=60),
         ])
         await self.publisher.publish(self.bot, 777)
         # S2 M2, S3 M5, S4 M15 on the same pair may coexist;
@@ -129,12 +130,12 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         rows = load_live_signals(self.root / "data" / "community-live.db")
         self.assertEqual(
             {(r["strategy"], r["symbol"], r["seconds"]) for r in rows},
-            {("bb_reentry", "BTC OTC", 120),
-             ("break_retest", "ETH OTC", 120)},
+            {("bb_reentry", "BTC OTC", 60),
+             ("break_retest", "ETH OTC", 60)},
         )
 
     async def test_existing_s1_claim_does_not_block_s2(self):
-        self.candidates.record([candidate("bb_reentry", "BTC", seconds=120)])
+        self.candidates.record([candidate("bb_reentry", "BTC", seconds=60)])
         guard = self.root / "data" / "signal-delivery.db"
         self.assertTrue(claim(guard, dict(
             symbol="BTC", direction="DOWN", entry_at=1020,
@@ -151,9 +152,9 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         await self.publisher.publish(self.bot, 777)
         self.candidates.samples([
             ("BTC", 1020, 1020, 1020, 100),
-            ("BTC", 1140, 1140, 1140, 101),
+            ("BTC", 1080, 1080, 1080, 101),
         ])
-        self.now[0] = 1143
+        self.now[0] = 1083
         await self.publisher.settle()
         self.assertEqual(load_live_signals(
             self.root / "data" / "community-live.db"
@@ -167,9 +168,9 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.bot.sent), 2)
         # A second S3 M2 waits until the S3 M2 cycle ends at 1560.
         self.candidates.record([candidate(
-            "break_retest", "ETH", observed=1360, entry=1380
+            "break_retest", "ETH", observed=1300, entry=1320
         )])
-        self.now[0] = 1361
+        self.now[0] = 1301
         await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 2)
         # The candidate journal retains the rejected ETH proposal at 1380,
@@ -183,9 +184,9 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_three_independent_strategies_delivered_with_distinct_names(self):
         self.candidates.record([
-            candidate("bb_reentry", "BTC", seconds=120),
-            candidate("break_retest", "ETH", seconds=120),
-            candidate("ema_pullback", "AUDCHF", seconds=120),
+            candidate("bb_reentry", "BTC", seconds=60),
+            candidate("break_retest", "ETH", seconds=60),
+            candidate("ema_pullback", "AUDCHF", seconds=60),
         ])
         await self.publisher.publish(self.bot, 777)
         self.assertEqual(len(self.bot.sent), 3)
@@ -201,20 +202,20 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_each_strategy_has_own_winrate_with_no_research_backfill(self):
         self.candidates.record([
-            candidate("bb_reentry", "BTC", seconds=120),
-            candidate("break_retest", "ETH", seconds=120),
-            candidate("ema_pullback", "AUDCHF", seconds=120),
+            candidate("bb_reentry", "BTC", seconds=60),
+            candidate("break_retest", "ETH", seconds=60),
+            candidate("ema_pullback", "AUDCHF", seconds=60),
         ])
         await self.publisher.publish(self.bot, 777)
         self.candidates.samples([
             ("BTC", 1020, 1020, 1020.1, 100.0),
-            ("BTC", 1140, 1140, 1140.1, 101.0),
+            ("BTC", 1080, 1080, 1080.1, 101.0),
             ("ETH", 1020, 1020, 1020.1, 100.0),
-            ("ETH", 1140, 1140, 1140.1, 99.0),
+            ("ETH", 1080, 1080, 1080.1, 99.0),
             ("AUDCHF", 1020, 1020, 1020.1, 100.0),
-            ("AUDCHF", 1140, 1140, 1140.1, 101.0),
+            ("AUDCHF", 1080, 1080, 1080.1, 101.0),
         ])
-        self.now[0] = 1143
+        self.now[0] = 1083
         await self.publisher.settle()
         rows = load_live_signals(self.root / "data" / "community-live.db")
         states = {r["strategy"]: r["outcome"] for r in rows}
@@ -236,9 +237,9 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         await self.publisher.publish(self.bot, 777)
         self.candidates.samples([
             ("BTC", 1020, 1020, 1020, 100),
-            ("BTC", 1140, 1140, 1140, 101),
+            ("BTC", 1080, 1080, 1080, 101),
         ])
-        self.now[0] = 1140
+        self.now[0] = 1080
         await self.publisher.settle()
         rows = load_live_signals(self.root / "data" / "community-live.db")
         self.assertEqual(rows[0]["outcome"], "WIN")
@@ -246,11 +247,11 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_secondary_signals_are_not_sent_late_or_outside_owner_durations(self):
         self.candidates.record([
-            candidate("bb_reentry", "BTC", seconds=120),
+            candidate("bb_reentry", "BTC", seconds=60),
             candidate("break_retest", "ETH", seconds=300),
         ])
         await self.publisher.publish(
-            self.bot, 777, enabled=True, allowed_timeframes=(120,)
+            self.bot, 777, enabled=True, allowed_timeframes=(60,)
         )
         self.assertEqual(len(self.bot.sent), 1)
         self.now[0] = 1019
@@ -281,9 +282,9 @@ class StrategyLiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot.edited, [])
         self.candidates.samples([
             ("BTC", 1020, 1020, 1020.1, 100),
-            ("BTC", 1140, 1140, 1140.1, 101),
+            ("BTC", 1080, 1080, 1080.1, 101),
         ])
-        self.now[0] = 1143
+        self.now[0] = 1083
         await self.publisher.settle()
         await self.publisher.update_owner_cards(self.bot, 777)
         await self.publisher.update_owner_cards(self.bot, 777)

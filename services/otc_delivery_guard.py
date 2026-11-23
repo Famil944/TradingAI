@@ -72,8 +72,8 @@ def claim(path, selected, source, now=None, *, exclusive_timeframe=False):
     the strict scoped lock lasts until the scheduled third attempt ends.
     """
     duration = selected["expires_at"] - selected["entry_at"]
-    if exclusive_timeframe and duration not in (3 * 120, 3 * 300, 3 * 900):
-        raise ValueError("Exclusive live timeframe must be M2/M5/M15 x3")
+    if exclusive_timeframe and duration not in (3 * 60, 3 * 120, 3 * 300, 3 * 900):
+        raise ValueError("Exclusive live timeframe must be M1/M2/M5/M15 x3")
     with closing(sqlite3.connect(path, timeout=1)) as db:
         db.execute("BEGIN IMMEDIATE")
         db.execute("""CREATE TABLE IF NOT EXISTS claims(

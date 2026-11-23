@@ -29,7 +29,7 @@ def signals(minutes, seconds, asof):
     decisions = {
         k: v for k, v in forecasts(minutes, seconds, asof).items() if k in METHODS
     }
-    if seconds == 120:
+    if seconds in (60, 120):
         from services.otc_exhaustion_shadow import decision as exhaustion_decision
         custom = exhaustion_decision(minutes, asof)
         if custom is not None:
@@ -199,7 +199,7 @@ def report(path, since, now):
     groups = {
         (method, seconds): Counter()
         for method in METHODS
-        for seconds in (120, 300, 900)
+        for seconds in (60, 120, 300, 900)
     }
     for row in rows:
         experiment = row.get("experiment", {})

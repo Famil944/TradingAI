@@ -46,7 +46,7 @@ def cycle_compact(title, rows):
 
 def expiry_lines(rows):
     lines = ["По экспирациям · WR полного цикла:"]
-    for seconds in (120, 300, 900):
+    for seconds in (60, 120, 300, 900):
         m = metrics([r for r in rows if r["seconds"] == seconds])
         rate = f"{m['wr']:.1f}%" if m["known"] else "—"
         lines.append(f"M{seconds // 60} · {rate} · ✅ {m['win']} / ❌ {m['loss']} · завершено {m['known']}")

@@ -92,7 +92,7 @@ class ConditionalRuleTests(unittest.TestCase):
             b.callback_data for b in buttons if b.callback_data.startswith("otc:tf:")
         ]
         self.assertEqual(
-            timeframes, ["otc:tf:2"]
+            timeframes, ["otc:tf:1"]
         )
 
     def test_replay_uses_future_colour_only_for_evaluation_not_scheduling(self):

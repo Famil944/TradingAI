@@ -192,7 +192,7 @@ async def main(*, session_minutes=None, session_end=None):
     from services.otc_m1_cycles_shadow import M1Shadow
     service.early_observer = ShadowObservers(RSIShadow(ROOT), ExhaustionShadow(ROOT), M1Shadow(ROOT))
     rsi_shadow_task = asyncio.create_task(service.early_observer.run(service, cycles))
-    logging.getLogger(__name__).info("RSI2 and exhaustion-v1 shadow enabled; M2 only; no delivery")
+    logging.getLogger(__name__).info("Shadow enabled: RSI2/exhaustion M2 and S1-S5 M1; independent of live M1 delivery")
     from services.otc_strategies_live import LiveStrategyPublisher
     strategy_engine = LiveStrategyPublisher(
         ROOT, subscriber_relay=subscriber_relay
@@ -245,7 +245,7 @@ async def main(*, session_minutes=None, session_end=None):
         )
         if session_minutes is not None:
             await service.start(
-                bot, settings.admin_chat_id, session_minutes, (120,)
+                bot, settings.admin_chat_id, session_minutes, (60,)
             )
             if session_end is not None:
                 service.ends_at = session_end

@@ -24,7 +24,7 @@ from services.otc_public_stats import (
 router = Router(name="community")
 MZ = ZoneInfo("Europe/Moscow")
 METHODS = ("bb_reentry", "break_retest", "ema_pullback", "exhaustion")
-SECONDS = {"2": 120, "5": 300, "15": 900, "all": None}
+SECONDS = {"1": 60, "2": 120, "5": 300, "15": 900, "all": None}
 PERIODS = {
     "today": "Сегодня (МСК)",
     "7d": "Последние 7 дней",
@@ -126,12 +126,12 @@ def home(owner=False):
         return with_admin_contact(keyboard([
             [("▶️ Сигналы на 1 час", "c:session:start"),
              ("⏸ Пауза", "c:session:stop")],
-            [("🎛 Мои сигналы", "c:prefs"), ("📊 Винрейт циклов", "c:cycles:all:today:all:global")],
+            [("🎛 Мои сигналы", "c:prefs"), ("📊 Винрейт циклов", "c:cycles:all:today:1:global")],
             [("💎 Подписка", "c:subscription"), ("💡 Предложение", "c:suggest")],
             [("ℹ️ Справка", "c:info")],
         ]))
     return keyboard([
-        [("📊 Стратегии", "c:cycles:all:today:all:global"), ("👥 Пользователи", "c:users")],
+        [("📊 Стратегии", "c:cycles:all:today:1:global"), ("👥 Пользователи", "c:users")],
         [("💡 Предложения", "c:queue"), ("🔧 OTC", "c:owner")],
     ])
 
@@ -146,7 +146,7 @@ def preferences_menu(store, user_id):
     rows.append([
         (("✅ " if timeframes[seconds] else "❌ ") + f"M{seconds // 60}",
          f"c:tfpref:{seconds // 60}")
-        for seconds in (120,)
+        for seconds in (60,)
     ])
     rows.append([("◀ Меню", "c:home")])
     return keyboard(rows)
@@ -157,11 +157,11 @@ def preferences_text(store, user_id):
     timeframes = store.timeframe_preferences(user_id)
     count = sum(selected.values())
     enabled_times = [f"M{seconds // 60}" for seconds, enabled
-                     in timeframes.items() if enabled and seconds == 120]
+                     in timeframes.items() if enabled and seconds == 60]
     return (
         f"🎛 Мои сигналы · стратегий {count}/5\n"
         "Нажми на стратегию или экспирацию, чтобы включить или отключить.\n"
-        "Сейчас доступна только экспирация M2 (2 минуты).\n"
+        "Сейчас доступна только экспирация M1 (1 минута).\n"
         "Включённые экспирации: "
         + (", ".join(enabled_times) if enabled_times else "ни одной") + "\n"
         "Основные сигналы других пользователей не изменяются."
@@ -196,7 +196,7 @@ INFO = (
     "и точным временем предполагаемого входа по Москве.\n\n"
     "🟢 ВВЕРХ — прогноз роста цены\n"
     "🔴 ВНИЗ — прогноз снижения цены\n"
-    "M2 — длительность одной попытки: 2 минуты.\n\n"
+    "M1 — длительность одной попытки: 1 минута.\n\n"
     "S1–S5 — пять независимых способа анализа, а не уровни сложности.\n\n"
     "Выбери раздел ниже, чтобы узнать подробности."
 )
@@ -207,7 +207,7 @@ GUIDE_TRADE = (
     "2. Найди на своей торговой платформе инструмент, который указан "
     "в сообщении. Выбирай именно его OTC-версию.\n\n"
     "3. Смотри направление: 🟢 ВВЕРХ или 🔴 ВНИЗ. "
-    "M2 означает длительность 2 минуты, M5 — 5 минут, M15 — 15 минут.\n\n"
+    "M1 означает длительность одной попытки 1 минута.\n\n"
     "4. «Первый вход» — запланированное время по Москве. "
     "Отправка сигнала — за 15–20 секунд до него; задержка сети может сократить запас. "
     "Если оно уже прошло, не открывай запоздалую сделку. "
@@ -224,7 +224,7 @@ GUIDE_CODES = (
     "🔎 ЧТО ЗНАЧАТ ОБОЗНАЧЕНИЯ\n\n"
     "S1, S2, S3, S4, S5 — номера пяти отдельных систем анализа. "
     "Каждая формирует свои прогнозы.\n\n"
-    "M2 = 2 минуты\n"
+    "M1 = 1 минута\n"
     "Это длительность ОДНОЙ попытки, не количество сигналов.\n\n"
     "1 / 2 / 3 — запланированные попытки в одном прогнозе.\n"
     "✅ WIN — прогноз завершён выигрышем\n"
@@ -287,7 +287,7 @@ def cycle_menu(source="all", period="today", timeframe="all", scope="global", ow
          for key, label in (("today", "Сегодня"), ("7d", "7 дней"),
                             ("30d", "30 дней"), ("all", "Всё время"))],
         [(("✓ " if timeframe == key else "") + label, target(tf=key))
-         for key, label in (("all", "Все сроки"), ("2", "M2"))],
+         for key, label in (("1", "M1"), ("all", "Все сроки"), ("2", "M2 · история"))],
     ]
     if not owner:
         rows.append([(("✓ " if scope == "global" else "") + "Общая", target(sc="global")),
@@ -335,7 +335,7 @@ def cycle_dashboard(source="all", period="today", timeframe="all", scope="global
     return "\n".join(lines) + reset_note()
 
 
-def hourly_dashboard(source="all", period="7d", timeframe="2", scope="global", user_id=None, owner=False):
+def hourly_dashboard(source="all", period="7d", timeframe="1", scope="global", user_id=None, owner=False):
     from services.otc_hourly_stats import hourly_text
     since = stats_since(period)
     delivered = subscribers().delivered_ids(user_id) if scope == "personal" else None
@@ -370,7 +370,7 @@ async def show_hours(message, *, source, period, timeframe, scope, owner):
     await render_menu(message,text,reply_markup=markup)
 
 
-async def show_cycles(message, *, source="all", period="today", timeframe="all", scope="global", owner=False, edit=False):
+async def show_cycles(message, *, source="all", period="today", timeframe="1", scope="global", owner=False, edit=False):
     text = await asyncio.to_thread(cycle_dashboard, source, period, timeframe, scope, message.chat.id, owner)
     markup = cycle_menu(source, period, timeframe, scope, owner)
     if edit:
@@ -409,7 +409,7 @@ def subscriber_home_text(user_id):
     selected = store.source_preferences(user_id)
     frames = store.timeframe_preferences(user_id)
     sources_text = ", ".join(IDS[k] for k, enabled in selected.items() if enabled)
-    frames_text = ", ".join(f"M{k // 60}" for k, enabled in frames.items() if enabled and k == 120)
+    frames_text = ", ".join(f"M{k // 60}" for k, enabled in frames.items() if enabled and k == 60)
     body += f"\n\nСтратегии: {sources_text or 'не выбраны'}\nЭкспирации: {frames_text or 'не выбраны'}"
     if not sources_text or not frames_text:
         return body + "\nВыбери хотя бы одну стратегию и экспирацию в «Мои сигналы»."
@@ -450,7 +450,8 @@ def metrics_menu(source, timeframe="all", metric="B", limit=10, period="all"):
         return f"c:stats:{source}:{timeframe}:{m}:{n}:{p}"
 
     return keyboard([
-        [("M2", f"c:stats:{source}:2:{metric}:{limit}:{period}"),
+        [("M1", f"c:stats:{source}:1:{metric}:{limit}:{period}"),
+         ("M2 · история", f"c:stats:{source}:2:{metric}:{limit}:{period}"),
          ("M5", f"c:stats:{source}:5:{metric}:{limit}:{period}"),
          ("M15", f"c:stats:{source}:15:{metric}:{limit}:{period}"),
          ("Все", f"c:stats:{source}:all:{metric}:{limit}:{period}")],
@@ -952,7 +953,7 @@ async def callbacks(query: types.CallbackQuery):
         )
         return
     if target == "tfpref":
-        if (owner or len(action) != 3 or action[2] not in ("2",)
+        if (owner or len(action) != 3 or action[2] not in ("1",)
                 or query.from_user.id != query.message.chat.id):
             await query.answer("Недоступно", show_alert=True)
             return

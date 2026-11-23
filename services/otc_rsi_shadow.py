@@ -1,5 +1,5 @@
 """RSI(2)/SMA200 on closed M1 candles, prospective shadow only."""
-from services.otc_market import symbol_priority, ACTIVE_TIMEFRAMES, EXCLUDED_SYMBOLS
+from services.otc_market import symbol_priority, EXCLUDED_SYMBOLS
 
 import asyncio
 import logging
@@ -19,7 +19,7 @@ from services.otc_strategies_live import evaluate_cycle
 from services.otc_validation_report import load
 
 VERSION = "rsi2-sma200-m1-v1"
-PERIODS = ACTIVE_TIMEFRAMES
+PERIODS = (120,)  # Existing RSI/S5 shadow experiments retain M2.
 LOG = logging.getLogger(__name__)
 
 

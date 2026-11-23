@@ -35,7 +35,7 @@ POLL_SECONDS = 2  # fallback/reconciliation only; new signals are pushed immedia
 MAX_USERS_PER_TICK = 200
 TRIAL_DAYS = 7
 SIGNAL_SOURCES = ("main", "bb_reentry", "break_retest", "ema_pullback", "exhaustion")
-SIGNAL_TIMEFRAMES = (120, 300, 900)  # M2, M5, M15; subscriber delivery only.
+SIGNAL_TIMEFRAMES = (60, 120, 300, 900)  # M1 active; retain historical preferences.
 DAY = 86400
 SESSION_SECONDS = 3600
 SESSION_REMINDER_SECONDS = 600
@@ -81,7 +81,7 @@ class Subscribers:
                 );
                 CREATE TABLE IF NOT EXISTS timeframe_preferences(
                     chat_id INTEGER NOT NULL,
-                    seconds INTEGER NOT NULL CHECK(seconds IN (120,300,900)),
+                    seconds INTEGER NOT NULL CHECK(seconds IN (60,120,300,900)),
                     enabled INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY(chat_id,seconds)
                 );
@@ -109,6 +109,19 @@ class Subscribers:
                     expires_at REAL NOT NULL
                 );
             """)
+            # SQLite CHECK constraints require rebuilding the legacy table.
+            schema = db.execute("SELECT sql FROM sqlite_master WHERE name='timeframe_preferences'").fetchone()[0]
+            if "(60,120,300,900)" not in schema.replace(" ", ""):
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("ALTER TABLE timeframe_preferences RENAME TO timeframe_preferences_legacy")
+                db.execute("CREATE TABLE timeframe_preferences (chat_id INTEGER NOT NULL, "
+                           "seconds INTEGER NOT NULL CHECK(seconds IN (60,120,300,900)), "
+                           "enabled INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(chat_id,seconds))")
+                db.execute("INSERT INTO timeframe_preferences SELECT * FROM timeframe_preferences_legacy")
+                db.execute("INSERT OR IGNORE INTO timeframe_preferences SELECT chat_id,60,enabled "
+                           "FROM timeframe_preferences_legacy WHERE seconds=120")
+                db.execute("DROP TABLE timeframe_preferences_legacy")
+                db.commit()
             fields = {row[1] for row in db.execute("PRAGMA table_info(deliveries)")}
             if "content_sha" not in fields:
                 db.execute(
@@ -542,7 +555,7 @@ class Subscribers:
                 (int(chat_id),),
             ).fetchall()
         saved = dict(rows)
-        return {seconds: bool(saved.get(seconds, 1))
+        return {seconds: bool(saved.get(seconds, saved.get(120, 1) if seconds == 60 else 1))
                 for seconds in SIGNAL_TIMEFRAMES}
 
     def set_timeframe(self, chat_id, seconds, enabled):

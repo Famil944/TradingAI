@@ -85,14 +85,14 @@ def menu(chat_id, expanded=False):
                         callback_data="otc:tf:" + key,
                     )
                     for key, label, value in (
-                        ("2", "M2", (120,)),
+                        ("1", "M1", (60,)),
                     )
                 ],
                 [
                     InlineKeyboardButton(text="Запустить", callback_data="otc:start:0"),
                     InlineKeyboardButton(text="Остановить", callback_data="otc:stop"),
                 ],
-                [InlineKeyboardButton(text="📊 Статистика S1–S5", callback_data="c:cycles:all:today:all:global")],
+                [InlineKeyboardButton(text="📊 Статистика S1–S5", callback_data="c:cycles:all:today:1:global")],
                 [InlineKeyboardButton(text="👥 Пользователи", callback_data="c:users"),
                  InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue")],
                 [InlineKeyboardButton(text="🧪 Фон · RSI(2)", callback_data="otc:rsishadow"),
@@ -111,7 +111,7 @@ def menu(chat_id, expanded=False):
     )
     buttons = []
     for key, label, value in [
-        ("2", "M2", (120,)),
+        ("1", "M1", (60,)),
     ]:
         buttons.append(
             InlineKeyboardButton(
@@ -396,7 +396,7 @@ async def research_quality(message: types.Message):
             max(since, shadow_stats_epoch()),
             now,
         )
-        for seconds in (120, 300, 900):
+        for seconds in (60, 120, 300, 900):
             await message.answer(text_report(data, seconds), parse_mode=None)
         return
     data = await asyncio.to_thread(
@@ -845,9 +845,9 @@ async def callback(query: types.CallbackQuery):
         else:
             await query.answer("Недопустимый выбор")
         return
-    if action == "tf" and len(parts) == 3 and parts[2] in ("all", "2", "5", "15"):
-        if parts[2] not in ("all", "2"):
-            await query.answer("Доступна только экспирация M2", show_alert=True)
+    if action == "tf" and len(parts) == 3 and parts[2] in ("all", "1", "2", "5", "15"):
+        if parts[2] not in ("all", "1"):
+            await query.answer("Доступна только экспирация M1", show_alert=True)
             return
         choices[chat] = TIMEFRAMES
         if getattr(getattr(service, "config", None), "cycles_only", False) and hasattr(

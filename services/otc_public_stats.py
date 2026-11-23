@@ -68,7 +68,7 @@ def main_signals(path, since=0, *, include_cancelled=False):
     for raw in rows:
         row = dict(raw)
         seconds = row["cycle_seconds"]
-        if seconds not in (120, 300, 900):
+        if seconds not in (60, 120, 300, 900):
             continue
         try:
             attempts = json.loads(row["attempts_json"] or "[]")
@@ -111,7 +111,7 @@ def shadow_signals(path, since=0, now=None):
         method, seconds = trial.get("method"), trial.get("cycle_seconds")
         if trial.get("version") != VERSION or method not in METHODS:
             continue
-        if seconds not in (120, 300, 900):
+        if seconds not in (60, 120, 300, 900):
             continue
         attempts = []
         for i in range(3):

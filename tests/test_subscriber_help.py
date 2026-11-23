@@ -23,7 +23,7 @@ def sample_row():
 class SubscriberHelpTests(unittest.TestCase):
     def test_explains_method_labels_timeframes_directions(self):
         self.assertIn("пяти", community.GUIDE_CODES)
-        self.assertIn("M2 = 2 минуты", community.GUIDE_CODES)
+        self.assertIn("M1 = 1 минута", community.GUIDE_CODES)
         self.assertNotIn("M5 = 5 минут", community.GUIDE_CODES)
         self.assertNotIn("M15 = 15 минут", community.GUIDE_CODES)
         self.assertIn("ВВЕРХ", community.INFO)

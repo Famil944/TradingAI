@@ -246,7 +246,7 @@ class UnknownRecovery:
                     plan = json.loads(row["evidence"])
                     old_attempts = list(plan.get("attempt_outcomes") or [])
                     seconds = int(plan.get("cycle_seconds") or 0)
-                    if seconds not in (120, 300, 900):
+                    if seconds not in (60, 120, 300, 900):
                         unresolved.add(row["symbol"])
                         continue
                     attempts, sources, outcome, recovered, missing = (

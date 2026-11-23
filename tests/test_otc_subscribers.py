@@ -30,13 +30,13 @@ def journal(path, rows):
             db.execute(
                 "INSERT INTO predictions VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    row.get("id", f"s{index}"), "BTC", at, at + 20, at + 380,
+                    row.get("id", f"s{index}"), "BTC", at, at + 20, at + 200,
                     "UP", "v1", json.dumps({
                         "name": "Bitcoin OTC",
-                        "cycle_seconds": 120,
+                        "cycle_seconds": 60,
                         "attempt_outcomes": row.get("attempts", []),
                         "virtual": {"private": "DO_NOT_DISCLOSE", "stakes": [123456]},
-                    }), at + 1, row.get("outcome", "PENDING"), at + 380,
+                    }), at + 1, row.get("outcome", "PENDING"), at + 200,
                 ),
             )
 
@@ -99,7 +99,7 @@ class DisplayNameTests(unittest.TestCase):
                 "direction": "UP",
                 "experiment": {
                     "method": "ema_pullback",
-                    "cycle_seconds": 120,
+                    "cycle_seconds": 60,
                 },
             }
             ident = journal.reserve(candidate, 1000)
@@ -192,7 +192,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             expiry = 1000 + 7 * 86400
             row = dict(
                 id="new", origin="main", strategy="bollinger_live", label="Private label",
-                seconds=120, symbol="Bitcoin OTC", direction="UP", created_at=expiry,
+                seconds=60, symbol="Bitcoin OTC", direction="UP", created_at=expiry,
                 sent_at=expiry, entry_at=expiry + 20, expires_at=expiry + 380,
                 resolved_at=expiry + 380, outcome="PENDING", attempts=[],
             )
@@ -222,7 +222,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
                 db.execute(
                     "UPDATE predictions SET outcome='WIN',evidence=? WHERE id='new'",
                     (json.dumps({
-                        "name": "Bitcoin OTC", "cycle_seconds": 120,
+                        "name": "Bitcoin OTC", "cycle_seconds": 60,
                         "attempt_outcomes": ["LOSS", "WIN"],
                         "virtual": {"private": "DO_NOT_DISCLOSE"}
                     }),),
@@ -276,7 +276,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
                         "strategy": ("bollinger_live", "bb_reentry", "break_retest", "ema_pullback")[index],
                         "version": "v1",
                         "label": label,
-                        "seconds": 120,
+                        "seconds": 60,
                         "symbol": "TEST OTC",
                         "direction": "UP",
                         "created_at": 980,
@@ -386,7 +386,7 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
         row = dict(
             id="main:001", origin="main", strategy="bollinger_live",
             label="Боллинджер ×3", symbol="Bitcoin OTC", direction="UP",
-            seconds=120, entry_at=1000, outcome="WIN",
+            seconds=60, entry_at=1000, outcome="WIN",
             attempts=["LOSS", "WIN"],
             provenance="Secret internal", wallet="DO_NOT_DISCLOSE",
         )
@@ -402,11 +402,11 @@ class CommandMenuTests(unittest.IsolatedAsyncioTestCase):
     def test_compact_winrate_excludes_pending_unknown_draw(self):
         from bot import community
         data = [
-            dict(seconds=120, outcome=outcome, sent_at=1000, attempts=[])
+            dict(seconds=60, outcome=outcome, sent_at=1000, attempts=[])
             for outcome in ("WIN", "LOSS", "UNKNOWN", "DRAW", "PENDING")
         ]
         with patch.object(community, "snapshots", return_value=data), patch.object(community, "stats_since", return_value=0), patch.object(community, "reset_note", return_value=""):
-            text = community.compact_overview("2")
+            text = community.compact_overview("1")
         self.assertEqual(text.count("50.0%"), 5)
         self.assertIn("S1 · 50.0% · ✅ 1 / ❌ 1", text)
         self.assertIn("⏳ 1 · ➖ 1 · ❔ 1", text)

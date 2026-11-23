@@ -24,7 +24,7 @@ class OwnerMenuTests(unittest.IsolatedAsyncioTestCase):
             for row in keyboard.inline_keyboard
             for button in row
         ]
-        self.assertEqual(targets, ["c:cycles:all:today:all:global", "c:users", "c:queue", "c:owner"])
+        self.assertEqual(targets, ["c:cycles:all:today:1:global", "c:users", "c:queue", "c:owner"])
         self.assertNotIn("c:suggest", targets)
 
     def test_owner_panel_has_compact_navigation(self):

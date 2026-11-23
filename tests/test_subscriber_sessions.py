@@ -26,7 +26,7 @@ def approved(store, now):
 def live_signal(index, sent_at):
     return dict(
         id=f"live-{index}", origin="live", strategy="bb_reentry",
-        label="Test private", version="v1", seconds=120,
+        label="Test private", version="v1", seconds=60,
         symbol="TEST OTC", direction="UP", created_at=sent_at - 5,
         sent_at=sent_at, entry_at=sent_at + 20, expires_at=sent_at + 390,
         resolved_at=sent_at + 390, outcome="PENDING", attempts=[],

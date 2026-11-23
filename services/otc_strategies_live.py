@@ -219,7 +219,7 @@ def candidate_list(path, now):
             if (
                 exp.get("version") != RESEARCH_VERSION
                 or exp.get("method") not in METHODS
-                or exp.get("cycle_seconds") not in (120, 300, 900)
+                or exp.get("cycle_seconds") not in (60, 120, 300, 900)
                 or row.get("direction") not in ("UP", "DOWN")
                 or not row.get("gates", {}).get("cycle")
                 or not 90 <= float(row.get("payout") or 0) <= 100
@@ -604,7 +604,7 @@ class LiveStrategyPublisher:
                 try:
                     enabled = bool(session and session.running()
                                    and cycles and getattr(cycles, "enabled", False))
-                    allowed = tuple(getattr(cycles, "allowed_timeframes", (120, 300, 900)))
+                    allowed = tuple(getattr(cycles, "allowed_timeframes", (60, 120, 300, 900)))
                     await self.publish(bot, owner, enabled, allowed)
                 except Exception:
                     LOG.exception("Strategy publishing tick failed")

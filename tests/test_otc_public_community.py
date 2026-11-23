@@ -238,7 +238,7 @@ class ReadOnlyTests(unittest.TestCase):
                 "SELECT evidence FROM predictions WHERE id='id1'"
             ).fetchone()[0]
             item = json.loads(payload)
-            item["cycle_seconds"] = 60
+            item["cycle_seconds"] = 90
             db.execute("UPDATE predictions SET evidence=? WHERE id='id1'", (json.dumps(item),))
         self.assertEqual(main_signals(self.source), [])
 

@@ -123,7 +123,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 "start",
             },
         )
-        commands.choices[1] = (120,)
+        commands.choices[1] = (60,)
         keyboard = commands.menu(1, expanded=False)
         labels = [
             b.text
@@ -131,7 +131,7 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
             for b in row
             if b.text.startswith("✅")
         ]
-        self.assertEqual(labels, ["✅ M2"])
+        self.assertEqual(labels, ["✅ M1"])
         expanded = commands.menu(1, expanded=True)
         callbacks = {b.callback_data for row in expanded.inline_keyboard for b in row}
         self.assertIn("otc:panel:hide", callbacks)

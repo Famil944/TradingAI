@@ -23,7 +23,7 @@ def metrics(counts):
 
 def report(root, since, now):
     root = Path(root)
-    groups = {s: Counter() for s in (120, 300, 900)}
+    groups = {s: Counter() for s in (60, 120, 300, 900)}
     path = root / "bollinger-cycles.db"
     if path.exists():
         with closing(

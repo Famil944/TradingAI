@@ -21,7 +21,7 @@ class CommunityCyclesTests(unittest.TestCase):
         self.assertEqual(len(rows), 4)
         self.assertTrue(all(not r["selected"] for r in rows))
         self.assertEqual(
-            {r["experiment"]["cycle_seconds"] for r in rows}, {120}
+            {r["experiment"]["cycle_seconds"] for r in rows}, {60}
         )
         self.assertTrue(
             all(
@@ -36,16 +36,16 @@ class CommunityCyclesTests(unittest.TestCase):
             journal.samples(
                 [
                     ("A", 10800, 10800, 10800, 100),
-                    ("A", 10920, 10920, 10920, 99),
-                    ("A", 11040, 11040, 11040, 101),
+                    ("A", 10860, 10860, 10860, 99),
+                    ("A", 10920, 10920, 10920, 101),
                 ]
             )
-            data = report(path, 0, 11043)
-            m2 = [r for r in data if r["seconds"] == 120]
+            data = report(path, 0, 10923)
+            m2 = [r for r in data if r["seconds"] == 60]
             self.assertTrue(all(r["counts"] == {"WIN": 1, "stage2": 1} for r in m2))
-            self.assertIn("② 1", text_report(data, 120))
+            self.assertIn("② 1", text_report(data, 60))
             self.assertTrue(
-                all(r["counts"].get("PENDING") == 1 for r in report(path, 0, 10801) if r["seconds"] == 120)
+                all(r["counts"].get("PENDING") == 1 for r in report(path, 0, 10801) if r["seconds"] == 60)
             )
 
     def test_history_symbol_missing_from_current_catalogue_is_skipped(self):
@@ -62,12 +62,12 @@ class CommunityCyclesTests(unittest.TestCase):
     def test_timeframe_diagnostics_show_actual_M5_M15_boundaries(self):
         at_quarter = Counter()
         self.assertEqual(prepare(({}, {}, {}, None), 8981, at_quarter), [])
-        self.assertEqual(at_quarter["aligned_M2"], 1)
+        self.assertEqual(at_quarter["aligned_M1"], 1)
         self.assertEqual(at_quarter["aligned_M5"], 0)
         self.assertEqual(at_quarter["aligned_M15"], 0)
         only_m2 = Counter()
         self.assertEqual(prepare(({}, {}, {}, None), 9041, only_m2), [])
-        self.assertEqual(only_m2["aligned_M2"], 1)
+        self.assertEqual(only_m2["aligned_M1"], 1)
         self.assertEqual(only_m2["aligned_M5"], 0)
         self.assertEqual(only_m2["aligned_M15"], 0)
 

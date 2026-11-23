@@ -23,7 +23,7 @@ def test_same_rules_five_methods_independent_m1_slots_and_restart():
         live.assert_called_once_with(bars, 120, 3600)
         assert candidates(snapshot, 3650) == []
         assert candidates((snapshot[0], snapshot[1], {"A": now-9}, None), now) == []
-    assert ACTIVE_TIMEFRAMES == (120,)
+    assert ACTIVE_TIMEFRAMES == (60,)
     assert all(r["cycle_seconds"] == 60 and r["expires_at"] == 3840 for r in rows)
     with tempfile.TemporaryDirectory() as folder:
         engine = M1Shadow(folder, clock=lambda: now)
