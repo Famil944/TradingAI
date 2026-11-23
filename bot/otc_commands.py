@@ -97,6 +97,7 @@ def menu(chat_id, expanded=False):
                  InlineKeyboardButton(text="💡 Предложения", callback_data="c:queue")],
                 [InlineKeyboardButton(text="🧪 Фон · RSI(2)", callback_data="otc:rsishadow"),
                  InlineKeyboardButton(text="🧪 S5 · История фона", callback_data="otc:exhaustion")],
+                [InlineKeyboardButton(text="🧪 Фон M1 · S1–S5", callback_data="otc:m1shadow:all")],
                 [InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")],
                 [InlineKeyboardButton(text="⚙️ Дополнительно", callback_data="otc:more"),
                  InlineKeyboardButton(text="🔄 Обновить", callback_data="otc:panel:show")],
@@ -150,6 +151,7 @@ def menu(chat_id, expanded=False):
     ])
     rows.append([InlineKeyboardButton(text="🧪 Фон · RSI(2)", callback_data="otc:rsishadow"),
                  InlineKeyboardButton(text="🧪 S5 · История фона", callback_data="otc:exhaustion")])
+    rows.append([InlineKeyboardButton(text="🧪 Фон M1 · S1–S5", callback_data="otc:m1shadow:all")])
     rows.append([InlineKeyboardButton(text="📢 Объявления и опросы", callback_data="a:menu")])
     if expanded:
         rows.append(
@@ -609,6 +611,20 @@ async def callback(query: types.CallbackQuery):
              InlineKeyboardButton(text="Виртуальный баланс", callback_data="otc:wallet:show")],
             [InlineKeyboardButton(text="◀ Меню", callback_data="c:home")],
         ]))
+        return
+    if action == "m1shadow":
+        from services.otc_m1_shadow import report, STRATEGIES
+        selected = parts[2] if len(parts) == 3 else "all"
+        if selected not in ("all",) + STRATEGIES:
+            await query.answer("Неизвестная стратегия")
+            return
+        await query.answer()
+        text = await asyncio.to_thread(report, ROOT, selected)
+        await render_menu(query.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=code, callback_data="otc:m1shadow:"+code) for code in STRATEGIES],
+            [InlineKeyboardButton(text="Все", callback_data="otc:m1shadow:all"),
+             InlineKeyboardButton(text="🔄 Обновить", callback_data="otc:m1shadow:"+selected)],
+            [InlineKeyboardButton(text="◀ Меню", callback_data="c:home")]]))
         return
     if action == "exhaustion":
         from services.otc_exhaustion_shadow import report
