@@ -3,7 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from services.otc_m1_shadow import candidates, M1Shadow, report, VERSION
+from services.otc_m1_cycles_shadow import candidates, M1Shadow, report, VERSION
 from services.otc_strategy import Candle
 from services.otc_market import ACTIVE_TIMEFRAMES
 
@@ -15,9 +15,9 @@ def test_same_rules_five_methods_independent_m1_slots_and_restart():
     snapshot = ({"A": bars}, {"A": asset}, {"A": now}, None)
     pattern = dict(direction="UP", lower=99, upper=101,
                    candle=dict(open=100, high=101, low=99, close=100.5))
-    with patch("services.otc_m1_shadow.signals", return_value={
+    with patch("services.otc_m1_cycles_shadow.signals", return_value={
             k: dict(direction="UP") for k in ("bb_reentry", "break_retest", "ema_pullback", "exhaustion")}) as live, \
-         patch("services.otc_m1_shadow.pattern_directions", return_value={"bollinger_reversal": pattern}):
+         patch("services.otc_m1_cycles_shadow.pattern_directions", return_value={"bollinger_reversal": pattern}):
         rows = candidates(snapshot, now)
         assert len(rows) == 5
         live.assert_called_once_with(bars, 120, 3600)

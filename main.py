@@ -189,7 +189,7 @@ async def main(*, session_minutes=None, session_end=None):
     # Separate prospective RSI experiment; retired experiments stay disabled.
     from services.otc_rsi_shadow import RSIShadow
     from services.otc_exhaustion_shadow import ExhaustionShadow, ShadowObservers
-    from services.otc_m1_shadow import M1Shadow
+    from services.otc_m1_cycles_shadow import M1Shadow
     service.early_observer = ShadowObservers(RSIShadow(ROOT), ExhaustionShadow(ROOT), M1Shadow(ROOT))
     rsi_shadow_task = asyncio.create_task(service.early_observer.run(service, cycles))
     logging.getLogger(__name__).info("RSI2 and exhaustion-v1 shadow enabled; M2 only; no delivery")

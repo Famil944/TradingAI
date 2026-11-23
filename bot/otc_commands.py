@@ -613,7 +613,7 @@ async def callback(query: types.CallbackQuery):
         ]))
         return
     if action == "m1shadow":
-        from services.otc_m1_shadow import report, STRATEGIES
+        from services.otc_m1_cycles_shadow import report, STRATEGIES
         selected = parts[2] if len(parts) == 3 else "all"
         if selected not in ("all",) + STRATEGIES:
             await query.answer("Неизвестная стратегия")
